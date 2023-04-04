@@ -95,6 +95,9 @@ pub(crate) struct Instance {
     /// index of the slot in the pooling allocator.
     index: usize,
 
+    /// Current top of the stack pointer (tsp)
+    tsp: TopOfStackPointer,
+
     /// Additional context used by compiled wasm code. This field is last, and
     /// represents a dynamically-sized array that extends beyond the nominal
     /// end of the struct (similar to a flexible array member).
@@ -103,6 +106,13 @@ pub(crate) struct Instance {
 
 #[allow(clippy::cast_ptr_alignment)]
 impl Instance {
+    pub(crate) fn tsp(&self) -> TopOfStackPointer {
+        self.tsp
+    }
+    pub(crate) fn set_tsp(&mut self, ptr: TopOfStackPointer) {
+        self.tsp = ptr;
+    }
+
     /// Create an instance at the given memory address.
     ///
     /// It is assumed the memory was properly aligned and the
@@ -135,6 +145,7 @@ impl Instance {
                 dropped_elements,
                 dropped_data,
                 host_state: req.host_state,
+                tsp: TopOfStackPointer::null(),
                 vmctx: VMContext {
                     _marker: std::marker::PhantomPinned,
                 },
@@ -1098,6 +1109,38 @@ pub struct InstanceHandle {
 // assertion below.
 unsafe impl Send for InstanceHandle {}
 unsafe impl Sync for InstanceHandle {}
+
+pub struct TopOfStackPointer {
+    tsp: *mut u8,
+}
+
+impl TopOfStackPointer {
+    pub fn null() -> Self {
+        TopOfStackPointer {
+            tsp: std::ptr::null_mut(),
+        }
+    }
+
+    pub fn as_raw(self) -> *mut u8 {
+        self.tsp
+    }
+
+    pub fn from_raw(tsp: *mut u8) -> Self {
+        TopOfStackPointer { tsp }
+    }
+}
+
+impl Copy for TopOfStackPointer {}
+impl Clone for TopOfStackPointer {
+    fn clone(&self) -> Self {
+        TopOfStackPointer {
+            tsp: self.tsp
+        }
+    }
+}
+
+unsafe impl Send for TopOfStackPointer {}
+unsafe impl Sync for TopOfStackPointer {}
 
 fn _assert_send_sync() {
     fn _assert<T: Send + Sync>() {}

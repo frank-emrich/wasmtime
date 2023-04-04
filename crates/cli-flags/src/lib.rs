@@ -47,6 +47,11 @@ pub const SUPPORTED_WASM_FEATURES: &[(&str, &str)] = &[
         "function-references",
         "enables support for typed function references",
     ),
+    ("exceptions", "enables support for exceptions"),
+    (
+        "typed-continuations",
+        "enables support for typed continuations",
+    ),
 ];
 
 pub const SUPPORTED_WASI_MODULES: &[(&str, &str)] = &[
@@ -376,6 +381,8 @@ impl CommonOptions {
             #[cfg(feature = "component-model")]
             component_model,
             function_references,
+            exceptions,
+            typed_continuations,
         } = self.wasm_features.unwrap_or_default();
 
         if let Some(enable) = simd {
@@ -408,6 +415,12 @@ impl CommonOptions {
         #[cfg(feature = "component-model")]
         if let Some(enable) = component_model {
             config.wasm_component_model(enable);
+        }
+        if let Some(enable) = exceptions {
+            config.wasm_exceptions(enable);
+        }
+        if let Some(enable) = typed_continuations {
+            config.wasm_typed_continuations(enable);
         }
     }
 
@@ -446,6 +459,8 @@ pub struct WasmFeatures {
     #[cfg(feature = "component-model")]
     pub component_model: Option<bool>,
     pub function_references: Option<bool>,
+    pub exceptions: Option<bool>,
+    pub typed_continuations: Option<bool>,
 }
 
 fn parse_wasm_features(features: &str) -> Result<WasmFeatures> {
@@ -498,6 +513,8 @@ fn parse_wasm_features(features: &str) -> Result<WasmFeatures> {
         #[cfg(feature = "component-model")]
         component_model: all.or(values["component-model"]),
         function_references: all.or(values["function-references"]),
+        exceptions: all.or(values["exceptions"]),
+        typed_continuations: all.or(values["typed-continuations"]),
     })
 }
 
@@ -614,6 +631,8 @@ mod test {
             multi_memory,
             memory64,
             function_references,
+            exceptions,
+            typed_continuations,
         } = options.wasm_features.unwrap();
 
         assert_eq!(reference_types, Some(true));
@@ -625,6 +644,7 @@ mod test {
         assert_eq!(memory64, Some(true));
         assert_eq!(function_references, Some(true));
         assert_eq!(relaxed_simd, Some(true));
+        assert_eq!(typed_continuations, Some(true));
 
         Ok(())
     }
@@ -643,6 +663,7 @@ mod test {
             multi_memory,
             memory64,
             function_references,
+            typed_continuations,
         } = options.wasm_features.unwrap();
 
         assert_eq!(reference_types, Some(false));
@@ -654,6 +675,8 @@ mod test {
         assert_eq!(memory64, Some(false));
         assert_eq!(function_references, Some(false));
         assert_eq!(relaxed_simd, Some(false));
+        assert_eq!(exceptions, Some(false));
+        assert_eq!(typed_continuations, Some(false));
 
         Ok(())
     }
@@ -675,6 +698,8 @@ mod test {
             multi_memory,
             memory64,
             function_references,
+            exceptions,
+            typed_continuations,
         } = options.wasm_features.unwrap();
 
         assert_eq!(reference_types, Some(false));
@@ -686,6 +711,8 @@ mod test {
         assert_eq!(memory64, Some(true));
         assert_eq!(function_references, None);
         assert_eq!(relaxed_simd, None);
+        assert_eq!(exceptions, None);
+        assert_eq!(typed_continuations, None);
 
         Ok(())
     }
