@@ -1,11 +1,15 @@
 use super::{invoke_wasm_and_catch_traps, HostAbi};
 use crate::store::{AutoAssertNoGc, StoreOpaque};
-use crate::{AsContextMut, ExternRef, Func, StoreContextMut, Trap, ValType};
+use crate::{
+    AsContextMut, ExternRef, Func, FuncType, HeapType, RefType, StoreContextMut, ValRaw, ValType,
+};
 use anyhow::{bail, Result};
 use std::marker;
 use std::mem::{self, MaybeUninit};
 use std::ptr;
-use wasmtime_runtime::{VMContext, VMFunctionBody};
+use wasmtime_runtime::{
+    VMCallerCheckedFuncRef, VMContext, VMFunctionBody, VMOpaqueContext, VMSharedSignatureIndex,
+};
 
 /// A statically typed WebAssembly function.
 ///
@@ -66,17 +70,24 @@ where
     /// For more information, see the [`Func::typed`] and [`Func::call`]
     /// documentation.
     ///
+    /// # Errors
+    ///
+    /// For more information on errors see the documentation on [`Func::call`].
+    ///
     /// # Panics
     ///
     /// This function will panic if it is called when the underlying [`Func`] is
     /// connected to an asynchronous store.
-    pub fn call(&self, mut store: impl AsContextMut, params: Params) -> Result<Results, Trap> {
+    ///
+    /// [`Trap`]: crate::Trap
+    pub fn call(&self, mut store: impl AsContextMut, params: Params) -> Result<Results> {
         let mut store = store.as_context_mut();
         assert!(
             !store.0.async_support(),
             "must use `call_async` with async stores"
         );
-        unsafe { self._call(&mut store, params) }
+        let func = self.func.caller_checked_anyfunc(store.0);
+        unsafe { Self::call_raw(&mut store, func, params) }
     }
 
     /// Invokes this WebAssembly function with the specified parameters.
@@ -86,17 +97,23 @@ where
     /// For more information, see the [`Func::typed`] and [`Func::call_async`]
     /// documentation.
     ///
+    /// # Errors
+    ///
+    /// For more information on errors see the documentation on [`Func::call`].
+    ///
     /// # Panics
     ///
     /// This function will panic if it is called when the underlying [`Func`] is
     /// connected to a synchronous store.
+    ///
+    /// [`Trap`]: crate::Trap
     #[cfg(feature = "async")]
     #[cfg_attr(nightlydoc, doc(cfg(feature = "async")))]
     pub async fn call_async<T>(
         &self,
         mut store: impl AsContextMut<Data = T>,
         params: Params,
-    ) -> Result<Results, Trap>
+    ) -> Result<Results>
     where
         T: Send,
     {
@@ -106,15 +123,24 @@ where
             "must use `call` with non-async stores"
         );
         store
-            .on_fiber(|store| unsafe { self._call(store, params) })
+            .on_fiber(|store| {
+                let func = self.func.caller_checked_anyfunc(store.0);
+                unsafe { Self::call_raw(store, func, params) }
+            })
             .await?
     }
 
-    unsafe fn _call<T>(
-        &self,
+    pub(crate) unsafe fn call_raw<T>(
         store: &mut StoreContextMut<'_, T>,
+        func: ptr::NonNull<VMCallerCheckedFuncRef>,
         params: Params,
-    ) -> Result<Results, Trap> {
+    ) -> Result<Results> {
+        // double-check that params/results match for this function's type in
+        // debug mode.
+        if cfg!(debug_assertions) {
+            Self::debug_typecheck(store.0, func.as_ref().type_index);
+        }
+
         // See the comment in `Func::call_impl`'s `write_params` function.
         if params.externrefs_count()
             > store
@@ -138,9 +164,7 @@ where
             match params.into_abi(&mut store) {
                 Some(abi) => abi,
                 None => {
-                    return Err(Trap::new(
-                        "attempt to pass cross-`Store` value to Wasm as function argument",
-                    ))
+                    bail!("attempt to pass cross-`Store` value to Wasm as function argument")
                 }
             }
         };
@@ -150,20 +174,15 @@ where
         // efficient to move in memory. This closure is actually invoked on the
         // other side of a C++ shim, so it can never be inlined enough to make
         // the memory go away, so the size matters here for performance.
-        let mut captures = (
-            self.func.caller_checked_anyfunc(store.0),
-            MaybeUninit::uninit(),
-            params,
-            false,
-        );
+        let mut captures = (func, MaybeUninit::uninit(), params, false);
 
-        let result = invoke_wasm_and_catch_traps(store, |callee| {
+        let result = invoke_wasm_and_catch_traps(store, |caller| {
             let (anyfunc, ret, params, returned) = &mut captures;
             let anyfunc = anyfunc.as_ref();
             let result = Params::invoke::<Results>(
                 anyfunc.func_ptr.as_ptr(),
                 anyfunc.vmctx,
-                callee,
+                caller,
                 *params,
             );
             ptr::write(ret.as_mut_ptr(), result);
@@ -173,6 +192,19 @@ where
         debug_assert_eq!(result.is_ok(), returned);
         result?;
         Ok(Results::from_abi(store.0, ret.assume_init()))
+    }
+
+    /// Purely a debug-mode assertion, not actually used in release builds.
+    fn debug_typecheck(store: &StoreOpaque, func: VMSharedSignatureIndex) {
+        let ty = FuncType::from_wasm_func_type(
+            store
+                .engine()
+                .signatures()
+                .lookup_type(func)
+                .expect("signature should be registered"),
+        );
+        Params::typecheck(ty.params()).expect("params should match");
+        Results::typecheck(ty.results()).expect("results should match");
     }
 }
 
@@ -190,7 +222,7 @@ pub unsafe trait WasmTy: Send {
     #[doc(hidden)]
     #[inline]
     fn typecheck(ty: crate::ValType) -> Result<()> {
-        if ty == Self::valtype() {
+        if ValType::is_subtype(&ty, &Self::valtype()) {
             Ok(())
         } else {
             bail!("expected {} found {}", Self::valtype(), ty)
@@ -203,13 +235,17 @@ pub unsafe trait WasmTy: Send {
     #[doc(hidden)]
     fn is_externref(&self) -> bool;
     #[doc(hidden)]
+    unsafe fn abi_from_raw(raw: *mut ValRaw) -> Self::Abi;
+    #[doc(hidden)]
+    unsafe fn abi_into_raw(abi: Self::Abi, raw: *mut ValRaw);
+    #[doc(hidden)]
     fn into_abi(self, store: &mut StoreOpaque) -> Self::Abi;
     #[doc(hidden)]
     unsafe fn from_abi(abi: Self::Abi, store: &mut StoreOpaque) -> Self;
 }
 
-macro_rules! primitives {
-    ($($primitive:ident => $ty:ident)*) => ($(
+macro_rules! integers {
+    ($($primitive:ident/$get_primitive:ident => $ty:ident in $raw:ident)*) => ($(
         unsafe impl WasmTy for $primitive {
             type Abi = $primitive;
             #[inline]
@@ -225,6 +261,14 @@ macro_rules! primitives {
                 false
             }
             #[inline]
+            unsafe fn abi_from_raw(raw: *mut ValRaw) -> $primitive {
+                (*raw).$get_primitive()
+            }
+            #[inline]
+            unsafe fn abi_into_raw(abi: $primitive, raw: *mut ValRaw) {
+                *raw = ValRaw::$primitive(abi);
+            }
+            #[inline]
             fn into_abi(self, _store: &mut StoreOpaque) -> Self::Abi {
                 self
             }
@@ -236,13 +280,52 @@ macro_rules! primitives {
     )*)
 }
 
-primitives! {
-    i32 => I32
-    u32 => I32
-    i64 => I64
-    u64 => I64
-    f32 => F32
-    f64 => F64
+integers! {
+    i32/get_i32 => I32 in i32
+    i64/get_i64 => I64 in i64
+    u32/get_u32 => I32 in i32
+    u64/get_u64 => I64 in i64
+}
+
+macro_rules! floats {
+    ($($float:ident/$int:ident/$get_float:ident => $ty:ident)*) => ($(
+        unsafe impl WasmTy for $float {
+            type Abi = $float;
+            #[inline]
+            fn valtype() -> ValType {
+                ValType::$ty
+            }
+            #[inline]
+            fn compatible_with_store(&self, _: &StoreOpaque) -> bool {
+                true
+            }
+            #[inline]
+            fn is_externref(&self) -> bool {
+                false
+            }
+            #[inline]
+            unsafe fn abi_from_raw(raw: *mut ValRaw) -> $float {
+                $float::from_bits((*raw).$get_float())
+            }
+            #[inline]
+            unsafe fn abi_into_raw(abi: $float, raw: *mut ValRaw) {
+                *raw = ValRaw::$float(abi.to_bits());
+            }
+            #[inline]
+            fn into_abi(self, _store: &mut StoreOpaque) -> Self::Abi {
+                self
+            }
+            #[inline]
+            unsafe fn from_abi(abi: Self::Abi, _store: &mut StoreOpaque) -> Self {
+                abi
+            }
+        }
+    )*)
+}
+
+floats! {
+    f32/u32/get_f32 => F32
+    f64/u64/get_f64 => F64
 }
 
 unsafe impl WasmTy for Option<ExternRef> {
@@ -250,7 +333,10 @@ unsafe impl WasmTy for Option<ExternRef> {
 
     #[inline]
     fn valtype() -> ValType {
-        ValType::ExternRef
+        ValType::Ref(RefType {
+            nullable: true,
+            heap_type: HeapType::Extern,
+        })
     }
 
     #[inline]
@@ -261,6 +347,16 @@ unsafe impl WasmTy for Option<ExternRef> {
     #[inline]
     fn is_externref(&self) -> bool {
         true
+    }
+
+    #[inline]
+    unsafe fn abi_from_raw(raw: *mut ValRaw) -> *mut u8 {
+        (*raw).get_externref() as *mut u8
+    }
+
+    #[inline]
+    unsafe fn abi_into_raw(abi: *mut u8, raw: *mut ValRaw) {
+        *raw = ValRaw::externref(abi as usize);
     }
 
     #[inline]
@@ -318,11 +414,14 @@ unsafe impl WasmTy for Option<ExternRef> {
 }
 
 unsafe impl WasmTy for Option<Func> {
-    type Abi = *mut wasmtime_runtime::VMCallerCheckedAnyfunc;
+    type Abi = *mut wasmtime_runtime::VMCallerCheckedFuncRef;
 
     #[inline]
     fn valtype() -> ValType {
-        ValType::FuncRef
+        ValType::Ref(RefType {
+            nullable: true,
+            heap_type: HeapType::Func,
+        })
     }
 
     #[inline]
@@ -337,6 +436,16 @@ unsafe impl WasmTy for Option<Func> {
     #[inline]
     fn is_externref(&self) -> bool {
         false
+    }
+
+    #[inline]
+    unsafe fn abi_from_raw(raw: *mut ValRaw) -> Self::Abi {
+        (*raw).get_funcref() as Self::Abi
+    }
+
+    #[inline]
+    unsafe fn abi_into_raw(abi: Self::Abi, raw: *mut ValRaw) {
+        *raw = ValRaw::funcref(abi as usize);
     }
 
     #[inline]
@@ -375,7 +484,7 @@ pub unsafe trait WasmParams: Send {
     #[doc(hidden)]
     unsafe fn invoke<R: WasmResults>(
         func: *const VMFunctionBody,
-        vmctx1: *mut VMContext,
+        vmctx1: *mut VMOpaqueContext,
         vmctx2: *mut VMContext,
         abi: Self::Abi,
     ) -> R::ResultAbi;
@@ -405,7 +514,7 @@ where
 
     unsafe fn invoke<R: WasmResults>(
         func: *const VMFunctionBody,
-        vmctx1: *mut VMContext,
+        vmctx1: *mut VMOpaqueContext,
         vmctx2: *mut VMContext,
         abi: Self::Abi,
     ) -> R::ResultAbi {
@@ -465,19 +574,19 @@ macro_rules! impl_wasm_params {
 
             unsafe fn invoke<R: WasmResults>(
                 func: *const VMFunctionBody,
-                vmctx1: *mut VMContext,
+                vmctx1: *mut VMOpaqueContext,
                 vmctx2: *mut VMContext,
                 abi: Self::Abi,
             ) -> R::ResultAbi {
                 let fnptr = mem::transmute::<
                     *const VMFunctionBody,
                     unsafe extern "C" fn(
-                        *mut VMContext,
+                        *mut VMOpaqueContext,
                         *mut VMContext,
                         $($t::Abi,)*
                         <R::ResultAbi as HostAbi>::Retptr,
                     ) -> <R::ResultAbi as HostAbi>::Abi,
-                >(func);
+                    >(func);
                 let ($($t,)*) = abi;
                 // Use the `call` function to acquire a `retptr` which we'll
                 // forward to the native function. Once we have it we also
@@ -487,6 +596,7 @@ macro_rules! impl_wasm_params {
                 // Upon returning `R::call` will convert all the returns back
                 // into `R`.
                 <R::ResultAbi as HostAbi>::call(|retptr| {
+                    let fnptr = wasmtime_runtime::prepare_host_to_wasm_trampoline(vmctx2, fnptr);
                     fnptr(vmctx1, vmctx2, $($t,)* retptr)
                 })
             }

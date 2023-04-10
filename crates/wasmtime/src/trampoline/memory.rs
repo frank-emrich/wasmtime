@@ -1,28 +1,72 @@
 use crate::memory::{LinearMemory, MemoryCreator};
+use crate::module::BareModuleInfo;
 use crate::store::{InstanceId, StoreOpaque};
-use crate::trampoline::create_handle;
 use crate::MemoryType;
 use anyhow::{anyhow, Result};
 use std::convert::TryFrom;
+use std::ops::Range;
 use std::sync::Arc;
-use wasmtime_environ::{EntityIndex, MemoryPlan, MemoryStyle, Module, WASM_PAGE_SIZE};
+use wasmtime_environ::{
+    DefinedMemoryIndex, DefinedTableIndex, EntityIndex, MemoryPlan, MemoryStyle, Module,
+    PrimaryMap, WASM_PAGE_SIZE,
+};
 use wasmtime_runtime::{
-    MemoryMemFd, RuntimeLinearMemory, RuntimeMemoryCreator, VMMemoryDefinition,
+    CompiledModuleId, Imports, InstanceAllocationRequest, InstanceAllocator, Memory, MemoryImage,
+    OnDemandInstanceAllocator, RuntimeLinearMemory, RuntimeMemoryCreator, SharedMemory, StorePtr,
+    Table, VMMemoryDefinition,
 };
 
-pub fn create_memory(store: &mut StoreOpaque, memory: &MemoryType) -> Result<InstanceId> {
+/// Create a "frankenstein" instance with a single memory.
+///
+/// This separate instance is necessary because Wasm objects in Wasmtime must be
+/// attached to instances (versus the store, e.g.) and some objects exist
+/// outside: a host-provided memory import, shared memory.
+pub fn create_memory(
+    store: &mut StoreOpaque,
+    memory_ty: &MemoryType,
+    preallocation: Option<&SharedMemory>,
+) -> Result<InstanceId> {
     let mut module = Module::new();
 
-    let memory_plan = wasmtime_environ::MemoryPlan::for_memory(
-        memory.wasmtime_memory().clone(),
+    // Create a memory plan for the memory, though it will never be used for
+    // constructing a memory with an allocator: instead the memories are either
+    // preallocated (i.e., shared memory) or allocated manually below.
+    let plan = wasmtime_environ::MemoryPlan::for_memory(
+        memory_ty.wasmtime_memory().clone(),
         &store.engine().config().tunables,
     );
-    let memory_id = module.memory_plans.push(memory_plan);
+    let memory_id = module.memory_plans.push(plan.clone());
+
+    // Since we have only associated a single memory with the "frankenstein"
+    // instance, it will be exported at index 0.
+    debug_assert_eq!(memory_id.as_u32(), 0);
     module
         .exports
         .insert(String::new(), EntityIndex::Memory(memory_id));
 
-    create_handle(module, store, Box::new(()), &[], None)
+    // We create an instance in the on-demand allocator when creating handles
+    // associated with external objects. The configured instance allocator
+    // should only be used when creating module instances as we don't want host
+    // objects to count towards instance limits.
+    let runtime_info = &BareModuleInfo::maybe_imported_func(Arc::new(module), None).into_traitobj();
+    let host_state = Box::new(());
+    let imports = Imports::default();
+    let request = InstanceAllocationRequest {
+        imports,
+        host_state,
+        store: StorePtr::new(store.traitobj()),
+        runtime_info,
+    };
+
+    unsafe {
+        let handle = SingleMemoryInstance {
+            preallocation,
+            ondemand: OnDemandInstanceAllocator::default(),
+        }
+        .allocate(request)?;
+        let instance_id = store.add_instance(handle.clone(), true);
+        Ok(instance_id)
+    }
 }
 
 struct LinearMemoryProxy {
@@ -42,15 +86,23 @@ impl RuntimeLinearMemory for LinearMemoryProxy {
         self.mem.grow_to(new_size)
     }
 
-    fn vmmemory(&self) -> VMMemoryDefinition {
+    fn vmmemory(&mut self) -> VMMemoryDefinition {
         VMMemoryDefinition {
             base: self.mem.as_ptr(),
-            current_length: self.mem.byte_size(),
+            current_length: self.mem.byte_size().into(),
         }
     }
 
     fn needs_init(&self) -> bool {
         true
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn wasm_accessible(&self) -> Range<usize> {
+        self.mem.wasm_accessible()
     }
 }
 
@@ -63,7 +115,7 @@ impl RuntimeMemoryCreator for MemoryCreatorProxy {
         plan: &MemoryPlan,
         minimum: usize,
         maximum: Option<usize>,
-        _: Option<&Arc<MemoryMemFd>>,
+        _: Option<&Arc<MemoryImage>>,
     ) -> Result<Box<dyn RuntimeLinearMemory>> {
         let ty = MemoryType::from_wasmtime_memory(&plan.memory);
         let reserved_size_in_bytes = match plan.style {
@@ -82,5 +134,69 @@ impl RuntimeMemoryCreator for MemoryCreatorProxy {
             )
             .map(|mem| Box::new(LinearMemoryProxy { mem }) as Box<dyn RuntimeLinearMemory>)
             .map_err(|e| anyhow!(e))
+    }
+}
+
+struct SingleMemoryInstance<'a> {
+    preallocation: Option<&'a SharedMemory>,
+    ondemand: OnDemandInstanceAllocator,
+}
+
+unsafe impl InstanceAllocator for SingleMemoryInstance<'_> {
+    fn allocate_index(&self, req: &InstanceAllocationRequest) -> Result<usize> {
+        self.ondemand.allocate_index(req)
+    }
+
+    fn deallocate_index(&self, index: usize) {
+        self.ondemand.deallocate_index(index)
+    }
+
+    fn allocate_memories(
+        &self,
+        index: usize,
+        req: &mut InstanceAllocationRequest,
+        mem: &mut PrimaryMap<DefinedMemoryIndex, Memory>,
+    ) -> Result<()> {
+        assert_eq!(req.runtime_info.module().memory_plans.len(), 1);
+        match self.preallocation {
+            Some(shared_memory) => {
+                mem.push(shared_memory.clone().as_memory());
+            }
+            None => {
+                self.ondemand.allocate_memories(index, req, mem)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn deallocate_memories(&self, index: usize, mems: &mut PrimaryMap<DefinedMemoryIndex, Memory>) {
+        self.ondemand.deallocate_memories(index, mems)
+    }
+
+    fn allocate_tables(
+        &self,
+        index: usize,
+        req: &mut InstanceAllocationRequest,
+        tables: &mut PrimaryMap<DefinedTableIndex, Table>,
+    ) -> Result<()> {
+        self.ondemand.allocate_tables(index, req, tables)
+    }
+
+    fn deallocate_tables(&self, index: usize, tables: &mut PrimaryMap<DefinedTableIndex, Table>) {
+        self.ondemand.deallocate_tables(index, tables)
+    }
+
+    #[cfg(feature = "async")]
+    fn allocate_fiber_stack(&self) -> Result<wasmtime_fiber::FiberStack> {
+        unreachable!()
+    }
+
+    #[cfg(feature = "async")]
+    unsafe fn deallocate_fiber_stack(&self, _stack: &wasmtime_fiber::FiberStack) {
+        unreachable!()
+    }
+
+    fn purge_module(&self, _: CompiledModuleId) {
+        unreachable!()
     }
 }

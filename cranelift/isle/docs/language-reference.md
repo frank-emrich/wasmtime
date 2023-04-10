@@ -359,7 +359,7 @@ For a simple example, consider the following rules:
 ```
 
 This set of rules will rewrite `(A (B (D 42)))` to `(C (D 42))`, then
-to `(E 42)` (via the first and third rules respectively).
+to `(E 42)` (via the first and second rules respectively).
 
 How is this useful? First, rewriting one term to another (here, `C` at
 the top level) that in turn appears in the left-hand side of other
@@ -466,7 +466,7 @@ can represent various concepts in a compiler backend: values, but also
 machine instructions or parts of those instructions ("integer
 immediate value encodable in machine's particular format"), or
 abstract bundles of information with invariants or guarantees encoded
-in the type system ("load that I can sink", "instruciton that produces
+in the type system ("load that I can sink", "instruction that produces
 flags").
 
 ISLE's other key departure from many other systems is its first-class
@@ -498,16 +498,16 @@ operators:
   `0x80`, `-0x80`) and boolean constants (`#t`, `#f`).
 * constants imported from the embedding, of arbitrary type
   (`$MyConst`).
-* Variable captures (bare identifiers like `x`; an identifier consists
-  of alphanumeric characters and underscores, and does not start with
-  a digit).
+* Variable captures and matches (bare identifiers like `x`; an
+  identifier consists of alphanumeric characters and underscores, and
+  does not start with a digit). The first occurrence of a variable `x`
+  captures the value; each subsequent occurrence matches on the
+  already-captured value, rejecting the match if not equal.
 * Variable captures with sub-patterns: `x @ PAT`, which captures the
   subterm in `x` as above but also matches `PAT` against the
   subterm. For example, `x @ (A y z)` matches an `A` term and captures
   its arguments as `y` and `z`, but also captures the whole term as
   `x`.
-* "Equal-variable" constraints (`=x`): a subterm must match an
-  already-captured value.
 * conjunctions of subpatterns: `(and PAT1 PAT2 ...)` matches all of
   the subpatterns against the term. If any subpattern does not match,
   then this matcher fails.
@@ -680,12 +680,11 @@ The typing rules for patterns in ISLE are:
   T2 T2) R)`, has type `R` and provides expected types `T1`, `T2`, and
   `T3` to its subpatterns.
   
-* A variable capture pattern `x` is compatible with any expected type,
-  and captures this expected type under the variable identifier `x` in
-  the type environment.
-  
-* A variable-equality pattern `=x` checks that the expected type is
-  equal to the already-captured type for `x` in the type environment.
+* A variable capture pattern `x` is compatible with any expected type
+  the first time it appears, and captures this expected type under the
+  variable identifier `x` in the type environment. Subsequent
+  appearances of `x` check that the expected type matches the
+  already-captured type.
   
 * A conjunction `(and PAT1 PAT2 ...)` checks that each subpattern is
   compatible with the expected type.
@@ -730,10 +729,10 @@ a `T2`. Concretely:
     
     (decl Translate (T1) T2)
     
-    (rule (Translate (T1.A ...)
-                     (T2.X ...)))
-    (rule (Translate (T1.B ...)
-                     (T2.Y ...)))
+    (rule (Translate (T1.A ...))
+          (T2.X ...))
+    (rule (Translate (T1.B ...))
+          (T2.Y ...))
 ```
 
 This gets to the heart of rewrite-system-based computation, and has
@@ -765,8 +764,8 @@ one could have:
     (decl TranslateToMachine1 (IR) Machine1)
     (decl TranslateToMachine2 (IR) Machine2)
     
-    (rule (TranslateToMachine1 (IR.add a b) (Machine1.add a b)))
-    (rule (TranslateToMachine2 (IR.add a b) (Machine2.weird_inst a b)))
+    (rule (TranslateToMachine1 (IR.add a b)) (Machine1.add a b))
+    (rule (TranslateToMachine2 (IR.add a b)) (Machine2.weird_inst a b))
 ```
 
 and then both translations are available. We are "rewriting" from `IR`
@@ -862,6 +861,66 @@ which will, for example, expand a pattern `(A (subterm ...) _)` into
 the arguments to `A` are substituted into the extractor body and then
 this body is inlined.
 
+#### Implicit Type Conversions
+
+For convenience, ISLE allows the program to associate terms with pairs
+of types, so that type mismatches are *automatically resolved* by
+inserting that term.
+
+For example, if one is writing a rule such as
+
+```lisp
+    (decl u_to_v (U) V)
+    (rule ...)
+    
+    (decl MyTerm (T) V)
+    (rule (MyTerm t)
+          (u_to_v t))
+```
+
+the `(u_to_v t)` term would not typecheck given the ISLE language
+functionality that we have seen so far, because it expects a `U` for
+its argument but `t` has type `T`. However, if we define
+
+
+```lisp
+    (convert T U t_to_u)
+    
+    ;; For the above to be valid, `t_to_u` should be declared with the
+    ;; signature:
+    (decl t_to_u (T) U)
+    (rule ...)
+```
+
+then the DSL compiler will implicitly understand the above `MyTerm` rule as:
+
+```lisp
+    (rule (MyTerm t)
+          (u_to_v (t_to_u t)))
+```
+
+This also works in the extractor position: for example, if one writes
+
+```lisp
+    (decl defining_instruction (Inst) Value)
+    (extern extractor definining_instruction ...)
+    
+    (decl iadd (Value Value) Inst)
+    
+    (rule (lower (iadd (iadd a b) c))
+          ...)
+          
+    (convert Inst Value defining_instruction)
+```
+
+then the `(iadd (iadd a b) c)` form will be implicitly handled like
+`(iadd (defining_instruction (iadd a b)) c)`. Note that the conversion
+insertion needs to have local type context in order to find the right
+converter: so, for example, it cannot infer a target type from a
+pattern where just a variable binding occurs, even if the variable is
+used in some typed context on the right-hand side. Instead, the
+"inner" and "outer" types have to come from explicitly typed terms.
+
 #### Summary: Terms, Constructors, and Extractors
 
 We start with a `term`, which is just a schema for data:
@@ -881,6 +940,136 @@ A term can have:
    make up an internal constructor definition, OR
    
 4. A single external constructor binding (see next section).
+
+### If-Let Clauses
+
+As an extension to the basic left-hand-side / right-hand-side rule
+idiom, ISLE allows *if-let clauses* to be used. These add additional
+pattern-matching steps, and can be used to perform additional tests
+and also to use constructors in place of extractors during the match
+phase when this is more convenient.
+
+To introduce the concept, an example follows (this is taken from the
+[RFC](https://github.com/bytecodealliance/rfcs/tree/main/isle-extended-patterns.md)
+that proposed if-lets):
+
+```lisp
+;; `u32_fallible_add` can now be used in patterns in `if-let` clauses
+(decl pure u32_fallible_add (u32 u32) u32)
+(extern constructor u32_fallible_add u32_fallible_add)
+
+(rule (lower (load (iadd addr
+                         (iadd (uextend (iconst k1))
+                               (uextend (iconst k2))))))
+      (if-let k (u32_fallible_add k1 k2))
+      (isa_load (amode_reg_offset addr k)))
+```
+
+The key idea is that we allow a `rule` form to contain the following
+sub-forms:
+
+```lisp
+(rule LHS_PATTERN
+  (if-let PAT2 EXPR2)
+  (if-let PAT3 EXPR3)
+  ...
+  RHS)
+```
+
+The matching proceeds as follows: the main pattern (`LHS_PATTERN`)
+matches against the input value (the term to be rewritten), as
+described in detail above. Then, if this matches, execution proceeds
+to the if-let clauses in the order they are specified. For each, we
+evaluate the expression (`EXPR2` or `EXPR3` above) first. An
+expression in an if-let context is allowed to be "fallible": the
+constructors return `Option<T>` at the Rust level and can return
+`None`, in which case the whole rule application fails and we move on
+to the next rule as if the main pattern had failed to match. (MOre on
+the fallible constructors below.) If the expression evaluation
+succeeds, we match the associated pattern (`PAT2` or `PAT3` above)
+against the resulting value. This too can fail, causing the whole rule
+to fail. If it succeeds, any resulting variable bindings are
+available. Variables bound in the main pattern are available for all
+if-let expressions and patterns, and variables bound by a given if-let
+clause are available for all subsequent clauses. All bound variables
+(from the main pattern and if-let clauses) are available in the
+right-hand side expression.
+
+#### Pure Expressions and Constructors
+
+In order for an expression to be used in an if-let clause, it has to
+be *pure*: it cannot have side-effects. A pure expression is one that
+uses constants and pure constructors only. Enum variant constructors
+are always pure. In general constructors that invoke function calls,
+however (either as internal or external constructor calls), can lead
+to arbitrary Rust code and have side-effects. So, we add a new
+annotation to declarations as follows:
+
+```lisp
+;; `u32_fallible_add` can now be used in patterns in `if-let` clauses
+(decl pure u32_fallible_add (u32 u32) u32)
+
+;; This adds a method
+;; `fn u32_fallible_add(&mut self, _: u32, _: u32) -> Option<u32>`
+;; to the `Context` trait.
+(extern constructor u32_fallible_add u32_fallible_add)
+```
+
+The `pure` keyword here is a declaration that the term, when used as a
+constructor, has no side-effects. Declaring an external constructor on
+a pure term is a promise by the ISLE programmer that the external Rust
+function we are naming (here `u32_fallible_add`) has no side-effects
+and is thus safe to invoke during the match phase of a rule, when we
+have not committed to a given rule yet.
+
+When an internal constructor body is generated for a term that is pure
+(i.e., if we had `(rule (u32_fallible_add x y) ...)` in our program
+after the above declaration instead of the `extern`), the right-hand
+side expression of each rule that rewrites the term is also checked
+for purity.
+
+#### `partial` Expressions
+
+ISLE's `partial` keyword on a term indicates that the term's 
+constructors may fail to match, otherwise, the ISLE compiler assumes 
+the term's constructors are infallible.
+
+For example, the following term's constructor only matches if the value
+is zero:
+
+```
+;; Match any zero value.
+(decl pure partial is_zero_value (Value) Value)
+(extern constructor is_zero_value is_zero_value)
+```
+
+Internal constructors without the `partial` keyword can 
+only use other constructors that also do not have the `partial` keyword.
+
+#### `if` Shorthand
+
+It is a fairly common idiom that if-let clauses are used as predicates
+on rules, such that their only purpose is to allow a rule to match,
+and not to perform any destructuring with a sub-pattern. For example,
+one might want to write:
+
+```lisp
+(rule (lower (special_inst ...))
+      (if-let _ (isa_extension_enabled))
+      (isa_special_inst ...))
+```
+
+where `isa_extension_enabled` is a pure constructor that is fallible,
+and succeeds only when a condition is true.
+
+To enable more succinct expression of this idiom, we allow the
+following shorthand notation using `if` instead:
+
+```lisp
+(rule (lower (special_inst ...))
+      (if (isa_extension_enabled))
+      (isa_special_inst ...))
+```
 
 ## ISLE to Rust
 
@@ -935,7 +1124,7 @@ Rust. The basic principles are:
    commit and start to invoke constructors to build the right-hand
    side.
    
-   Said another way, the principle is that left-hand sides are
+   Said another way, the principle is that left-hand sides can be
    fallible, and have no side-effects as they execute; right-hand
    sides, in contrast, are infallible. This simplifies the control
    flow and makes reasoning about side-effects (especially with
@@ -991,13 +1180,12 @@ and returns a `U`.
 
 External constructors are infallible: that is, they must succeed, and
 always return their return type. In contrast, internal constructors
-are fallible because they are implemented by a list of rules whose
-patterns may not cover the entire domain. If fallible behavior is
-needed when invoking external Rust code, that behavior should occur in
-an extractor (see below) instead: only pattern left-hand sides are
-meant to be fallible. Note, incidentally, that fallibility in a
-constructor does not backtrack to try other rules; instead it just
-trickles the `None` failure all the way up.
+can be fallible because they are implemented by a list of rules whose
+patterns may not cover the entire domain (in which case, the term 
+should be marked `partial`). If fallible behavior is needed when 
+invoking external Rust code, that behavior should occur in an extractor 
+(see below) instead: only pattern left-hand sides are meant to be 
+fallible. 
 
 #### Extractors
 
@@ -1030,59 +1218,6 @@ and returns an `Option<(A, B, C)>`.
 If an extractor returns `None`, then the generated matching code
 proceeds just as if an enum variant match had failed: it moves on to
 try the next rule in turn.
-
-#### Advanced Extractors: Arg-Polarity
-
-There is one shortcoming in the extractor mechanism as defined so far:
-there is no mechanism to provide additional context or "parameterize"
-an external extractor; it only receives the term to deconstruct, with
-no other parameters.  For example, one might wish to write a
-`(GetNthArg n arg_pattern)` extractor that matches on an instruction,
-fetches the `n`th "arg" from it, and then returns that as the
-extracted match result, allowing `arg_pattern` to match against it.
-
-Inspired by Prolog, where argument data can flow in both directions
-during "unification", we implement a limited form of bidirectionality
-in ISLE for extractor arguments. Specifically, we can declare the
-"polarity" of the arguments to an extractor so that some of the
-arguments flow "in" rather than "out". This lets us provide data to
-the extractor via expressions embedded in the pattern.
-
-An example might make this more clear: we can define a term
-
-```lisp
-    (decl GetNthArg (u32 Arg) Inst)
-```
-
-that we wish to use as in the example given above, and then we can define
-an external extractor
-
-```lisp
-    (extern extractor GetNthArg get_nth_arg (in out))
-```
-
-which indicates that `get_nth_arg()` will take parameters of `&Inst`
-(the value being extracted) *and* `u32` (the in-arg), and return
-`Option<(Arg,)>`, i.e., *just* the out-args.
-
-In order to use this extractor, to avoid parse ambiguity (i.e., to
-avoid the need for the parser to know argument polarity while it is
-still parsing), we require special syntax for the in-argument so that
-it is parsed as an expression: it must be prepended by `<`. So one
-might use `GetNthArg` as follows:
-
-```lisp
-    (rule (Lower (and
-                   (Inst ...)
-                   (GetNthArg <2 second_arg)))
-          ...)
-```
-
-This functionality is meant to improve the expressive power of the
-DSL, but is not intended to be commonly used outside of "binding" or
-"library" ISLE code. In other words, because it is somewhat
-non-intuitive, it is best to wrap it within friendlier internal
-extractors.
 
 ### Mapping Type Declarations to Rust
 
@@ -1337,7 +1472,7 @@ newline). The grammar accepted by the parser is as follows:
 <pattern> ::= <int>
             | <const-ident>
             | "_"
-            | "=" <ident>
+            | <ident>
             | <ident> "@" <pattern>
             | "(" "and" <pattern>* ")"
             | "(" <ident> <pattern-arg>* ")"
@@ -1357,9 +1492,5 @@ newline). The grammar accepted by the parser is as follows:
 
 <extern> ::= "constructor" <ident> <ident>
            | "extractor" [ "infallible" ] <ident> <ident>
-             [ "(" <polarity>* ")" ]
            | "const" <const-ident> <ident> <ty>
-           
-<polarity> ::= "in" | "out"
-
 ```

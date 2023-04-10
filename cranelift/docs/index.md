@@ -11,9 +11,6 @@
  - [Cranelift compared to LLVM](compare-llvm.md)
    LLVM and Cranelift have similarities and differences.
 
- - [Cranelift's register allocator](regalloc.md)
-   This page document Cranelift's current register allocator.
-   
 ## Cranelift crate documentation:
 
  - [cranelift](https://docs.rs/cranelift)
@@ -50,7 +47,7 @@
  - [cranelift-object](https://docs.rs/cranelift-object)
     This crate provides a object-based backend for `cranelift-module`, which
     emits native object files using the
-    `object <https://github.com/gimli-rs/object>`_ library.
+    [object](https://github.com/gimli-rs/object) library.
 
  - [cranelift-jit](https://docs.rs/cranelift-jit)
     This crate provides a JIT backend for `cranelift-module`, which

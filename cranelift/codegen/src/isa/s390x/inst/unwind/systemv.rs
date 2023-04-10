@@ -1,8 +1,8 @@
 //! Unwind information for System V ABI (s390x).
 
 use crate::isa::unwind::systemv::RegisterMappingError;
+use crate::machinst::{Reg, RegClass};
 use gimli::{write::CommonInformationEntry, Encoding, Format, Register};
-use regalloc::{Reg, RegClass};
 
 /// Creates a new s390x common information entry (CIE).
 pub fn create_cie() -> CommonInformationEntry {
@@ -45,7 +45,7 @@ pub fn map_reg(reg: Reg) -> Result<Register, RegisterMappingError> {
         Register(14),
         Register(15),
     ];
-    const FPR_MAP: [gimli::Register; 16] = [
+    const VR_MAP: [gimli::Register; 32] = [
         Register(16),
         Register(20),
         Register(17),
@@ -62,12 +62,27 @@ pub fn map_reg(reg: Reg) -> Result<Register, RegisterMappingError> {
         Register(30),
         Register(27),
         Register(31),
+        Register(68),
+        Register(72),
+        Register(69),
+        Register(73),
+        Register(70),
+        Register(74),
+        Register(71),
+        Register(75),
+        Register(76),
+        Register(80),
+        Register(77),
+        Register(81),
+        Register(78),
+        Register(82),
+        Register(79),
+        Register(83),
     ];
 
-    match reg.get_class() {
-        RegClass::I64 => Ok(GPR_MAP[reg.get_hw_encoding() as usize]),
-        RegClass::F64 => Ok(FPR_MAP[reg.get_hw_encoding() as usize]),
-        _ => Err(RegisterMappingError::UnsupportedRegisterBank("class?")),
+    match reg.class() {
+        RegClass::Int => Ok(GPR_MAP[reg.to_real_reg().unwrap().hw_enc() as usize]),
+        RegClass::Float => Ok(VR_MAP[reg.to_real_reg().unwrap().hw_enc() as usize]),
     }
 }
 
@@ -86,8 +101,7 @@ impl crate::isa::unwind::systemv::RegisterMapper<Reg> for RegisterMapper {
 mod tests {
     use crate::cursor::{Cursor, FuncCursor};
     use crate::ir::{
-        types, AbiParam, ExternalName, Function, InstBuilder, Signature, StackSlotData,
-        StackSlotKind,
+        types, AbiParam, Function, InstBuilder, Signature, StackSlotData, StackSlotKind,
     };
     use crate::isa::{lookup, CallConv};
     use crate::settings::{builder, Flags};
@@ -108,9 +122,11 @@ mod tests {
             Some(StackSlotData::new(StackSlotKind::ExplicitSlot, 64)),
         ));
 
-        context.compile(&*isa).expect("expected compilation");
+        let code = context
+            .compile(&*isa, &mut Default::default())
+            .expect("expected compilation");
 
-        let fde = match context
+        let fde = match code
             .create_unwind_info(isa.as_ref())
             .expect("can create unwind info")
         {
@@ -124,8 +140,7 @@ mod tests {
     }
 
     fn create_function(call_conv: CallConv, stack_slot: Option<StackSlotData>) -> Function {
-        let mut func =
-            Function::with_name_signature(ExternalName::user(0, 0), Signature::new(call_conv));
+        let mut func = Function::with_name_signature(Default::default(), Signature::new(call_conv));
 
         let block0 = func.dfg.make_block();
         let mut pos = FuncCursor::new(&mut func);
@@ -133,7 +148,7 @@ mod tests {
         pos.ins().return_(&[]);
 
         if let Some(stack_slot) = stack_slot {
-            func.stack_slots.push(stack_slot);
+            func.sized_stack_slots.push(stack_slot);
         }
 
         func
@@ -151,9 +166,11 @@ mod tests {
             Some(StackSlotData::new(StackSlotKind::ExplicitSlot, 64)),
         ));
 
-        context.compile(&*isa).expect("expected compilation");
+        let code = context
+            .compile(&*isa, &mut Default::default())
+            .expect("expected compilation");
 
-        let fde = match context
+        let fde = match code
             .create_unwind_info(isa.as_ref())
             .expect("can create unwind info")
         {
@@ -172,7 +189,7 @@ mod tests {
     ) -> Function {
         let mut sig = Signature::new(call_conv);
         sig.params.push(AbiParam::new(types::I32));
-        let mut func = Function::with_name_signature(ExternalName::user(0, 0), sig);
+        let mut func = Function::with_name_signature(Default::default(), sig);
 
         let block0 = func.dfg.make_block();
         let v0 = func.dfg.append_block_param(block0, types::I32);
@@ -181,8 +198,7 @@ mod tests {
 
         let mut pos = FuncCursor::new(&mut func);
         pos.insert_block(block0);
-        pos.ins().brnz(v0, block2, &[]);
-        pos.ins().jump(block1, &[]);
+        pos.ins().brif(v0, block2, &[], block1, &[]);
 
         pos.insert_block(block1);
         pos.ins().return_(&[]);
@@ -191,7 +207,7 @@ mod tests {
         pos.ins().return_(&[]);
 
         if let Some(stack_slot) = stack_slot {
-            func.stack_slots.push(stack_slot);
+            func.sized_stack_slots.push(stack_slot);
         }
 
         func

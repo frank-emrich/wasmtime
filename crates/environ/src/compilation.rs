@@ -1,51 +1,45 @@
 //! A `Compilation` contains the compiled function bodies for a WebAssembly
 //! module.
 
+use crate::obj;
 use crate::{
-    DefinedFuncIndex, FilePos, FunctionBodyData, ModuleTranslation, PrimaryMap, SignatureIndex,
-    StackMap, Tunables, TypeTables, WasmError, WasmFuncType,
+    DefinedFuncIndex, FilePos, FuncIndex, FunctionBodyData, ModuleTranslation, ModuleTypes,
+    PrimaryMap, StackMap, Tunables, WasmError, WasmFuncType,
 };
 use anyhow::Result;
-use object::write::Object;
-use object::{Architecture, BinaryFormat};
+use object::write::{Object, SymbolId};
+use object::{Architecture, BinaryFormat, FileFlags};
 use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 use thiserror::Error;
 
 /// Information about a function, such as trap information, address map,
 /// and stack maps.
-#[derive(Serialize, Deserialize, Clone, Default)]
+#[derive(Serialize, Deserialize, Default)]
 #[allow(missing_docs)]
-pub struct FunctionInfo {
+pub struct WasmFunctionInfo {
     pub start_srcloc: FilePos,
-    pub stack_maps: Vec<StackMapInformation>,
-
-    /// Offset in the text section of where this function starts.
-    pub start: u64,
-    /// The size of the compiled function, in bytes.
-    pub length: u32,
+    pub stack_maps: Box<[StackMapInformation]>,
 }
 
-/// Information about a compiled trampoline which the host can call to enter
-/// wasm.
-#[derive(Serialize, Deserialize, Clone)]
-#[allow(missing_docs)]
-pub struct Trampoline {
-    /// The signature this trampoline is for
-    pub signature: SignatureIndex,
-
-    /// Offset in the text section of where this function starts.
-    pub start: u64,
-    /// The size of the compiled function, in bytes.
+/// Description of where a function is located in the text section of a
+/// compiled image.
+#[derive(Copy, Clone, Serialize, Deserialize)]
+pub struct FunctionLoc {
+    /// The byte offset from the start of the text section where this
+    /// function starts.
+    pub start: u32,
+    /// The byte length of this function's function body.
     pub length: u32,
 }
 
 /// The offset within a function of a GC safepoint, and its associated stack
 /// map.
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct StackMapInformation {
     /// The offset of the GC safepoint within the function's native code. It is
     /// relative to the beginning of the function.
@@ -71,14 +65,27 @@ pub enum CompileError {
     DebugInfoNotSupported,
 }
 
+/// Implementation of an incremental compilation's key/value cache store.
+///
+/// In theory, this could just be Cranelift's `CacheKvStore` trait, but it is not as we want to
+/// make sure that wasmtime isn't too tied to Cranelift internals (and as a matter of fact, we
+/// can't depend on the Cranelift trait here).
+pub trait CacheStore: Send + Sync + std::fmt::Debug {
+    /// Try to retrieve an arbitrary cache key entry, and returns a reference to bytes that were
+    /// inserted via `Self::insert` before.
+    fn get(&self, key: &[u8]) -> Option<Cow<[u8]>>;
+
+    /// Given an arbitrary key and bytes, stores them in the cache.
+    ///
+    /// Returns false when insertion in the cache failed.
+    fn insert(&self, key: &[u8], value: Vec<u8>) -> bool;
+}
+
 /// Abstract trait representing the ability to create a `Compiler` below.
 ///
 /// This is used in Wasmtime to separate compiler implementations, currently
 /// mostly used to separate Cranelift from Wasmtime itself.
 pub trait CompilerBuilder: Send + Sync + fmt::Debug {
-    /// Like the `Clone` trait, but for the boxed trait object.
-    fn clone(&self) -> Box<dyn CompilerBuilder>;
-
     /// Sets the target of compilation to the target specified.
     fn target(&mut self, target: target_lexicon::Triple) -> Result<()>;
 
@@ -102,6 +109,12 @@ pub trait CompilerBuilder: Send + Sync + fmt::Debug {
     /// Returns a list of all possible settings that can be configured with
     /// [`CompilerBuilder::set`] and [`CompilerBuilder::enable`].
     fn settings(&self) -> Vec<Setting>;
+
+    /// Enables Cranelift's incremental compilation cache, using the given `CacheStore`
+    /// implementation.
+    ///
+    /// This will return an error if the compiler does not support incremental compilation.
+    fn enable_incremental_compilation(&mut self, cache_store: Arc<dyn CacheStore>) -> Result<()>;
 
     /// Builds a new [`Compiler`] object from this configuration.
     fn build(&self) -> Result<Box<dyn Compiler>>;
@@ -134,6 +147,14 @@ pub enum SettingKind {
     Preset,
 }
 
+/// Types of objects that can be created by `Compiler::object`
+pub enum ObjectKind {
+    /// A core wasm compilation artifact
+    Module,
+    /// A component compilation artifact
+    Component,
+}
+
 /// An implementation of a compiler which can compile WebAssembly functions to
 /// machine code and perform other miscellaneous tasks needed by the JIT runtime.
 pub trait Compiler: Send + Sync {
@@ -148,32 +169,45 @@ pub trait Compiler: Send + Sync {
         index: DefinedFuncIndex,
         data: FunctionBodyData<'_>,
         tunables: &Tunables,
-        types: &TypeTables,
+        types: &ModuleTypes,
+    ) -> Result<(WasmFunctionInfo, Box<dyn Any + Send>), CompileError>;
+
+    /// Creates a function of type `VMTrampoline` which will then call the
+    /// function pointer argument which has the `ty` type provided.
+    fn compile_host_to_wasm_trampoline(
+        &self,
+        ty: &WasmFuncType,
     ) -> Result<Box<dyn Any + Send>, CompileError>;
 
-    /// Collects the results of compilation into an in-memory object.
+    /// Appends a list of compiled functions to an in-memory object.
     ///
-    /// This function will receive the same `Box<dyn Ayn>` produced as part of
-    /// `compile_function`, as well as the general compilation environment with
-    /// the translation/types. This method is expected to populate information
-    /// in the object file such as:
+    /// This function will receive the same `Box<dyn Any>` produced as part of
+    /// compilation from functions like `compile_function`,
+    /// `compile_host_to_wasm_trampoline`, and other component-related shims.
+    /// Internally this will take all of these functions and add information to
+    /// the object such as:
     ///
     /// * Compiled code in a `.text` section
     /// * Unwind information in Wasmtime-specific sections
-    /// * DWARF debugging information for the host, if `emit_dwarf` is `true`
-    ///   and the compiler supports it.
     /// * Relocations, if necessary, for the text section
     ///
-    /// The final result of compilation will contain more sections inserted by
-    /// the compiler-agnostic runtime.
-    fn emit_obj(
+    /// Each function is accompanied with its desired symbol name and the return
+    /// value of this function is the symbol for each function as well as where
+    /// each function was placed within the object.
+    ///
+    /// The `resolve_reloc` argument is intended to resolving relocations
+    /// between function, chiefly resolving intra-module calls within one core
+    /// wasm module. The closure here takes two arguments: first the index
+    /// within `funcs` that is being resolved and next the `FuncIndex` which is
+    /// the relocation target to resolve. The return value is an index within
+    /// `funcs` that the relocation points to.
+    fn append_code(
         &self,
-        module: &ModuleTranslation,
-        types: &TypeTables,
-        funcs: PrimaryMap<DefinedFuncIndex, Box<dyn Any + Send>>,
-        tunables: &Tunables,
         obj: &mut Object<'static>,
-    ) -> Result<(PrimaryMap<DefinedFuncIndex, FunctionInfo>, Vec<Trampoline>)>;
+        funcs: &[(String, Box<dyn Any + Send>)],
+        tunables: &Tunables,
+        resolve_reloc: &dyn Fn(usize, FuncIndex) -> usize,
+    ) -> Result<Vec<(SymbolId, FunctionLoc)>>;
 
     /// Inserts two functions for host-to-wasm and wasm-to-host trampolines into
     /// the `obj` provided.
@@ -187,7 +221,7 @@ pub trait Compiler: Send + Sync {
         ty: &WasmFuncType,
         host_fn: usize,
         obj: &mut Object<'static>,
-    ) -> Result<(Trampoline, Trampoline)>;
+    ) -> Result<(FunctionLoc, FunctionLoc)>;
 
     /// Creates a new `Object` file which is used to build the results of a
     /// compilation into.
@@ -195,11 +229,11 @@ pub trait Compiler: Send + Sync {
     /// The returned object file will have an appropriate
     /// architecture/endianness for `self.triple()`, but at this time it is
     /// always an ELF file, regardless of target platform.
-    fn object(&self) -> Result<Object<'static>> {
+    fn object(&self, kind: ObjectKind) -> Result<Object<'static>> {
         use target_lexicon::Architecture::*;
 
         let triple = self.triple();
-        Ok(Object::new(
+        let mut obj = Object::new(
             BinaryFormat::Elf,
             match triple.architecture {
                 X86_32(_) => Architecture::I386,
@@ -207,6 +241,7 @@ pub trait Compiler: Send + Sync {
                 Arm(_) => Architecture::Arm,
                 Aarch64(_) => Architecture::Aarch64,
                 S390x => Architecture::S390x,
+                Riscv64(_) => Architecture::Riscv64,
                 architecture => {
                     anyhow::bail!("target architecture {:?} is unsupported", architecture,);
                 }
@@ -215,7 +250,16 @@ pub trait Compiler: Send + Sync {
                 target_lexicon::Endianness::Little => object::Endianness::Little,
                 target_lexicon::Endianness::Big => object::Endianness::Big,
             },
-        ))
+        );
+        obj.flags = FileFlags::Elf {
+            os_abi: obj::ELFOSABI_WASMTIME,
+            e_flags: match kind {
+                ObjectKind::Module => obj::EF_WASMTIME_MODULE,
+                ObjectKind::Component => obj::EF_WASMTIME_COMPONENT,
+            },
+            abi_version: 0,
+        };
+        Ok(obj)
     }
 
     /// Returns the target triple that this compiler is compiling for.
@@ -225,17 +269,62 @@ pub trait Compiler: Send + Sync {
     /// compilation target. Note that this may be an upper-bound where the
     /// alignment is larger than necessary for some platforms since it may
     /// depend on the platform's runtime configuration.
-    fn page_size_align(&self) -> u64;
+    fn page_size_align(&self) -> u64 {
+        use target_lexicon::*;
+        match (self.triple().operating_system, self.triple().architecture) {
+            (
+                OperatingSystem::MacOSX { .. }
+                | OperatingSystem::Darwin
+                | OperatingSystem::Ios
+                | OperatingSystem::Tvos,
+                Architecture::Aarch64(..),
+            ) => 0x4000,
+            // 64 KB is the maximal page size (i.e. memory translation granule size)
+            // supported by the architecture and is used on some platforms.
+            (_, Architecture::Aarch64(..)) => 0x10000,
+            _ => 0x1000,
+        }
+    }
 
     /// Returns a list of configured settings for this compiler.
     fn flags(&self) -> BTreeMap<String, FlagValue>;
 
     /// Same as [`Compiler::flags`], but ISA-specific (a cranelift-ism)
     fn isa_flags(&self) -> BTreeMap<String, FlagValue>;
+
+    /// Get a flag indicating whether branch protection is enabled.
+    fn is_branch_protection_enabled(&self) -> bool;
+
+    /// Returns a suitable compiler usable for component-related compliations.
+    ///
+    /// Note that the `ComponentCompiler` trait can also be implemented for
+    /// `Self` in which case this function would simply return `self`.
+    #[cfg(feature = "component-model")]
+    fn component_compiler(&self) -> &dyn crate::component::ComponentCompiler;
+
+    /// Appends generated DWARF sections to the `obj` specified for the compiled
+    /// functions.
+    fn append_dwarf(
+        &self,
+        obj: &mut Object<'_>,
+        translation: &ModuleTranslation<'_>,
+        funcs: &PrimaryMap<DefinedFuncIndex, (SymbolId, &(dyn Any + Send))>,
+    ) -> Result<()>;
+
+    /// The function alignment required by this ISA.
+    fn function_alignment(&self) -> u32;
+
+    /// Creates a new System V Common Information Entry for the ISA.
+    ///
+    /// Returns `None` if the ISA does not support System V unwind information.
+    fn create_systemv_cie(&self) -> Option<gimli::write::CommonInformationEntry> {
+        // By default, an ISA cannot create a System V CIE.
+        None
+    }
 }
 
 /// Value of a configured setting for a [`Compiler`]
-#[derive(Serialize, Deserialize, Hash, Eq, PartialEq)]
+#[derive(Serialize, Deserialize, Hash, Eq, PartialEq, Debug)]
 pub enum FlagValue {
     /// Name of the value that has been configured for this setting.
     Enum(Cow<'static, str>),

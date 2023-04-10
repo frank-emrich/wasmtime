@@ -13,16 +13,26 @@ struct MemoryGrowFailureDetector {
 }
 
 impl ResourceLimiter for MemoryGrowFailureDetector {
-    fn memory_growing(&mut self, current: usize, desired: usize, _maximum: Option<usize>) -> bool {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> Result<bool> {
         self.current = current;
         self.desired = desired;
-        true
+        Ok(true)
     }
     fn memory_grow_failed(&mut self, err: &anyhow::Error) {
         self.error = Some(err.to_string());
     }
-    fn table_growing(&mut self, _current: u32, _desired: u32, _maximum: Option<u32>) -> bool {
-        true
+    fn table_growing(
+        &mut self,
+        _current: u32,
+        _desired: u32,
+        _maximum: Option<u32>,
+    ) -> Result<bool> {
+        Ok(true)
     }
 }
 
@@ -84,7 +94,7 @@ fn custom_limiter_detect_os_oom_failure() -> Result<()> {
     // The memory_grow_failed hook should show Linux gave OOM:
     let err_msg = store.data().error.as_ref().unwrap();
     assert!(
-        err_msg.starts_with("System call failed: Cannot allocate memory"),
+        err_msg.starts_with("Cannot allocate memory"),
         "unexpected error: {}",
         err_msg
     );

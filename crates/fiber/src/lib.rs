@@ -4,15 +4,17 @@ use std::io;
 use std::marker::PhantomData;
 use std::panic::{self, AssertUnwindSafe};
 
-#[cfg(windows)]
-mod windows;
-#[cfg(windows)]
-use windows as imp;
-
-#[cfg(unix)]
-mod unix;
-#[cfg(unix)]
-use unix as imp;
+cfg_if::cfg_if! {
+    if #[cfg(windows)] {
+        mod windows;
+        use windows as imp;
+    } else if #[cfg(unix)] {
+        pub mod unix;
+        use unix as imp;
+    } else {
+        compile_error!("fibers are not supported on this platform");
+    }
+}
 
 /// Represents an execution stack to use for a fiber.
 #[derive(Debug)]
@@ -42,6 +44,14 @@ impl FiberStack {
     pub fn top(&self) -> Option<*mut u8> {
         self.0.top()
     }
+
+    pub unsafe fn parent(&self) -> *mut u8 {
+        self.0.parent()
+    }
+
+    pub unsafe fn write_parent(&self, tsp: *mut u8) {
+        self.0.write_parent(tsp);
+    }
 }
 
 pub struct Fiber<'a, Resume, Yield, Return> {
@@ -56,7 +66,7 @@ pub struct Suspend<Resume, Yield, Return> {
     _phantom: PhantomData<(Resume, Yield, Return)>,
 }
 
-enum RunResult<Resume, Yield, Return> {
+pub enum RunResult<Resume, Yield, Return> {
     Executing,
     Resuming(Resume),
     Yield(Yield),
@@ -232,6 +242,8 @@ mod tests {
                 .any(|s| s.contains("look_for_me"))
                 // TODO: apparently windows unwind routines don't unwind through fibers, so this will always fail. Is there a way we can fix that?
                 || cfg!(windows)
+                // TODO: the system libunwind is broken (#2808)
+                || cfg!(all(target_os = "macos", target_arch = "aarch64"))
             );
         }
 

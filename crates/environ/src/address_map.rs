@@ -1,6 +1,6 @@
 //! Data structures to provide transformation of the source
-// addresses of a WebAssembly module into the native code.
 
+use crate::obj::ELF_WASMTIME_ADDRMAP;
 use object::write::{Object, StandardSegment};
 use object::{Bytes, LittleEndian, SectionKind, U32Bytes};
 use serde::{Deserialize, Serialize};
@@ -65,35 +65,6 @@ pub struct AddressMapSection {
     last_offset: u32,
 }
 
-/// A custom Wasmtime-specific section of our compilation image which stores
-/// mapping data from offsets in the image to offset in the original wasm
-/// binary.
-///
-/// This section has a custom binary encoding. Currently its encoding is:
-///
-/// * The section starts with a 32-bit little-endian integer. This integer is
-///   how many entries are in the following two arrays.
-/// * Next is an array with the previous count number of 32-bit little-endian
-///   integers. This array is a sorted list of relative offsets within the text
-///   section. This is intended to be a lookup array to perform a binary search
-///   on an offset within the text section on this array.
-/// * Finally there is another array, with the same count as before, also of
-///   32-bit little-endian integers. These integers map 1:1 with the previous
-///   array of offsets, and correspond to what the original offset was in the
-///   wasm file.
-///
-/// Decoding this section is intentionally simple, it only requires loading a
-/// 32-bit little-endian integer plus some bounds checks. Reading this section
-/// is done with the `lookup_file_pos` function below. Reading involves
-/// performing a binary search on the first array using the index found for the
-/// native code offset to index into the second array and find the wasm code
-/// offset.
-///
-/// At this time this section has an alignment of 1, which means all reads of it
-/// are unaligned. Additionally at this time the 32-bit encodings chosen here
-/// mean that >=4gb text sections are not supported.
-pub const ELF_WASMTIME_ADDRMAP: &str = ".wasmtime.addrmap";
-
 impl AddressMapSection {
     /// Pushes a new set of instruction mapping information for a function added
     /// in the exectuable.
@@ -145,6 +116,23 @@ impl AddressMapSection {
     }
 }
 
+/// Parse an `ELF_WASMTIME_ADDRMAP` section, returning the slice of code offsets
+/// and the slice of associated file positions for each offset.
+fn parse_address_map(
+    section: &[u8],
+) -> Option<(&[U32Bytes<LittleEndian>], &[U32Bytes<LittleEndian>])> {
+    let mut section = Bytes(section);
+    // NB: this matches the encoding written by `append_to` above.
+    let count = section.read::<U32Bytes<LittleEndian>>().ok()?;
+    let count = usize::try_from(count.get(LittleEndian)).ok()?;
+    let (offsets, section) =
+        object::slice_from_bytes::<U32Bytes<LittleEndian>>(section.0, count).ok()?;
+    let (positions, section) =
+        object::slice_from_bytes::<U32Bytes<LittleEndian>>(section, count).ok()?;
+    debug_assert!(section.is_empty());
+    Some((offsets, positions))
+}
+
 /// Lookup an `offset` within an encoded address map section, returning the
 /// original `FilePos` that corresponds to the offset, if found.
 ///
@@ -156,15 +144,7 @@ impl AddressMapSection {
 /// section of the pc that is being looked up. If `offset` is out of range or
 /// doesn't correspond to anything in this file then `None` is returned.
 pub fn lookup_file_pos(section: &[u8], offset: usize) -> Option<FilePos> {
-    let mut section = Bytes(section);
-    // NB: this matches the encoding written by `append_to` above.
-    let count = section.read::<U32Bytes<LittleEndian>>().ok()?;
-    let count = usize::try_from(count.get(LittleEndian)).ok()?;
-    let (offsets, section) =
-        object::slice_from_bytes::<U32Bytes<LittleEndian>>(section.0, count).ok()?;
-    let (positions, section) =
-        object::slice_from_bytes::<U32Bytes<LittleEndian>>(section, count).ok()?;
-    debug_assert!(section.is_empty());
+    let (offsets, positions) = parse_address_map(section)?;
 
     // First perform a binary search on the `offsets` array. This is a sorted
     // array of offsets within the text section, which is conveniently what our
@@ -188,4 +168,25 @@ pub fn lookup_file_pos(section: &[u8], offset: usize) -> Option<FilePos> {
     // lookup the actual `FilePos` value in the `positions` array.
     let pos = positions.get(index)?;
     Some(FilePos(pos.get(LittleEndian)))
+}
+
+/// Iterate over the address map contained in the given address map section.
+///
+/// This function takes a `section` as its first argument which must have been
+/// created with `AddressMapSection` above. This is intended to be the raw
+/// `ELF_WASMTIME_ADDRMAP` section from the compilation artifact.
+///
+/// The yielded offsets are relative to the start of the text section for this
+/// map's code object.
+pub fn iterate_address_map<'a>(
+    section: &'a [u8],
+) -> Option<impl Iterator<Item = (u32, FilePos)> + 'a> {
+    let (offsets, positions) = parse_address_map(section)?;
+
+    Some(
+        offsets
+            .iter()
+            .map(|o| o.get(LittleEndian))
+            .zip(positions.iter().map(|pos| FilePos(pos.get(LittleEndian)))),
+    )
 }

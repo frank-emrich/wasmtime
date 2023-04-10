@@ -155,25 +155,39 @@ typedef union wasmtime_valunion {
  */
 typedef union wasmtime_val_raw {
   /// Field for when this val is a WebAssembly `i32` value.
+  ///
+  /// Note that this field is always stored in a little-endian format.
   int32_t i32;
   /// Field for when this val is a WebAssembly `i64` value.
+  ///
+  /// Note that this field is always stored in a little-endian format.
   int64_t i64;
   /// Field for when this val is a WebAssembly `f32` value.
+  ///
+  /// Note that this field is always stored in a little-endian format.
   float32_t f32;
   /// Field for when this val is a WebAssembly `f64` value.
+  ///
+  /// Note that this field is always stored in a little-endian format.
   float64_t f64;
   /// Field for when this val is a WebAssembly `v128` value.
+  ///
+  /// Note that this field is always stored in a little-endian format.
   wasmtime_v128 v128;
   /// Field for when this val is a WebAssembly `funcref` value.
   ///
   /// If this is set to 0 then it's a null funcref, otherwise this must be
   /// passed to `wasmtime_func_from_raw` to determine the `wasmtime_func_t`.
+  ///
+  /// Note that this field is always stored in a little-endian format.
   size_t funcref;
   /// Field for when this val is a WebAssembly `externref` value.
   ///
   /// If this is set to 0 then it's a null externref, otherwise this must be
   /// passed to `wasmtime_externref_from_raw` to determine the
   /// `wasmtime_externref_t`.
+  ///
+  /// Note that this field is always stored in a little-endian format.
   size_t externref;
 } wasmtime_val_raw_t;
 

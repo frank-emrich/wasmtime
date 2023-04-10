@@ -1,50 +1,35 @@
 test compile precise-output
-set unwind_info=false
 target aarch64
 
-function %f() {
+function %trap() {
 block0:
   trap user0
 }
 
-; VCode_ShowWithRRU {{
-;   Entry block: 0
-; Block 0:
-;   (original IR block: block0)
-;   (instruction range: 0 .. 1)
-;   Inst 0:   udf
-; }}
+; VCode:
+; block0:
+;   udf #0xc11f
+; 
+; Disassembled:
+; block0: ; offset 0x0
+;   .byte 0x1f, 0xc1, 0x00, 0x00 ; trap: user0
 
-function %g(i64) {
-block0(v0: i64):
-  v1 = iconst.i64 42
-  v2 = ifcmp v0, v1
-  trapif eq v2, user0
+function %trap_iadd_ifcout(i64, i64) {
+block0(v0: i64, v1: i64):
+  v2 = uadd_overflow_trap v0, v1, user0
   return
 }
 
-; VCode_ShowWithRRU {{
-;   Entry block: 0
-; Block 0:
-;   (original IR block: block0)
-;   (instruction range: 0 .. 3)
-;   Inst 0:   subs xzr, x0, #42
-;   Inst 1:   b.ne 8 ; udf
-;   Inst 2:   ret
-; }}
-
-function %h() {
-block0:
-  debugtrap
-  return
-}
-
-; VCode_ShowWithRRU {{
-;   Entry block: 0
-; Block 0:
-;   (original IR block: block0)
-;   (instruction range: 0 .. 2)
-;   Inst 0:   brk #0
-;   Inst 1:   ret
-; }}
+; VCode:
+; block0:
+;   adds x3, x0, x1
+;   b.hs #trap=user0
+;   ret
+; 
+; Disassembled:
+; block0: ; offset 0x0
+;   adds x3, x0, x1
+;   b.hs #0xc
+;   ret
+;   .byte 0x1f, 0xc1, 0x00, 0x00 ; trap: user0
 

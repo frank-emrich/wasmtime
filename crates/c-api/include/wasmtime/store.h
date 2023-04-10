@@ -80,6 +80,44 @@ WASM_API_EXTERN wasmtime_store_t *wasmtime_store_new(
 WASM_API_EXTERN wasmtime_context_t *wasmtime_store_context(wasmtime_store_t *store);
 
 /**
+ * \brief Provides limits for a store. Used by hosts to limit resource
+ * consumption of instances. Use negative value to keep the default value
+ * for the limit.
+ *
+ * \param store store where the limits should be set.
+ * \param memory_size the maximum number of bytes a linear memory can grow to.
+ * Growing a linear memory beyond this limit will fail. By default,
+ * linear memory will not be limited.
+ * \param table_elements the maximum number of elements in a table.
+ * Growing a table beyond this limit will fail. By default, table elements
+ * will not be limited.
+ * \param instances the maximum number of instances that can be created
+ * for a Store. Module instantiation will fail if this limit is exceeded.
+ * This value defaults to 10,000.
+ * \param tables the maximum number of tables that can be created for a Store.
+ * Module instantiation will fail if this limit is exceeded. This value
+ * defaults to 10,000.
+ * \param memories the maximum number of linear memories that can be created
+ * for a Store. Instantiation will fail with an error if this limit is exceeded.
+ * This value defaults to 10,000.
+ *
+ * Use any negative value for the parameters that should be kept on
+ * the default values.
+ *
+ * Note that the limits are only used to limit the creation/growth of
+ * resources in the future, this does not retroactively attempt to apply
+ * limits to the store.
+ */
+WASM_API_EXTERN void wasmtime_store_limiter(
+        wasmtime_store_t *store,
+        int64_t memory_size,
+        int64_t table_elements,
+        int64_t instances,
+        int64_t tables,
+        int64_t memories
+);
+
+/**
  * \brief Deletes a store.
  */
 WASM_API_EXTERN void wasmtime_store_delete(wasmtime_store_t *store);
@@ -154,7 +192,7 @@ WASM_API_EXTERN bool wasmtime_context_fuel_consumed(const wasmtime_context_t *co
 WASM_API_EXTERN wasmtime_error_t *wasmtime_context_consume_fuel(wasmtime_context_t *context, uint64_t fuel, uint64_t *remaining);
 
 /**
- * \brief Configres WASI state within the specified store.
+ * \brief Configures WASI state within the specified store.
  *
  * This function is required if #wasmtime_linker_define_wasi is called. This
  * will configure the WASI state for instances defined within this store to the
@@ -167,47 +205,15 @@ WASM_API_EXTERN wasmtime_error_t *wasmtime_context_consume_fuel(wasmtime_context
 WASM_API_EXTERN wasmtime_error_t *wasmtime_context_set_wasi(wasmtime_context_t *context, wasi_config_t *wasi);
 
 /**
- * \typedef wasmtime_interrupt_handle_t
- * \brief Convenience alias for #wasmtime_interrupt_handle_t
+ * \brief Configures the relative deadline at which point WebAssembly code will
+ * trap.
  *
- * \struct wasmtime_interrupt_handle_t
- * \brief A handle used to interrupt executing WebAssembly code.
+ * This function configures the store-local epoch deadline after which point
+ * WebAssembly code will trap.
  *
- * This structure is an opaque handle that represents a handle to a store. This
- * handle can be used to remotely (from another thread) interrupt currently
- * executing WebAssembly code.
- *
- * This structure is safe to share from multiple threads.
+ * See also #wasmtime_config_epoch_interruption_set.
  */
-typedef struct wasmtime_interrupt_handle wasmtime_interrupt_handle_t;
-
-/**
- * \brief Creates a new interrupt handle to interrupt executing WebAssembly from
- * the provided store.
- *
- * There are a number of caveats about how interrupt is handled in Wasmtime. For
- * more information see the [Rust
- * documentation](https://bytecodealliance.github.io/wasmtime/api/wasmtime/struct.Store.html#method.interrupt_handle).
- *
- * This function returns `NULL` if the store's configuration does not have
- * interrupts enabled. See #wasmtime_config_interruptable_set.
- */
-WASM_API_EXTERN wasmtime_interrupt_handle_t *wasmtime_interrupt_handle_new(wasmtime_context_t *context);
-
-/**
- * \brief Requests that WebAssembly code running in the store attached to this
- * interrupt handle is interrupted.
- *
- * For more information about interrupts see #wasmtime_interrupt_handle_new.
- *
- * Note that this is safe to call from any thread.
- */
-WASM_API_EXTERN void wasmtime_interrupt_handle_interrupt(wasmtime_interrupt_handle_t *handle);
-
-/**
- * \brief Deletes an interrupt handle.
- */
-WASM_API_EXTERN void wasmtime_interrupt_handle_delete(wasmtime_interrupt_handle_t *handle);
+WASM_API_EXTERN void wasmtime_context_set_epoch_deadline(wasmtime_context_t *context, uint64_t ticks_beyond_current);
 
 #ifdef __cplusplus
 }  // extern "C"

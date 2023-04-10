@@ -3,7 +3,8 @@ use std::cell::UnsafeCell;
 use std::ffi::c_void;
 use std::sync::Arc;
 use wasmtime::{
-    AsContext, AsContextMut, InterruptHandle, Store, StoreContext, StoreContextMut, Val,
+    AsContext, AsContextMut, Store, StoreContext, StoreContextMut, StoreLimits, StoreLimitsBuilder,
+    Val,
 };
 
 /// This representation of a `Store` is used to implement the `wasm.h` API.
@@ -62,6 +63,8 @@ pub struct wasmtime_store_t {
     pub(crate) store: Store<StoreData>,
 }
 
+wasmtime_c_api_macros::declare_own!(wasmtime_store_t);
+
 pub type CStoreContext<'a> = StoreContext<'a, StoreData>;
 pub type CStoreContextMut<'a> = StoreContextMut<'a, StoreData>;
 
@@ -77,10 +80,10 @@ pub struct StoreData {
     /// Temporary storage for usage during host->wasm calls, same as above but
     /// for a different direction.
     pub wasm_val_storage: Vec<Val>,
-}
 
-#[no_mangle]
-pub extern "C" fn wasmtime_store_delete(_: Box<wasmtime_store_t>) {}
+    /// Limits for the store.
+    pub store_limits: StoreLimits,
+}
 
 #[no_mangle]
 pub extern "C" fn wasmtime_store_new(
@@ -97,6 +100,7 @@ pub extern "C" fn wasmtime_store_new(
                 wasi: None,
                 hostcall_val_storage: Vec::new(),
                 wasm_val_storage: Vec::new(),
+                store_limits: StoreLimits::default(),
             },
         ),
     })
@@ -105,6 +109,35 @@ pub extern "C" fn wasmtime_store_new(
 #[no_mangle]
 pub extern "C" fn wasmtime_store_context(store: &mut wasmtime_store_t) -> CStoreContextMut<'_> {
     store.store.as_context_mut()
+}
+
+#[no_mangle]
+pub extern "C" fn wasmtime_store_limiter(
+    store: &mut wasmtime_store_t,
+    memory_size: i64,
+    table_elements: i64,
+    instances: i64,
+    tables: i64,
+    memories: i64,
+) {
+    let mut limiter = StoreLimitsBuilder::new();
+    if memory_size >= 0 {
+        limiter = limiter.memory_size(memory_size as usize);
+    }
+    if table_elements >= 0 {
+        limiter = limiter.table_elements(table_elements as u32);
+    }
+    if instances >= 0 {
+        limiter = limiter.instances(instances as usize);
+    }
+    if tables >= 0 {
+        limiter = limiter.tables(tables as usize);
+    }
+    if memories >= 0 {
+        limiter = limiter.memories(memories as usize);
+    }
+    store.store.data_mut().store_limits = limiter.build();
+    store.store.limiter(|data| &mut data.store_limits);
 }
 
 #[no_mangle]
@@ -163,24 +196,10 @@ pub extern "C" fn wasmtime_context_consume_fuel(
     })
 }
 
-#[repr(C)]
-pub struct wasmtime_interrupt_handle_t {
-    handle: InterruptHandle,
-}
-
 #[no_mangle]
-pub extern "C" fn wasmtime_interrupt_handle_new(
-    store: CStoreContext<'_>,
-) -> Option<Box<wasmtime_interrupt_handle_t>> {
-    Some(Box::new(wasmtime_interrupt_handle_t {
-        handle: store.interrupt_handle().ok()?,
-    }))
+pub extern "C" fn wasmtime_context_set_epoch_deadline(
+    mut store: CStoreContextMut<'_>,
+    ticks_beyond_current: u64,
+) {
+    store.set_epoch_deadline(ticks_beyond_current);
 }
-
-#[no_mangle]
-pub extern "C" fn wasmtime_interrupt_handle_interrupt(handle: &wasmtime_interrupt_handle_t) {
-    handle.handle.interrupt();
-}
-
-#[no_mangle]
-pub extern "C" fn wasmtime_interrupt_handle_delete(_: Box<wasmtime_interrupt_handle_t>) {}

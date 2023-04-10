@@ -113,6 +113,17 @@ impl Value {
             _ => None,
         }
     }
+
+    /// Builds a string from the current value
+    pub fn value_string(&self) -> String {
+        match self.kind() {
+            SettingKind::Enum => self.as_enum().map(|b| b.to_string()),
+            SettingKind::Num => self.as_num().map(|b| b.to_string()),
+            SettingKind::Bool => self.as_bool().map(|b| b.to_string()),
+            SettingKind::Preset => unreachable!(),
+        }
+        .unwrap()
+    }
 }
 
 impl fmt::Display for Value {
@@ -150,9 +161,9 @@ impl Builder {
     }
 
     /// Extract contents of builder once everything is configured.
-    pub fn state_for(self, name: &str) -> Box<[u8]> {
+    pub fn state_for(&self, name: &str) -> &[u8] {
         assert_eq!(name, self.template.name);
-        self.bytes
+        &self.bytes
     }
 
     /// Iterates the available settings in the builder.
@@ -507,39 +518,46 @@ mod tests {
     fn display_default() {
         let b = builder();
         let f = Flags::new(b);
-        assert_eq!(
-            f.to_string(),
-            r#"[shared]
-regalloc = "backtracking"
+        let actual = f.to_string();
+        let expected = r#"[shared]
 opt_level = "none"
 tls_model = "none"
 libcall_call_conv = "isa_default"
-baldrdash_prologue_words = 0
 probestack_size_log2 = 12
+probestack_strategy = "outline"
+regalloc_checker = false
+regalloc_verbose_logs = false
+enable_alias_analysis = true
 enable_verifier = true
 is_pic = false
 use_colocated_libcalls = false
-avoid_div_traps = false
 enable_float = true
 enable_nan_canonicalization = false
 enable_pinned_reg = false
-use_pinned_reg_as_heap_base = false
 enable_simd = false
 enable_atomics = true
 enable_safepoints = false
 enable_llvm_abi_extensions = false
 unwind_info = true
+preserve_frame_pointers = false
 machine_code_cfg_info = false
-emit_all_ones_funcaddrs = false
-enable_probestack = true
+enable_probestack = false
 probestack_func_adjusts_sp = false
 enable_jump_tables = true
 enable_heap_access_spectre_mitigation = true
-"#
-        );
+enable_table_access_spectre_mitigation = true
+enable_incremental_compilation_cache_checks = false
+"#;
+        if actual != expected {
+            panic!(
+                "Default settings do not match expectations:\n\n{}",
+                similar::TextDiff::from_lines(expected, &actual)
+                    .unified_diff()
+                    .header("expected", "actual")
+            );
+        }
         assert_eq!(f.opt_level(), super::OptLevel::None);
         assert_eq!(f.enable_simd(), false);
-        assert_eq!(f.baldrdash_prologue_words(), 0);
     }
 
     #[test]

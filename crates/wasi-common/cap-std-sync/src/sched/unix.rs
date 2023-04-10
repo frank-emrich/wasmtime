@@ -1,15 +1,8 @@
 use cap_std::time::Duration;
-use io_lifetimes::{AsFd, BorrowedFd};
 use rustix::io::{PollFd, PollFlags};
 use std::convert::TryInto;
-use wasi_common::{
-    file::WasiFile,
-    sched::{
-        subscription::{RwEventFlags, Subscription},
-        Poll,
-    },
-    Error, ErrorExt,
-};
+use wasi_common::sched::subscription::{RwEventFlags, Subscription};
+use wasi_common::{sched::Poll, Error, ErrorExt};
 
 pub async fn poll_oneoff<'a>(poll: &mut Poll<'a>) -> Result<(), Error> {
     if poll.is_empty() {
@@ -19,16 +12,18 @@ pub async fn poll_oneoff<'a>(poll: &mut Poll<'a>) -> Result<(), Error> {
     for s in poll.rw_subscriptions() {
         match s {
             Subscription::Read(f) => {
-                let fd = wasi_file_fd(f.file).ok_or(
-                    Error::invalid_argument().context("read subscription fd downcast failed"),
-                )?;
+                let fd = f
+                    .file
+                    .pollable()
+                    .ok_or(Error::invalid_argument().context("file is not pollable"))?;
                 pollfds.push(PollFd::from_borrowed_fd(fd, PollFlags::IN));
             }
 
             Subscription::Write(f) => {
-                let fd = wasi_file_fd(f.file).ok_or(
-                    Error::invalid_argument().context("write subscription fd downcast failed"),
-                )?;
+                let fd = f
+                    .file
+                    .pollable()
+                    .ok_or(Error::invalid_argument().context("file is not pollable"))?;
                 pollfds.push(PollFd::from_borrowed_fd(fd, PollFlags::OUT));
             }
             Subscription::MonotonicClock { .. } => unreachable!(),
@@ -51,8 +46,8 @@ pub async fn poll_oneoff<'a>(poll: &mut Poll<'a>) -> Result<(), Error> {
         );
         match rustix::io::poll(&mut pollfds, poll_timeout) {
             Ok(ready) => break ready,
-            Err(rustix::io::Error::INTR) => continue,
-            Err(err) => return Err(err.into()),
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(err) => return Err(std::io::Error::from(err).into()),
         }
     };
     if ready > 0 {
@@ -60,7 +55,7 @@ pub async fn poll_oneoff<'a>(poll: &mut Poll<'a>) -> Result<(), Error> {
             let revents = pollfd.revents();
             let (nbytes, rwsub) = match rwsub {
                 Subscription::Read(sub) => {
-                    let ready = sub.file.num_ready_bytes().await?;
+                    let ready = sub.file.num_ready_bytes()?;
                     (std::cmp::max(ready, 1), sub)
                 }
                 Subscription::Write(sub) => (0, sub),
@@ -84,31 +79,4 @@ pub async fn poll_oneoff<'a>(poll: &mut Poll<'a>) -> Result<(), Error> {
             .unwrap()
     }
     Ok(())
-}
-
-fn wasi_file_fd(f: &dyn WasiFile) -> Option<BorrowedFd<'_>> {
-    let a = f.as_any();
-    if a.is::<crate::file::File>() {
-        Some(a.downcast_ref::<crate::file::File>().unwrap().as_fd())
-    } else if a.is::<crate::net::TcpStream>() {
-        Some(a.downcast_ref::<crate::net::TcpStream>().unwrap().as_fd())
-    } else if a.is::<crate::net::TcpListener>() {
-        Some(a.downcast_ref::<crate::net::TcpListener>().unwrap().as_fd())
-    } else if a.is::<crate::net::UnixStream>() {
-        Some(a.downcast_ref::<crate::net::UnixStream>().unwrap().as_fd())
-    } else if a.is::<crate::net::UnixListener>() {
-        Some(
-            a.downcast_ref::<crate::net::UnixListener>()
-                .unwrap()
-                .as_fd(),
-        )
-    } else if a.is::<crate::stdio::Stdin>() {
-        Some(a.downcast_ref::<crate::stdio::Stdin>().unwrap().as_fd())
-    } else if a.is::<crate::stdio::Stdout>() {
-        Some(a.downcast_ref::<crate::stdio::Stdout>().unwrap().as_fd())
-    } else if a.is::<crate::stdio::Stderr>() {
-        Some(a.downcast_ref::<crate::stdio::Stderr>().unwrap().as_fd())
-    } else {
-        None
-    }
 }

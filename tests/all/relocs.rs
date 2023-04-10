@@ -21,7 +21,7 @@ fn store_with_padding(padding: usize) -> Result<Store<()>> {
         config.cranelift_flag_set(
             "wasmtime_linkopt_padding_between_functions",
             &padding.to_string(),
-        )?;
+        );
     }
     let engine = Engine::new(&config)?;
     Ok(Store::new(&engine, ()))
@@ -43,7 +43,7 @@ fn forward_call_works() -> Result<()> {
     )?;
 
     let i = Instance::new(&mut store, &module, &[])?;
-    let foo = i.get_typed_func::<(), i32, _>(&mut store, "foo")?;
+    let foo = i.get_typed_func::<(), i32>(&mut store, "foo")?;
     assert_eq!(foo.call(&mut store, ())?, 4);
     Ok(())
 }
@@ -64,7 +64,7 @@ fn backwards_call_works() -> Result<()> {
     )?;
 
     let i = Instance::new(&mut store, &module, &[])?;
-    let foo = i.get_typed_func::<(), i32, _>(&mut store, "foo")?;
+    let foo = i.get_typed_func::<(), i32>(&mut store, "foo")?;
     assert_eq!(foo.call(&mut store, ())?, 4);
     Ok(())
 }
@@ -78,7 +78,7 @@ fn mixed() -> Result<()> {
 fn mixed_forced() -> Result<()> {
     let mut config = Config::new();
     unsafe {
-        config.cranelift_flag_set("wasmtime_linkopt_force_jump_veneer", "true")?;
+        config.cranelift_flag_set("wasmtime_linkopt_force_jump_veneer", "true");
     }
     let engine = Engine::new(&config)?;
     test_many_call_module(Store::new(&engine, ()))
@@ -108,7 +108,7 @@ fn test_many_call_module(mut store: Store<()>) -> Result<()> {
 
     for i in 0..N {
         let name = i.to_string();
-        let func = instance.get_typed_func::<(), (i32, i32), _>(&mut store, &name)?;
+        let func = instance.get_typed_func::<(), (i32, i32)>(&mut store, &name)?;
         let (a, b) = func.call(&mut store, ())?;
         assert_eq!(a, i + 1);
         assert_eq!(b, i + 2);

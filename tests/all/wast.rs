@@ -1,9 +1,12 @@
+use anyhow::Context;
+use bstr::ByteSlice;
+use once_cell::sync::Lazy;
 use std::path::Path;
 use std::sync::{Condvar, Mutex};
 use wasmtime::{
-    Config, Engine, InstanceAllocationStrategy, InstanceLimits, ModuleLimits,
-    PoolingAllocationStrategy, Store, Strategy,
+    Config, Engine, InstanceAllocationStrategy, PoolingAllocationConfig, Store, Strategy,
 };
+use wasmtime_environ::WASM_PAGE_SIZE;
 use wasmtime_wast::WastContext;
 
 include!(concat!(env!("OUT_DIR"), "/wast_testsuite_tests.rs"));
@@ -12,22 +15,45 @@ include!(concat!(env!("OUT_DIR"), "/wast_testsuite_tests.rs"));
 // function which actually executes the `wast` test suite given the `strategy`
 // to compile it.
 fn run_wast(wast: &str, strategy: Strategy, pooling: bool) -> anyhow::Result<()> {
+    drop(env_logger::try_init());
+
+    let wast_bytes = std::fs::read(wast).with_context(|| format!("failed to read `{}`", wast))?;
+
+    match strategy {
+        Strategy::Cranelift => {}
+        _ => unimplemented!(),
+    }
+
     let wast = Path::new(wast);
 
-    let simd = feature_found(wast, "simd");
     let memory64 = feature_found(wast, "memory64");
     let multi_memory = feature_found(wast, "multi-memory");
-    let module_linking = feature_found(wast, "module-linking");
     let threads = feature_found(wast, "threads");
+    let typed_continuations = feature_found(wast, "typed-continuations");
+    let exceptions = feature_found(wast, "exception-handling") || typed_continuations;
+    let function_references = feature_found(wast, "function-references") || typed_continuations;
+    let reference_types = !(threads && feature_found(wast, "proposals"));
+    let relaxed_simd = feature_found(wast, "relaxed-simd");
+    let use_shared_memory = feature_found_src(&wast_bytes, "shared_memory")
+        || feature_found_src(&wast_bytes, "shared)");
+
+    if pooling && use_shared_memory {
+        eprintln!("skipping pooling test with shared memory");
+        return Ok(());
+    }
 
     let mut cfg = Config::new();
-    cfg.wasm_simd(simd)
-        .wasm_multi_memory(multi_memory || module_linking)
-        .wasm_module_linking(module_linking)
+    cfg.wasm_multi_memory(multi_memory)
         .wasm_threads(threads)
         .wasm_memory64(memory64)
-        .strategy(strategy)?
+        .wasm_function_references(function_references)
+        .wasm_reference_types(reference_types)
+        .wasm_relaxed_simd(relaxed_simd)
+        .wasm_exceptions(exceptions)
+        .wasm_typed_continuations(typed_continuations)
         .cranelift_debug_verifier(true);
+
+    cfg.wasm_component_model(feature_found(wast, "component-model"));
 
     if feature_found(wast, "canonicalize-nan") {
         cfg.cranelift_nan_canonicalization(true);
@@ -59,8 +85,14 @@ fn run_wast(wast: &str, strategy: Strategy, pooling: bool) -> anyhow::Result<()>
         // Don't use 4gb address space reservations when not hogging memory, and
         // also don't reserve lots of memory after dynamic memories for growth
         // (makes growth slower).
-        cfg.static_memory_maximum_size(0);
+        if use_shared_memory {
+            cfg.static_memory_maximum_size(2 * WASM_PAGE_SIZE as u64);
+        } else {
+            cfg.static_memory_maximum_size(0);
+        }
         cfg.dynamic_memory_reserved_for_growth(0);
+        cfg.static_memory_guard_size(0);
+        cfg.dynamic_memory_guard_size(0);
     }
 
     let _pooling_lock = if pooling {
@@ -71,36 +103,59 @@ fn run_wast(wast: &str, strategy: Strategy, pooling: bool) -> anyhow::Result<()>
             return Ok(());
         }
 
+        // Reduce the virtual memory required to run multi-memory-based tests.
+        //
+        // The configuration parameters below require that a bare minimum
+        // virtual address space reservation of 450*9*805*65536 == 200G be made
+        // to support each test. If 6G reservations are made for each linear
+        // memory then not that many tests can run concurrently with much else.
+        //
+        // When multiple memories are used and are configured in the pool then
+        // force the usage of static memories without guards to reduce the VM
+        // impact.
+        if multi_memory {
+            cfg.static_memory_maximum_size(0);
+            cfg.dynamic_memory_reserved_for_growth(0);
+            cfg.static_memory_guard_size(0);
+            cfg.dynamic_memory_guard_size(0);
+        }
+
         // The limits here are crafted such that the wast tests should pass.
         // However, these limits may become insufficient in the future as the wast tests change.
         // If a wast test fails because of a limit being "exceeded" or if memory/table
         // fails to grow, the values here will need to be adjusted.
-        cfg.allocation_strategy(InstanceAllocationStrategy::Pooling {
-            strategy: PoolingAllocationStrategy::NextAvailable,
-            module_limits: ModuleLimits {
-                imported_memories: 2,
-                imported_tables: 2,
-                imported_globals: 11,
-                memories: 2,
-                tables: 4,
-                globals: 13,
-                memory_pages: 805,
-                ..Default::default()
-            },
-            instance_limits: InstanceLimits {
-                count: 450,
-                ..Default::default()
-            },
-        });
+        let mut pool = PoolingAllocationConfig::default();
+        pool.instance_count(450)
+            .instance_memories(if multi_memory { 9 } else { 1 })
+            .instance_tables(4)
+            .instance_memory_pages(805);
+        cfg.allocation_strategy(InstanceAllocationStrategy::Pooling(pool));
         Some(lock_pooling())
     } else {
         None
     };
 
-    let store = Store::new(&Engine::new(&cfg)?, ());
-    let mut wast_context = WastContext::new(store);
-    wast_context.register_spectest()?;
-    wast_context.run_file(wast)?;
+    let mut engines = vec![(Engine::new(&cfg)?, "default")];
+
+    // For tests that use relaxed-simd test both the default engine and the
+    // guaranteed-deterministic engine to ensure that both the 'native'
+    // semantics of the instructions plus the canonical semantics work.
+    if relaxed_simd {
+        engines.push((
+            Engine::new(cfg.relaxed_simd_deterministic(true))?,
+            "deterministic",
+        ));
+    }
+
+    for (engine, desc) in engines {
+        let store = Store::new(&engine, ());
+        let mut wast_context = WastContext::new(store);
+        wast_context.register_spectest(use_shared_memory)?;
+        wast_context
+            .run_buffer(wast.to_str().unwrap(), &wast_bytes)
+            .with_context(|| format!("failed to run spec test with {desc} engine"))?;
+    }
+
     Ok(())
 }
 
@@ -109,6 +164,10 @@ fn feature_found(path: &Path, name: &str) -> bool {
         Some(s) => s.contains(name),
         None => false,
     })
+}
+
+fn feature_found_src(bytes: &[u8], name: &str) -> bool {
+    bytes.contains_str(name)
 }
 
 // The pooling tests make about 6TB of address space reservation which means
@@ -121,9 +180,7 @@ fn feature_found(path: &Path, name: &str) -> bool {
 fn lock_pooling() -> impl Drop {
     const MAX_CONCURRENT_POOLING: u32 = 8;
 
-    lazy_static::lazy_static! {
-        static ref ACTIVE: MyState = MyState::default();
-    }
+    static ACTIVE: Lazy<MyState> = Lazy::new(MyState::default);
 
     #[derive(Default)]
     struct MyState {

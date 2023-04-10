@@ -24,6 +24,7 @@
 )]
 
 use cranelift_codegen::isa;
+use cranelift_codegen::settings::Configurable;
 use target_lexicon::Triple;
 
 /// Return an `isa` builder configured for the current host
@@ -45,18 +46,38 @@ pub fn builder_with_options(infer_native_flags: bool) -> Result<isa::Builder, &'
         isa::LookupError::SupportDisabled => "support for architecture disabled at compile time",
         isa::LookupError::Unsupported => "unsupported architecture",
     })?;
+    if infer_native_flags {
+        self::infer_native_flags(&mut isa_builder)?;
+    }
+    Ok(isa_builder)
+}
 
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+/// Return an `isa` builder configured for the current host
+/// machine, or `Err(())` if the host machine is not supported
+/// in the current configuration.
+///
+/// Selects the given backend variant specifically; this is
+/// useful when more than oen backend exists for a given target
+/// (e.g., on x86-64).
+pub fn infer_native_flags(isa_builder: &mut dyn Configurable) -> Result<(), &'static str> {
+    #[cfg(target_arch = "x86_64")]
     {
-        use cranelift_codegen::settings::Configurable;
-
         if !std::is_x86_feature_detected!("sse2") {
             return Err("x86 support requires SSE2");
         }
 
-        if !infer_native_flags {
-            return Ok(isa_builder);
-        }
+        // These are temporarily enabled by default (see #3810 for
+        // more) so that a default-constructed `Flags` can work with
+        // default Wasmtime features. Otherwise, the user must
+        // explicitly use native flags or turn these on when on x86-64
+        // platforms to avoid a configuration panic. In order for the
+        // "enable if detected" logic below to work, we must turn them
+        // *off* (differing from the default) and then re-enable below
+        // if present.
+        isa_builder.set("has_sse3", "false").unwrap();
+        isa_builder.set("has_ssse3", "false").unwrap();
+        isa_builder.set("has_sse41", "false").unwrap();
+        isa_builder.set("has_sse42", "false").unwrap();
 
         if std::is_x86_feature_detected!("sse3") {
             isa_builder.enable("has_sse3").unwrap();
@@ -78,6 +99,9 @@ pub fn builder_with_options(infer_native_flags: bool) -> Result<isa::Builder, &'
         }
         if std::is_x86_feature_detected!("avx2") {
             isa_builder.enable("has_avx2").unwrap();
+        }
+        if std::is_x86_feature_detected!("fma") {
+            isa_builder.enable("has_fma").unwrap();
         }
         if std::is_x86_feature_detected!("bmi1") {
             isa_builder.enable("has_bmi1").unwrap();
@@ -105,17 +129,21 @@ pub fn builder_with_options(infer_native_flags: bool) -> Result<isa::Builder, &'
         }
     }
 
-    // `stdsimd` is necessary for std::is_aarch64_feature_detected!().
-    #[cfg(all(target_arch = "aarch64", feature = "stdsimd"))]
+    #[cfg(target_arch = "aarch64")]
     {
-        use cranelift_codegen::settings::Configurable;
-
-        if !infer_native_flags {
-            return Ok(isa_builder);
+        if std::arch::is_aarch64_feature_detected!("lse") {
+            isa_builder.enable("has_lse").unwrap();
         }
 
-        if std::is_aarch64_feature_detected!("lse") {
-            isa_builder.enable("has_lse").unwrap();
+        if std::arch::is_aarch64_feature_detected!("paca") {
+            isa_builder.enable("has_pauth").unwrap();
+        }
+
+        if cfg!(target_os = "macos") {
+            // Pointer authentication is always available on Apple Silicon.
+            isa_builder.enable("sign_return_address").unwrap();
+            // macOS enforces the use of the B key for return addresses.
+            isa_builder.enable("sign_return_address_with_bkey").unwrap();
         }
     }
 
@@ -123,12 +151,6 @@ pub fn builder_with_options(infer_native_flags: bool) -> Result<isa::Builder, &'
     // we use getauxval from the libc crate directly.
     #[cfg(all(target_arch = "s390x", target_os = "linux"))]
     {
-        use cranelift_codegen::settings::Configurable;
-
-        if !infer_native_flags {
-            return Ok(isa_builder);
-        }
-
         let v = unsafe { libc::getauxval(libc::AT_HWCAP) };
         const HWCAP_S390X_VXRS_EXT2: libc::c_ulong = 32768;
         if (v & HWCAP_S390X_VXRS_EXT2) != 0 {
@@ -139,11 +161,53 @@ pub fn builder_with_options(infer_native_flags: bool) -> Result<isa::Builder, &'
         }
     }
 
-    // squelch warnings about unused mut/variables on some platforms.
-    drop(&mut isa_builder);
-    drop(infer_native_flags);
+    // `is_riscv_feature_detected` is nightly only for now, use
+    // getauxval from the libc crate directly as a temporary measure.
+    #[cfg(all(target_arch = "riscv64", target_os = "linux"))]
+    {
+        let v = unsafe { libc::getauxval(libc::AT_HWCAP) };
 
-    Ok(isa_builder)
+        const HWCAP_RISCV_EXT_A: libc::c_ulong = 1 << (b'a' - b'a');
+        const HWCAP_RISCV_EXT_C: libc::c_ulong = 1 << (b'c' - b'a');
+        const HWCAP_RISCV_EXT_D: libc::c_ulong = 1 << (b'd' - b'a');
+        const HWCAP_RISCV_EXT_F: libc::c_ulong = 1 << (b'f' - b'a');
+        const HWCAP_RISCV_EXT_M: libc::c_ulong = 1 << (b'm' - b'a');
+        const HWCAP_RISCV_EXT_V: libc::c_ulong = 1 << (b'v' - b'a');
+
+        if (v & HWCAP_RISCV_EXT_A) != 0 {
+            isa_builder.enable("has_a").unwrap();
+        }
+
+        if (v & HWCAP_RISCV_EXT_C) != 0 {
+            isa_builder.enable("has_c").unwrap();
+        }
+
+        if (v & HWCAP_RISCV_EXT_D) != 0 {
+            isa_builder.enable("has_d").unwrap();
+        }
+
+        if (v & HWCAP_RISCV_EXT_F) != 0 {
+            isa_builder.enable("has_f").unwrap();
+
+            // TODO: There doesn't seem to be a bit associated with this extension
+            // rust enables it with the `f` extension:
+            // https://github.com/rust-lang/stdarch/blob/790411f93c4b5eada3c23abb4c9a063fb0b24d99/crates/std_detect/src/detect/os/linux/riscv.rs#L43
+            isa_builder.enable("has_zicsr").unwrap();
+        }
+
+        if (v & HWCAP_RISCV_EXT_M) != 0 {
+            isa_builder.enable("has_m").unwrap();
+        }
+
+        if (v & HWCAP_RISCV_EXT_V) != 0 {
+            isa_builder.enable("has_v").unwrap();
+        }
+
+        // In general extensions that are longer than one letter
+        // won't have a bit associated with them. The Linux kernel
+        // is currently working on a new way to query the extensions.
+    }
+    Ok(())
 }
 
 #[cfg(test)]

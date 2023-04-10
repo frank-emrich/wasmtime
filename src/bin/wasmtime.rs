@@ -4,20 +4,15 @@
 //! See `wasmtime --help` for usage.
 
 use anyhow::Result;
-use structopt::{clap::AppSettings, clap::ErrorKind, StructOpt};
+use clap::{ErrorKind, Parser};
 use wasmtime_cli::commands::{
-    CompileCommand, ConfigCommand, RunCommand, SettingsCommand, WastCommand,
+    CompileCommand, ConfigCommand, ExploreCommand, RunCommand, SettingsCommand, WastCommand,
 };
 
 /// Wasmtime WebAssembly Runtime
-#[derive(StructOpt)]
-#[structopt(
-    name = "wasmtime",
-    version = env!("CARGO_PKG_VERSION"),
-    global_settings = &[
-        AppSettings::VersionlessSubcommands,
-        AppSettings::ColoredHelp
-    ],
+#[derive(Parser)]
+#[clap(
+    version,
     after_help = "If a subcommand is not provided, the `run` subcommand will be used.\n\
                   \n\
                   Usage examples:\n\
@@ -34,12 +29,14 @@ use wasmtime_cli::commands::{
                   \n  \
                   wasmtime example.wasm --invoke add 1 2\n"
 )]
-enum WasmtimeApp {
+enum Wasmtime {
     // !!! IMPORTANT: if subcommands are added or removed, update `parse_module` in `src/commands/run.rs`. !!!
     /// Controls Wasmtime configuration settings
     Config(ConfigCommand),
     /// Compiles a WebAssembly module.
     Compile(CompileCommand),
+    /// Explore the compilation of a WebAssembly module to native code.
+    Explore(ExploreCommand),
     /// Runs a WebAssembly module
     Run(RunCommand),
     /// Displays available Cranelift settings for a target.
@@ -48,12 +45,13 @@ enum WasmtimeApp {
     Wast(WastCommand),
 }
 
-impl WasmtimeApp {
+impl Wasmtime {
     /// Executes the command.
     pub fn execute(self) -> Result<()> {
         match self {
             Self::Config(c) => c.execute(),
             Self::Compile(c) => c.execute(),
+            Self::Explore(c) => c.execute(),
             Self::Run(c) => c.execute(),
             Self::Settings(c) => c.execute(),
             Self::Wast(c) => c.execute(),
@@ -62,14 +60,12 @@ impl WasmtimeApp {
 }
 
 fn main() -> Result<()> {
-    WasmtimeApp::from_iter_safe(std::env::args())
-        .unwrap_or_else(|e| match e.kind {
-            ErrorKind::HelpDisplayed
-            | ErrorKind::VersionDisplayed
-            | ErrorKind::MissingArgumentOrSubcommand => e.exit(),
-            _ => WasmtimeApp::Run(
-                RunCommand::from_iter_safe(std::env::args()).unwrap_or_else(|_| e.exit()),
-            ),
+    Wasmtime::try_parse()
+        .unwrap_or_else(|e| match e.kind() {
+            ErrorKind::UnrecognizedSubcommand | ErrorKind::UnknownArgument => {
+                Wasmtime::Run(RunCommand::parse())
+            }
+            _ => e.exit(),
         })
         .execute()
 }

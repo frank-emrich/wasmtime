@@ -8,14 +8,15 @@ block0(v0: i8, v1: i8):
   return v2
 }
 
-; VCode_ShowWithRRU {{
-;   Entry block: 0
-; Block 0:
-;   (original IR block: block0)
-;   (instruction range: 0 .. 2)
-;   Inst 0:   add w0, w0, w1
-;   Inst 1:   ret
-; }}
+; VCode:
+; block0:
+;   add w0, w0, w1
+;   ret
+; 
+; Disassembled:
+; block0: ; offset 0x0
+;   add w0, w0, w1
+;   ret
 
 function %add16(i16, i16) -> i16 {
 block0(v0: i16, v1: i16):
@@ -23,14 +24,15 @@ block0(v0: i16, v1: i16):
   return v2
 }
 
-; VCode_ShowWithRRU {{
-;   Entry block: 0
-; Block 0:
-;   (original IR block: block0)
-;   (instruction range: 0 .. 2)
-;   Inst 0:   add w0, w0, w1
-;   Inst 1:   ret
-; }}
+; VCode:
+; block0:
+;   add w0, w0, w1
+;   ret
+; 
+; Disassembled:
+; block0: ; offset 0x0
+;   add w0, w0, w1
+;   ret
 
 function %add32(i32, i32) -> i32 {
 block0(v0: i32, v1: i32):
@@ -38,14 +40,15 @@ block0(v0: i32, v1: i32):
   return v2
 }
 
-; VCode_ShowWithRRU {{
-;   Entry block: 0
-; Block 0:
-;   (original IR block: block0)
-;   (instruction range: 0 .. 2)
-;   Inst 0:   add w0, w0, w1
-;   Inst 1:   ret
-; }}
+; VCode:
+; block0:
+;   add w0, w0, w1
+;   ret
+; 
+; Disassembled:
+; block0: ; offset 0x0
+;   add w0, w0, w1
+;   ret
 
 function %add32_8(i32, i8) -> i32 {
 block0(v0: i32, v1: i8):
@@ -54,14 +57,15 @@ block0(v0: i32, v1: i8):
   return v3
 }
 
-; VCode_ShowWithRRU {{
-;   Entry block: 0
-; Block 0:
-;   (original IR block: block0)
-;   (instruction range: 0 .. 2)
-;   Inst 0:   add w0, w0, w1, SXTB
-;   Inst 1:   ret
-; }}
+; VCode:
+; block0:
+;   add w0, w0, w1, SXTB
+;   ret
+; 
+; Disassembled:
+; block0: ; offset 0x0
+;   add w0, w0, w1, sxtb
+;   ret
 
 function %add64_32(i64, i32) -> i64 {
 block0(v0: i64, v1: i32):
@@ -70,12 +74,13 @@ block0(v0: i64, v1: i32):
   return v3
 }
 
-; VCode_ShowWithRRU {{
-;   Entry block: 0
-; Block 0:
-;   (original IR block: block0)
-;   (instruction range: 0 .. 2)
-;   Inst 0:   add x0, x0, x1, SXTW
-;   Inst 1:   ret
-; }}
+; VCode:
+; block0:
+;   add x0, x0, x1, SXTW
+;   ret
+; 
+; Disassembled:
+; block0: ; offset 0x0
+;   add x0, x0, w1, sxtw
+;   ret
 

@@ -1,11 +1,10 @@
-use more_asserts::assert_gt;
 use std::{env, process};
 use wasi_tests::{assert_errno, open_scratch_directory};
 
 unsafe fn test_renumber(dir_fd: wasi::Fd) {
     let pre_fd: wasi::Fd = (libc::STDERR_FILENO + 1) as wasi::Fd;
 
-    assert_gt!(dir_fd, pre_fd, "dir_fd number");
+    assert!(dir_fd > pre_fd, "dir_fd number");
 
     // Create a file in the scratch directory.
     let fd_from = wasi::path_open(
@@ -18,9 +17,8 @@ unsafe fn test_renumber(dir_fd: wasi::Fd) {
         0,
     )
     .expect("opening a file");
-    assert_gt!(
-        fd_from,
-        libc::STDERR_FILENO as wasi::Fd,
+    assert!(
+        fd_from > libc::STDERR_FILENO as wasi::Fd,
         "file descriptor range check",
     );
 
@@ -39,9 +37,8 @@ unsafe fn test_renumber(dir_fd: wasi::Fd) {
         0,
     )
     .expect("opening a file");
-    assert_gt!(
-        fd_to,
-        libc::STDERR_FILENO as wasi::Fd,
+    assert!(
+        fd_to > libc::STDERR_FILENO as wasi::Fd,
         "file descriptor range check",
     );
 
@@ -50,9 +47,7 @@ unsafe fn test_renumber(dir_fd: wasi::Fd) {
 
     // Ensure that fd_from is closed
     assert_errno!(
-        wasi::fd_close(fd_from)
-            .expect_err("closing already closed file descriptor")
-            .raw_error(),
+        wasi::fd_close(fd_from).expect_err("closing already closed file descriptor"),
         wasi::ERRNO_BADF
     );
 

@@ -21,8 +21,8 @@ mkdir tmp
 mkdir -p dist
 
 tag=dev
-if [[ $GITHUB_REF == refs/tags/v* ]]; then
-  tag=${GITHUB_REF:10}
+if [[ $GITHUB_REF == refs/heads/release-* ]]; then
+  tag=v${GITHUB_REF:19}
 fi
 
 bin_pkgname=wasmtime-$tag-$platform
@@ -59,6 +59,10 @@ elif [ "$platform" = "x86_64-macos" ]; then
   install_name_tool -id "@rpath/libwasmtime.dylib" target/release/libwasmtime.dylib
   cp target/release/wasmtime tmp/$bin_pkgname
   cp target/release/libwasmtime.{a,dylib} tmp/$api_pkgname/lib
+elif [ "$platform" = "aarch64-macos" ]; then
+  install_name_tool -id "@rpath/libwasmtime.dylib" target/aarch64-apple-darwin/release/libwasmtime.dylib
+  cp target/aarch64-apple-darwin/release/wasmtime tmp/$bin_pkgname
+  cp target/aarch64-apple-darwin/release/libwasmtime.{a,dylib} tmp/$api_pkgname/lib
 elif [ "$target" = "" ]; then
   cp target/release/wasmtime tmp/$bin_pkgname
   cp target/release/libwasmtime.{a,so} tmp/$api_pkgname/lib

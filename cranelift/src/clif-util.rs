@@ -12,9 +12,8 @@
     )
 )]
 
-use cranelift_codegen::dbg::LOG_FILENAME_PREFIX;
-use std::{option::Option, path::PathBuf};
-use structopt::StructOpt;
+use clap::Parser;
+use std::path::PathBuf;
 
 mod bugpoint;
 mod cat;
@@ -31,16 +30,8 @@ mod souper_harvest;
 #[cfg(feature = "wasm")]
 mod wasm;
 
-fn handle_debug_flag(debug: bool) {
-    if debug {
-        pretty_env_logger::init();
-    } else {
-        file_per_thread_logger::initialize(LOG_FILENAME_PREFIX);
-    }
-}
-
 /// Cranelift code generator utility.
-#[derive(StructOpt)]
+#[derive(Parser)]
 enum Commands {
     Test(TestOptions),
     Run(run::Options),
@@ -63,58 +54,51 @@ enum Commands {
 }
 
 /// Run Cranelift tests
-#[derive(StructOpt)]
+#[derive(Parser)]
 struct TestOptions {
     /// Be more verbose
-    #[structopt(short = "v", long = "verbose")]
+    #[clap(short, long)]
     verbose: bool,
 
     /// Print pass timing report for test
-    #[structopt(short = "T")]
+    #[clap(short = 'T')]
     time_passes: bool,
 
-    /// Enable debug output on stderr/stdout
-    #[structopt(short = "d")]
-    debug: bool,
-
     /// Specify an input file to be used. Use '-' for stdin.
-    #[structopt(required(true), parse(from_os_str))]
+    #[clap(required = true)]
     files: Vec<PathBuf>,
 }
 
 /// Run specified pass(es) on an input file.
-#[derive(StructOpt)]
+#[derive(Parser)]
 struct PassOptions {
     /// Be more verbose
-    #[structopt(short = "v", long = "verbose")]
+    #[clap(short, long)]
     verbose: bool,
 
     /// Print pass timing report for test
-    #[structopt(short = "T")]
+    #[clap(short = 'T')]
     time_passes: bool,
 
-    /// Enable debug output on stderr/stdout
-    #[structopt(short = "d")]
-    debug: bool,
-
     /// Specify an input file to be used. Use '-' for stdin.
-    #[structopt(parse(from_os_str))]
     file: PathBuf,
 
     /// Specify the target architecture.
     target: String,
 
     /// Specify pass(es) to be run on the input file
-    #[structopt(required(true))]
+    #[clap(required = true)]
     passes: Vec<String>,
 }
 
 /// (Compiled without support for this subcommand)
-#[derive(StructOpt)]
+#[derive(Parser)]
 struct CompiledWithoutSupportOptions {}
 
 fn main() -> anyhow::Result<()> {
-    match Commands::from_args() {
+    pretty_env_logger::init();
+
+    match Commands::parse() {
         Commands::Cat(c) => cat::run(&c)?,
         Commands::Run(r) => run::run(&r)?,
         Commands::Interpret(i) => interpret::run(&i)?,
@@ -136,7 +120,6 @@ fn main() -> anyhow::Result<()> {
         ),
 
         Commands::Test(t) => {
-            handle_debug_flag(t.debug);
             cranelift_filetests::run(
                 t.verbose,
                 t.time_passes,
@@ -147,7 +130,6 @@ fn main() -> anyhow::Result<()> {
             )?;
         }
         Commands::Pass(p) => {
-            handle_debug_flag(p.debug);
             cranelift_filetests::run_passes(
                 p.verbose,
                 p.time_passes,

@@ -5,6 +5,11 @@ use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::sync::Arc;
 use wasmtime::*;
 
+const FUNC_REF: RefType = RefType {
+    nullable: true,
+    heap_type: HeapType::Func,
+};
+
 #[test]
 fn link_undefined() -> Result<()> {
     let mut store = Store::<()>::default();
@@ -24,31 +29,21 @@ fn link_undefined() -> Result<()> {
 }
 
 #[test]
-fn undefined_error_message_with_linking() {
-    let mut config = Config::new();
-    config.wasm_module_linking(true);
-    let engine = Engine::new(&config).unwrap();
+fn test_unknown_import_error() -> Result<()> {
+    let mut store = Store::<()>::default();
+    let linker = Linker::new(store.engine());
     let module = Module::new(
-        &engine,
-        r#"
-        (module
-            (import "foo" "bar" (func))
-        )
-    "#,
-    )
-    .unwrap();
-    let linker = Linker::new(&engine);
-    let mut store = Store::new(&engine, ());
-    assert!(linker
+        store.engine(),
+        r#"(module (import "unknown-module" "unknown-name" (func)))"#,
+    )?;
+    let err = linker
         .instantiate(&mut store, &module)
-        .unwrap_err()
-        .to_string()
-        .contains("foo"));
-    assert!(linker
-        .instantiate(&mut store, &module)
-        .unwrap_err()
-        .to_string()
-        .contains("bar"));
+        .expect_err("should fail");
+    let unknown_import: UnknownImportError = err.downcast()?;
+    assert_eq!(unknown_import.module(), "unknown-module");
+    assert_eq!(unknown_import.name(), "unknown-name");
+    unknown_import.ty().unwrap_func();
+    Ok(())
 }
 
 #[test]
@@ -60,42 +55,42 @@ fn link_twice_bad() -> Result<()> {
     linker.func_wrap("f", "", || {})?;
     assert!(linker.func_wrap("f", "", || {}).is_err());
     assert!(linker
-        .func_wrap("f", "", || -> Result<(), Trap> { loop {} })
+        .func_wrap("f", "", || -> Result<()> { loop {} })
         .is_err());
 
     // globals
     let ty = GlobalType::new(ValType::I32, Mutability::Const);
     let global = Global::new(&mut store, ty, Val::I32(0))?;
-    linker.define("g", "1", global.clone())?;
-    assert!(linker.define("g", "1", global.clone()).is_err());
+    linker.define(&mut store, "g", "1", global.clone())?;
+    assert!(linker.define(&mut store, "g", "1", global.clone()).is_err());
 
     let ty = GlobalType::new(ValType::I32, Mutability::Var);
     let global = Global::new(&mut store, ty, Val::I32(0))?;
-    linker.define("g", "2", global.clone())?;
-    assert!(linker.define("g", "2", global.clone()).is_err());
+    linker.define(&mut store, "g", "2", global.clone())?;
+    assert!(linker.define(&mut store, "g", "2", global.clone()).is_err());
 
     let ty = GlobalType::new(ValType::I64, Mutability::Const);
     let global = Global::new(&mut store, ty, Val::I64(0))?;
-    linker.define("g", "3", global.clone())?;
-    assert!(linker.define("g", "3", global.clone()).is_err());
+    linker.define(&mut store, "g", "3", global.clone())?;
+    assert!(linker.define(&mut store, "g", "3", global.clone()).is_err());
 
     // memories
     let ty = MemoryType::new(1, None);
     let memory = Memory::new(&mut store, ty)?;
-    linker.define("m", "", memory.clone())?;
-    assert!(linker.define("m", "", memory.clone()).is_err());
+    linker.define(&mut store, "m", "", memory.clone())?;
+    assert!(linker.define(&mut store, "m", "", memory.clone()).is_err());
     let ty = MemoryType::new(2, None);
     let memory = Memory::new(&mut store, ty)?;
-    assert!(linker.define("m", "", memory.clone()).is_err());
+    assert!(linker.define(&mut store, "m", "", memory.clone()).is_err());
 
     // tables
-    let ty = TableType::new(ValType::FuncRef, 1, None);
+    let ty = TableType::new(FUNC_REF, 1, None);
     let table = Table::new(&mut store, ty, Val::FuncRef(None))?;
-    linker.define("t", "", table.clone())?;
-    assert!(linker.define("t", "", table.clone()).is_err());
-    let ty = TableType::new(ValType::FuncRef, 2, None);
+    linker.define(&mut store, "t", "", table.clone())?;
+    assert!(linker.define(&mut store, "t", "", table.clone()).is_err());
+    let ty = TableType::new(FUNC_REF, 2, None);
     let table = Table::new(&mut store, ty, Val::FuncRef(None))?;
-    assert!(linker.define("t", "", table.clone()).is_err());
+    assert!(linker.define(&mut store, "t", "", table.clone()).is_err());
     Ok(())
 }
 
@@ -110,11 +105,8 @@ fn function_interposition() -> Result<()> {
     )?;
     for _ in 0..4 {
         let instance = linker.instantiate(&mut store, &module)?;
-        linker.define(
-            "red",
-            "green",
-            instance.get_export(&mut store, "green").unwrap().clone(),
-        )?;
+        let green = instance.get_export(&mut store, "green").unwrap().clone();
+        linker.define(&mut store, "red", "green", green)?;
         module = Module::new(
             store.engine(),
             r#"(module
@@ -129,7 +121,7 @@ fn function_interposition() -> Result<()> {
         .unwrap()
         .into_func()
         .unwrap();
-    let func = func.typed::<(), i32, _>(&store)?;
+    let func = func.typed::<(), i32>(&store)?;
     assert_eq!(func.call(&mut store, ())?, 112);
     Ok(())
 }
@@ -147,11 +139,8 @@ fn function_interposition_renamed() -> Result<()> {
     )?;
     for _ in 0..4 {
         let instance = linker.instantiate(&mut store, &module)?;
-        linker.define(
-            "red",
-            "green",
-            instance.get_export(&mut store, "export").unwrap().clone(),
-        )?;
+        let export = instance.get_export(&mut store, "export").unwrap().clone();
+        linker.define(&mut store, "red", "green", export)?;
         module = Module::new(
             store.engine(),
             r#"(module
@@ -162,7 +151,7 @@ fn function_interposition_renamed() -> Result<()> {
     }
     let instance = linker.instantiate(&mut store, &module)?;
     let func = instance.get_func(&mut store, "export").unwrap();
-    let func = func.typed::<(), i32, _>(&store)?;
+    let func = func.typed::<(), i32>(&store)?;
     assert_eq!(func.call(&mut store, ())?, 112);
     Ok(())
 }
@@ -195,7 +184,7 @@ fn module_interposition() -> Result<()> {
         .unwrap()
         .into_func()
         .unwrap();
-    let func = func.typed::<(), i32, _>(&store)?;
+    let func = func.typed::<(), i32>(&store)?;
     assert_eq!(func.call(&mut store, ())?, 112);
     Ok(())
 }
@@ -312,7 +301,7 @@ fn funcs_live_on_to_fight_another_day() -> Result<()> {
     let get_and_call = || -> Result<()> {
         assert_eq!(flag.load(SeqCst), 0);
         let mut store = Store::new(&engine, ());
-        let func = linker.get(&mut store, "", Some("")).unwrap();
+        let func = linker.get(&mut store, "", "").unwrap();
         func.into_func().unwrap().call(&mut store, &[], &mut [])?;
         assert_eq!(flag.load(SeqCst), 0);
         Ok(())
@@ -332,8 +321,8 @@ fn alias_one() -> Result<()> {
     assert!(linker.alias("a", "b", "c", "d").is_err());
     linker.func_wrap("a", "b", || {})?;
     assert!(linker.alias("a", "b", "c", "d").is_ok());
-    assert!(linker.get(&mut store, "a", Some("b")).is_some());
-    assert!(linker.get(&mut store, "c", Some("d")).is_some());
+    assert!(linker.get(&mut store, "a", "b").is_some());
+    assert!(linker.get(&mut store, "c", "d").is_some());
     Ok(())
 }
 
@@ -344,7 +333,7 @@ fn instance_pre() -> Result<()> {
     linker.func_wrap("", "", || {})?;
 
     let module = Module::new(&engine, r#"(module (import "" "" (func)))"#)?;
-    let instance_pre = linker.instantiate_pre(&mut Store::new(&engine, ()), &module)?;
+    let instance_pre = linker.instantiate_pre(&module)?;
     instance_pre.instantiate(&mut Store::new(&engine, ()))?;
     instance_pre.instantiate(&mut Store::new(&engine, ()))?;
 
@@ -354,7 +343,7 @@ fn instance_pre() -> Result<()> {
         GlobalType::new(ValType::I32, Mutability::Const),
         1.into(),
     )?;
-    linker.define("", "g", global)?;
+    linker.define(&mut store, "", "g", global)?;
 
     let module = Module::new(
         &engine,
@@ -363,8 +352,80 @@ fn instance_pre() -> Result<()> {
             (import "" "g" (global i32))
         )"#,
     )?;
-    let instance_pre = linker.instantiate_pre(&mut store, &module)?;
+    let instance_pre = linker.instantiate_pre(&module)?;
     instance_pre.instantiate(&mut store)?;
     instance_pre.instantiate(&mut store)?;
+    Ok(())
+}
+
+#[test]
+fn test_trapping_unknown_import() -> Result<()> {
+    const WAT: &str = r#"
+    (module
+      (type $t0 (func))
+      (import "" "imp" (func $.imp (type $t0)))
+      (func $run call $.imp)
+      (func $other)
+      (export "run" (func $run))
+      (export "other" (func $other))
+    )
+    "#;
+
+    let mut store = Store::<()>::default();
+    let module = Module::new(store.engine(), WAT).expect("failed to create module");
+    let mut linker = Linker::new(store.engine());
+
+    linker.define_unknown_imports_as_traps(&module)?;
+    let instance = linker.instantiate(&mut store, &module)?;
+
+    // "run" calls an import function which will not be defined, so it should trap
+    let run_func = instance
+        .get_func(&mut store, "run")
+        .expect("expected a run func in the module");
+
+    let err = run_func.call(&mut store, &[], &mut []).unwrap_err();
+    assert!(err.is::<UnknownImportError>());
+
+    // "other" does not call the import function, so it should not trap
+    let other_func = instance
+        .get_func(&mut store, "other")
+        .expect("expected an other func in the module");
+
+    other_func.call(&mut store, &[], &mut [])?;
+
+    Ok(())
+}
+
+#[test]
+fn test_default_value_unknown_import() -> Result<()> {
+    const WAT: &str = r#"
+      (module
+        (import "unknown" "func" (func $unknown_func (result i64 f32 externref)))
+        (func (export "run") (result i64 f32 externref)
+          call $unknown_func
+        )
+      )
+    "#;
+
+    let mut store = Store::<()>::default();
+    let module = Module::new(store.engine(), WAT).expect("failed to create module");
+    let mut linker = Linker::new(store.engine());
+
+    linker.define_unknown_imports_as_default_values(&module)?;
+    let instance = linker.instantiate(&mut store, &module)?;
+
+    // "run" calls an import function which will not be defined, so it should
+    // return default values.
+    let run_func = instance
+        .get_func(&mut store, "run")
+        .expect("expected a run func in the module");
+
+    let mut results = vec![Val::I32(1), Val::I32(2), Val::I32(3)];
+    run_func.call(&mut store, &[], &mut results)?;
+
+    assert_eq!(results[0].i64(), Some(0));
+    assert_eq!(results[1].f32(), Some(0.0));
+    assert!(results[2].externref().unwrap().is_none());
+
     Ok(())
 }

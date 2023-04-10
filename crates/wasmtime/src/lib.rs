@@ -1,5 +1,11 @@
 //! Wasmtime's embedding API
 //!
+//! Wasmtime is a WebAssembly engine for JIT-complied or ahead-of-time compiled
+//! WebAssembly modules. More information about the Wasmtime project as a whole
+//! can be found [in the documentation book](https://docs.wasmtime.dev) whereas
+//! this documentation mostly focuses on the API reference of the `wasmtime`
+//! crate itself.
+//!
 //! This crate contains an API used to interact with WebAssembly modules. For
 //! example you can compile modules, instantiate them, call them, etc. As an
 //! embedder of WebAssembly you can also provide WebAssembly modules
@@ -21,10 +27,9 @@
 //! An example of using Wasmtime looks like:
 //!
 //! ```
-//! use anyhow::Result;
 //! use wasmtime::*;
 //!
-//! fn main() -> Result<()> {
+//! fn main() -> wasmtime::Result<()> {
 //!     // Modules can be compiled through either the text or binary format
 //!     let engine = Engine::default();
 //!     let wat = r#"
@@ -51,7 +56,7 @@
 //!     // afterwards we can fetch exports by name, as well as asserting the
 //!     // type signature of the function with `get_typed_func`.
 //!     let instance = Instance::new(&mut store, &module, &[host_hello.into()])?;
-//!     let hello = instance.get_typed_func::<(), (), _>(&mut store, "hello")?;
+//!     let hello = instance.get_typed_func::<(), ()>(&mut store, "hello")?;
 //!
 //!     // And finally we can call the wasm!
 //!     hello.call(&mut store, ())?;
@@ -135,10 +140,9 @@
 //! For example we can reimplement the above example with a `Linker`:
 //!
 //! ```
-//! use anyhow::Result;
 //! use wasmtime::*;
 //!
-//! fn main() -> Result<()> {
+//! fn main() -> wasmtime::Result<()> {
 //!     let engine = Engine::default();
 //!     let wat = r#"
 //!         (module
@@ -162,7 +166,7 @@
 //!     // resolve the imports of the module using name-based resolution.
 //!     let mut store = Store::new(&engine, 0);
 //!     let instance = linker.instantiate(&mut store, &module)?;
-//!     let hello = instance.get_typed_func::<(), (), _>(&mut store, "hello")?;
+//!     let hello = instance.get_typed_func::<(), ()>(&mut store, "hello")?;
 //!     hello.call(&mut store, ())?;
 //!
 //!     Ok(())
@@ -262,14 +266,8 @@
 //!   jitdump runtime profiling format. The profiler can be selected with
 //!   [`Config::profiler`].
 //!
-//! * `vtune` - Not enabled by default, this feature compiles in support for
-//!   supporting VTune profiling of JIT code.
-//!
-//! * `uffd` - Not enabled by default. This feature enables `userfaultfd` support
-//!   when using the pooling instance allocator. As handling page faults in user space
-//!   comes with a performance penalty, this feature should only be enabled when kernel
-//!   lock contention is hampering multithreading throughput. This feature is only
-//!   supported on Linux and requires a Linux kernel version 4.11 or higher.
+//! * `vtune` - Enabled by default, this feature compiles in support for VTune
+//!   profiling of JIT code.
 //!
 //! * `all-arch` - Not enabled by default. This feature compiles in support for
 //!   all architectures for both the JIT compiler and the `wasmtime compile` CLI
@@ -281,14 +279,14 @@
 //!   efficient reuse of resources for high-concurrency and
 //!   high-instantiation-count scenarios.
 //!
-//! * `memfd` - Enabled by default, this feature builds in support for a
-//!   Linux-specific feature of creating a `memfd` where applicable for a
-//!   [`Module`]'s initial memory. This makes instantiation much faster by
+//! * `memory-init-cow` - Enabled by default, this feature builds in support
+//!   for, on supported platforms, initializing wasm linear memories with
+//!   copy-on-write heap mappings. This makes instantiation much faster by
 //!   `mmap`-ing the initial memory image into place instead of copying memory
-//!   into place, allowing sharing pages that end up only getting read and
-//!   otherwise using copy-on-write for efficient initialization of memory. Note
+//!   into place, allowing sharing pages that end up only getting read. Note
 //!   that this is simply compile-time support and this must also be enabled at
-//!   run-time via [`Config::memfd`].
+//!   run-time via [`Config::memory_init_cow`] (which is also enabled by
+//!   default).
 //!
 //! ## Examples
 //!
@@ -301,11 +299,10 @@
 //! An example of using WASI looks like:
 //!
 //! ```no_run
-//! # use anyhow::Result;
 //! # use wasmtime::*;
 //! use wasmtime_wasi::sync::WasiCtxBuilder;
 //!
-//! # fn main() -> Result<()> {
+//! # fn main() -> wasmtime::Result<()> {
 //! // Compile our module and create a `Linker` which has WASI functions defined
 //! // within it.
 //! let engine = Engine::default();
@@ -333,14 +330,14 @@
 //! use std::str;
 //!
 //! # use wasmtime::*;
-//! # fn main() -> anyhow::Result<()> {
+//! # fn main() -> wasmtime::Result<()> {
 //! let mut store = Store::default();
 //! let log_str = Func::wrap(&mut store, |mut caller: Caller<'_, ()>, ptr: i32, len: i32| {
 //!     // Use our `caller` context to learn about the memory export of the
 //!     // module which called this host function.
 //!     let mem = match caller.get_export("memory") {
 //!         Some(Extern::Memory(mem)) => mem,
-//!         _ => return Err(Trap::new("failed to find host memory")),
+//!         _ => anyhow::bail!("failed to find host memory"),
 //!     };
 //!
 //!     // Use the `ptr` and `len` values to get a subslice of the wasm-memory
@@ -351,9 +348,9 @@
 //!     let string = match data {
 //!         Some(data) => match str::from_utf8(data) {
 //!             Ok(s) => s,
-//!             Err(_) => return Err(Trap::new("invalid utf-8")),
+//!             Err(_) => anyhow::bail!("invalid utf-8"),
 //!         },
-//!         None => return Err(Trap::new("pointer/length out of bounds")),
+//!         None => anyhow::bail!("pointer/length out of bounds"),
 //!     };
 //!     assert_eq!(string, "Hello, world!");
 //!     println!("{}", string);
@@ -373,22 +370,27 @@
 //!     "#,
 //! )?;
 //! let instance = Instance::new(&mut store, &module, &[log_str.into()])?;
-//! let foo = instance.get_typed_func::<(), (), _>(&mut store, "foo")?;
+//! let foo = instance.get_typed_func::<(), ()>(&mut store, "foo")?;
 //! foo.call(&mut store, ())?;
 //! # Ok(())
 //! # }
 //! ```
 
-#![allow(unknown_lints)]
-#![deny(missing_docs, rustdoc::broken_intra_doc_links)]
+#![deny(missing_docs)]
 #![doc(test(attr(deny(warnings))))]
 #![doc(test(attr(allow(dead_code, unused_variables, unused_mut))))]
 #![cfg_attr(nightlydoc, feature(doc_cfg))]
 #![cfg_attr(not(feature = "default"), allow(dead_code, unused_imports))]
+// Allow broken links when the default features is disabled because most of our
+// documentation is written for the "one build" of the `main` branch which has
+// most features enabled. This will present warnings in stripped-down doc builds
+// and will prevent the doc build from failing.
+#![cfg_attr(feature = "default", deny(rustdoc::broken_intra_doc_links))]
 
 #[macro_use]
 mod func;
 
+mod code;
 mod config;
 mod engine;
 mod externals;
@@ -413,14 +415,24 @@ pub use crate::instance::{Instance, InstancePre};
 pub use crate::limits::*;
 pub use crate::linker::*;
 pub use crate::memory::*;
-pub use crate::module::{FrameInfo, FrameSymbol, Module};
+pub use crate::module::Module;
 pub use crate::r#ref::ExternRef;
-pub use crate::store::{
-    AsContext, AsContextMut, CallHook, InterruptHandle, Store, StoreContext, StoreContextMut,
-};
+#[cfg(feature = "async")]
+pub use crate::store::CallHookHandler;
+pub use crate::store::{AsContext, AsContextMut, CallHook, Store, StoreContext, StoreContextMut};
 pub use crate::trap::*;
 pub use crate::types::*;
 pub use crate::values::*;
+
+/// A convenience wrapper for `Result<T, anyhow::Error>`.
+///
+/// This type can be used to interact with `wasmtimes`'s extensive use
+/// of `anyhow::Error` while still not directly depending on `anyhow`.
+/// This type alias is identical to `anyhow::Result`.
+pub use anyhow::{Error, Result};
+
+#[cfg(feature = "component-model")]
+pub mod component;
 
 cfg_if::cfg_if! {
     if #[cfg(all(target_os = "macos", not(feature = "posix-signals-on-macos")))] {
@@ -439,7 +451,6 @@ fn _assert_send_sync() {
     fn _assert_send<T: Send>(_t: T) {}
     _assert::<Engine>();
     _assert::<Config>();
-    _assert::<InterruptHandle>();
     _assert::<(Func, TypedFunc<(), ()>, Global, Table, Memory)>();
     _assert::<Instance>();
     _assert::<Module>();

@@ -12,7 +12,7 @@ pub(crate) type Entries = Vec<Option<DataValue>>;
 #[derive(Debug)]
 pub struct Frame<'a> {
     /// The currently executing function.
-    pub(crate) function: &'a Function,
+    function: &'a Function,
     /// The current mapping of SSA value-references to their actual values. For efficiency, each SSA value is used as an
     /// index into the Vec, meaning some slots may be unused.
     registers: Entries,
@@ -99,6 +99,11 @@ impl<'a> Frame<'a> {
     /// Accessor for the current entries in the frame.
     pub fn entries_mut(&mut self) -> &mut [Option<DataValue>] {
         &mut self.registers
+    }
+
+    /// Accessor for the [`Function`] of this frame.
+    pub fn function(&self) -> &'a Function {
+        self.function
     }
 }
 
@@ -194,7 +199,7 @@ mod tests {
             ValueRef::from_u32(6),
         ];
         let values = vec![
-            DataValue::B(true),
+            DataValue::I8(1),
             DataValue::I8(42),
             DataValue::F32(Ieee32::from(0.42)),
         ];
@@ -214,7 +219,7 @@ mod tests {
         let func = function("function %test(i32) -> i32 { block0(v10:i32): return v10 }");
         let mut frame = Frame::new(&func);
         let old_ssa_value_refs = [ValueRef::from_u32(9), ValueRef::from_u32(10)];
-        let values = vec![DataValue::B(true), DataValue::F64(Ieee64::from(0.0))];
+        let values = vec![DataValue::I8(1), DataValue::F64(Ieee64::from(0.0))];
         frame.set_all(&old_ssa_value_refs, values.clone());
 
         // Rename the old SSA values to the new values.
@@ -232,7 +237,7 @@ mod tests {
         let func = function("function %test(i32) -> i32 { block0(v10:i32): return v10 }");
         let mut frame = Frame::new(&func);
         let old_ssa_value_refs = [ValueRef::from_u32(1), ValueRef::from_u32(9)];
-        let values = vec![DataValue::B(true), DataValue::F64(Ieee64::from(f64::NAN))];
+        let values = vec![DataValue::I8(1), DataValue::F64(Ieee64::from(f64::NAN))];
         frame.set_all(&old_ssa_value_refs, values.clone());
 
         // Rename the old SSA values to the new values.

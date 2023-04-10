@@ -1,6 +1,6 @@
 use crate::r#ref::ExternRef;
 use crate::store::StoreOpaque;
-use crate::{AsContextMut, Func, ValType};
+use crate::{AsContextMut, Func, HeapType, RefType, ValType};
 use anyhow::{bail, Result};
 use std::ptr;
 use wasmtime_runtime::TableElement;
@@ -89,8 +89,16 @@ impl Val {
             Val::I64(_) => ValType::I64,
             Val::F32(_) => ValType::F32,
             Val::F64(_) => ValType::F64,
-            Val::ExternRef(_) => ValType::ExternRef,
-            Val::FuncRef(_) => ValType::FuncRef,
+            Val::ExternRef(x) => ValType::Ref(RefType {
+                nullable: x.is_none(), // NOTE(dhil): this may not
+                // produce the original source type for `Val` as a non-null reference
+                // value can be declared with nullable reference type.
+                heap_type: HeapType::Extern,
+            }),
+            Val::FuncRef(x) => ValType::Ref(RefType {
+                nullable: x.is_none(), // same as above.
+                heap_type: HeapType::Func,
+            }),
             Val::V128(_) => ValType::V128,
         }
     }
@@ -103,24 +111,24 @@ impl Val {
     /// [`Func::to_raw`] are unsafe.
     pub unsafe fn to_raw(&self, store: impl AsContextMut) -> ValRaw {
         match self {
-            Val::I32(i) => ValRaw { i32: *i },
-            Val::I64(i) => ValRaw { i64: *i },
-            Val::F32(u) => ValRaw { f32: *u },
-            Val::F64(u) => ValRaw { f64: *u },
-            Val::V128(b) => ValRaw { v128: *b },
+            Val::I32(i) => ValRaw::i32(*i),
+            Val::I64(i) => ValRaw::i64(*i),
+            Val::F32(u) => ValRaw::f32(*u),
+            Val::F64(u) => ValRaw::f64(*u),
+            Val::V128(b) => ValRaw::v128(*b),
             Val::ExternRef(e) => {
                 let externref = match e {
                     Some(e) => e.to_raw(store),
                     None => 0,
                 };
-                ValRaw { externref }
+                ValRaw::externref(externref)
             }
             Val::FuncRef(f) => {
                 let funcref = match f {
                     Some(f) => f.to_raw(store),
                     None => 0,
                 };
-                ValRaw { funcref }
+                ValRaw::funcref(funcref)
             }
         }
     }
@@ -134,13 +142,17 @@ impl Val {
     /// otherwise that `raw` should have the type `ty` specified.
     pub unsafe fn from_raw(store: impl AsContextMut, raw: ValRaw, ty: ValType) -> Val {
         match ty {
-            ValType::I32 => Val::I32(raw.i32),
-            ValType::I64 => Val::I64(raw.i64),
-            ValType::F32 => Val::F32(raw.f32),
-            ValType::F64 => Val::F64(raw.f64),
-            ValType::V128 => Val::V128(raw.v128),
-            ValType::ExternRef => Val::ExternRef(ExternRef::from_raw(raw.externref)),
-            ValType::FuncRef => Val::FuncRef(Func::from_raw(store, raw.funcref)),
+            ValType::I32 => Val::I32(raw.get_i32()),
+            ValType::I64 => Val::I64(raw.get_i64()),
+            ValType::F32 => Val::F32(raw.get_f32()),
+            ValType::F64 => Val::F64(raw.get_f64()),
+            ValType::V128 => Val::V128(raw.get_v128()),
+            ValType::Ref(rt) => match rt.heap_type {
+                HeapType::Extern => Val::ExternRef(ExternRef::from_raw(raw.get_externref())),
+                HeapType::Func | HeapType::Index(_) => {
+                    Val::FuncRef(Func::from_raw(store, raw.get_funcref()))
+                }
+            },
         }
     }
 
@@ -187,10 +199,16 @@ impl Val {
     pub(crate) fn into_table_element(
         self,
         store: &mut StoreOpaque,
-        ty: ValType,
+        ty: RefType,
     ) -> Result<TableElement> {
         match (self, ty) {
-            (Val::FuncRef(Some(f)), ValType::FuncRef) => {
+            (
+                Val::FuncRef(Some(f)),
+                RefType {
+                    heap_type: HeapType::Func,
+                    ..
+                },
+            ) => {
                 if !f.comes_from_same_store(store) {
                     bail!("cross-`Store` values are not supported in tables");
                 }
@@ -198,11 +216,34 @@ impl Val {
                     f.caller_checked_anyfunc(store).as_ptr(),
                 ))
             }
-            (Val::FuncRef(None), ValType::FuncRef) => Ok(TableElement::FuncRef(ptr::null_mut())),
-            (Val::ExternRef(Some(x)), ValType::ExternRef) => {
-                Ok(TableElement::ExternRef(Some(x.inner)))
-            }
-            (Val::ExternRef(None), ValType::ExternRef) => Ok(TableElement::ExternRef(None)),
+            (
+                Val::FuncRef(None),
+                RefType {
+                    heap_type: HeapType::Func,
+                    nullable: true,
+                },
+            ) => Ok(TableElement::FuncRef(ptr::null_mut())),
+            (
+                Val::ExternRef(Some(x)),
+                RefType {
+                    heap_type: HeapType::Extern,
+                    ..
+                },
+            ) => Ok(TableElement::ExternRef(Some(x.inner))),
+            (
+                Val::ExternRef(None),
+                RefType {
+                    heap_type: HeapType::Extern,
+                    nullable: true,
+                },
+            ) => Ok(TableElement::ExternRef(None)),
+            (
+                _,
+                RefType {
+                    heap_type: HeapType::Index(_),
+                    ..
+                },
+            ) => unimplemented!(),
             _ => bail!("value does not match table element type"),
         }
     }

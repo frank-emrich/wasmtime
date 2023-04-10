@@ -1,6 +1,8 @@
 use std::fmt;
-use wasmtime_environ::{EntityType, Global, Memory, Table, WasmFuncType, WasmType};
-use wasmtime_jit::TypeTables;
+use wasmtime_environ::{
+    EntityType, Global, Memory, ModuleTypes, Table, WasmFuncType, WasmHeapType, WasmRefType,
+    WasmType,
+};
 
 pub(crate) mod matching;
 
@@ -20,7 +22,7 @@ pub enum Mutability {
 // Value Types
 
 /// A list of all possible value types in WebAssembly.
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Hash)]
 pub enum ValType {
     // NB: the ordering here is intended to match the ordering in
     // `wasmtime_types::WasmType` to help improve codegen when converting.
@@ -34,10 +36,8 @@ pub enum ValType {
     F64,
     /// A 128 bit number.
     V128,
-    /// A reference to a Wasm function.
-    FuncRef,
-    /// A reference to opaque data in the Wasm instance.
-    ExternRef,
+    /// A typeful reference type.
+    Ref(RefType),
 }
 
 impl fmt::Display for ValType {
@@ -48,8 +48,7 @@ impl fmt::Display for ValType {
             ValType::F32 => write!(f, "f32"),
             ValType::F64 => write!(f, "f64"),
             ValType::V128 => write!(f, "v128"),
-            ValType::ExternRef => write!(f, "externref"),
-            ValType::FuncRef => write!(f, "funcref"),
+            ValType::Ref(rt) => write!(f, "{}", rt),
         }
     }
 }
@@ -67,8 +66,21 @@ impl ValType {
     /// Returns true if `ValType` matches either of the reference types.
     pub fn is_ref(&self) -> bool {
         match self {
-            ValType::ExternRef | ValType::FuncRef => true,
+            ValType::Ref(_) => true,
             _ => false,
+        }
+    }
+
+    /// Returns true if `self` is a subtype of `other`.
+    pub fn is_subtype(&self, other: &ValType) -> bool {
+        match (self, other) {
+            (ValType::Ref(x), ValType::Ref(y)) => RefType::is_subtype(x, y),
+            (ValType::I32, ValType::I32)
+            | (ValType::I64, ValType::I64)
+            | (ValType::F32, ValType::F32)
+            | (ValType::F64, ValType::F64)
+            | (ValType::V128, ValType::V128) => true,
+            (_, _) => false,
         }
     }
 
@@ -79,8 +91,7 @@ impl ValType {
             Self::F32 => WasmType::F32,
             Self::F64 => WasmType::F64,
             Self::V128 => WasmType::V128,
-            Self::FuncRef => WasmType::FuncRef,
-            Self::ExternRef => WasmType::ExternRef,
+            Self::Ref(rt) => WasmType::Ref(RefType::to_wasm_ref_type(rt)),
         }
     }
 
@@ -91,15 +102,123 @@ impl ValType {
             WasmType::F32 => Self::F32,
             WasmType::F64 => Self::F64,
             WasmType::V128 => Self::V128,
-            WasmType::FuncRef => Self::FuncRef,
-            WasmType::ExternRef => Self::ExternRef,
-            WasmType::ExnRef => unimplemented!(),
+            WasmType::Ref(rt) => Self::Ref(RefType::from_wasm_ref_type(&rt)),
+        }
+    }
+}
+
+/// A reference type holds what it refers to and whether it is nullable
+#[derive(Debug, Clone, Copy, Hash)]
+pub struct RefType {
+    /// Indicates whether the reference is nullable.
+    pub nullable: bool,
+    /// The reference's heap type.
+    pub heap_type: HeapType,
+}
+
+impl fmt::Display for RefType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            RefType {
+                nullable: true,
+                heap_type: HeapType::Func | HeapType::Extern,
+            } => write!(f, "{}ref", self.heap_type),
+            RefType {
+                nullable,
+                heap_type,
+            } => {
+                if *nullable {
+                    write!(f, "(ref null {})", heap_type)
+                } else {
+                    write!(f, "(ref {})", heap_type)
+                }
+            }
+        }
+    }
+}
+
+impl RefType {
+    pub(crate) fn to_wasm_ref_type(&self) -> WasmRefType {
+        WasmRefType {
+            nullable: self.nullable,
+            heap_type: HeapType::to_wasm_heap_type(&self.heap_type),
+        }
+    }
+
+    pub(crate) fn from_wasm_ref_type(rt: &WasmRefType) -> Self {
+        RefType {
+            nullable: rt.nullable,
+            heap_type: HeapType::from_wasm_heap_type(&rt.heap_type),
+        }
+    }
+
+    /// Returns true if `self` is a sub-referencetype of `other`.
+    pub fn is_subtype(&self, other: &RefType) -> bool {
+        (self.nullable == other.nullable || other.nullable)
+            && HeapType::is_subtype(&self.heap_type, &other.heap_type)
+    }
+}
+
+/// A list of all possible heap types in WebAssembly
+#[derive(Debug, Clone, Copy, Hash)]
+pub enum HeapType {
+    /// A reference to a Wasm function.
+    Func,
+    /// A reference to opaque data in the Wasm instance.
+    Extern,
+    /// A typed reference to a Wasm function.
+    Index(u32),
+}
+
+impl fmt::Display for HeapType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Func => write!(f, "func"),
+            Self::Extern => write!(f, "extern"),
+            Self::Index(i) => write!(f, "{}", i),
+        }
+    }
+}
+
+impl HeapType {
+    pub(crate) fn to_wasm_heap_type(&self) -> WasmHeapType {
+        match self {
+            Self::Func => WasmHeapType::Func,
+            Self::Extern => WasmHeapType::Extern,
+            Self::Index(i) => WasmHeapType::Index(*i),
+        }
+    }
+
+    pub(crate) fn from_wasm_heap_type(ht: &WasmHeapType) -> Self {
+        match ht {
+            WasmHeapType::Func => Self::Func,
+            WasmHeapType::Extern => Self::Extern,
+            WasmHeapType::Index(i) => Self::Index(*i),
+        }
+    }
+
+    /// Returns true if `self` is a sub-heaptype of `other`.
+    ///
+    /// Note: The current implementation is incomplete as it only
+    /// performs nominal equality on `Index`.
+    pub fn is_subtype(&self, other: &HeapType) -> bool {
+        match (self, other) {
+            (HeapType::Extern, HeapType::Extern)
+            | (HeapType::Func, HeapType::Func)
+            | (HeapType::Index(_), HeapType::Func) => true,
+            (HeapType::Index(m), HeapType::Index(n)) => m == n, // TODO(dhil): This is not
+            // necessarily complete as
+            // [m] and [n] may be
+            // nominally different,
+            // but whatever they point
+            // to may be structurally
+            // the same.
+            (_, _) => false,
         }
     }
 }
 
 // External Types
-
 /// A list of all possible types which can be externally referenced from a
 /// WebAssembly module.
 ///
@@ -115,10 +234,6 @@ pub enum ExternType {
     Table(TableType),
     /// This external type is the type of a WebAssembly memory.
     Memory(MemoryType),
-    /// This external type is the type of a WebAssembly instance.
-    Instance(InstanceType),
-    /// This external type is the type of a WebAssembly module.
-    Module(ModuleType),
 }
 
 macro_rules! accessors {
@@ -151,26 +266,14 @@ impl ExternType {
         (Global(GlobalType) global unwrap_global)
         (Table(TableType) table unwrap_table)
         (Memory(MemoryType) memory unwrap_memory)
-        (Module(ModuleType) module unwrap_module)
-        (Instance(InstanceType) instance unwrap_instance)
     }
 
-    pub(crate) fn from_wasmtime(types: &TypeTables, ty: &EntityType) -> ExternType {
+    pub(crate) fn from_wasmtime(types: &ModuleTypes, ty: &EntityType) -> ExternType {
         match ty {
-            EntityType::Function(idx) => {
-                FuncType::from_wasm_func_type(types.wasm_signatures[*idx].clone()).into()
-            }
+            EntityType::Function(idx) => FuncType::from_wasm_func_type(types[*idx].clone()).into(),
             EntityType::Global(ty) => GlobalType::from_wasmtime_global(ty).into(),
             EntityType::Memory(ty) => MemoryType::from_wasmtime_memory(ty).into(),
             EntityType::Table(ty) => TableType::from_wasmtime_table(ty).into(),
-            EntityType::Module(ty) => {
-                let ty = &types.module_signatures[*ty];
-                ModuleType::from_wasmtime(types, ty).into()
-            }
-            EntityType::Instance(ty) => {
-                let ty = &types.instance_signatures[*ty];
-                InstanceType::from_wasmtime(types, ty).into()
-            }
             EntityType::Tag(_) => unimplemented!("wasm tag support"),
         }
     }
@@ -197,18 +300,6 @@ impl From<MemoryType> for ExternType {
 impl From<TableType> for ExternType {
     fn from(ty: TableType) -> ExternType {
         ExternType::Table(ty)
-    }
-}
-
-impl From<ModuleType> for ExternType {
-    fn from(ty: ModuleType) -> ExternType {
-        ExternType::Module(ty)
-    }
-}
-
-impl From<InstanceType> for ExternType {
-    fn from(ty: InstanceType) -> ExternType {
-        ExternType::Instance(ty)
     }
 }
 
@@ -265,7 +356,7 @@ impl FuncType {
 /// This type describes an instance of a global in a WebAssembly module. Globals
 /// are local to an [`Instance`](crate::Instance) and are either immutable or
 /// mutable.
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+#[derive(Debug, Clone, Hash)]
 pub struct GlobalType {
     content: ValType,
     mutability: Mutability,
@@ -319,10 +410,10 @@ pub struct TableType {
 impl TableType {
     /// Creates a new table descriptor which will contain the specified
     /// `element` and have the `limits` applied to its length.
-    pub fn new(element: ValType, min: u32, max: Option<u32>) -> TableType {
+    pub fn new(element: RefType, min: u32, max: Option<u32>) -> TableType {
         TableType {
             ty: Table {
-                wasm_ty: element.to_wasm_type(),
+                wasm_ty: element.to_wasm_ref_type(),
                 minimum: min,
                 maximum: max,
             },
@@ -330,8 +421,8 @@ impl TableType {
     }
 
     /// Returns the element value type of this table.
-    pub fn element(&self) -> ValType {
-        ValType::from_wasm_type(&self.ty.wasm_ty)
+    pub fn element(&self) -> RefType {
+        RefType::from_wasm_ref_type(&self.ty.wasm_ty)
     }
 
     /// Returns minimum number of elements this table must have
@@ -403,12 +494,39 @@ impl MemoryType {
         }
     }
 
+    /// Creates a new descriptor for shared WebAssembly memory given the
+    /// specified limits of the memory.
+    ///
+    /// The `minimum` and `maximum`  values here are specified in units of
+    /// WebAssembly pages, which are 64k.
+    ///
+    /// Note that shared memories are part of the threads proposal for
+    /// WebAssembly which is not standardized yet.
+    pub fn shared(minimum: u32, maximum: u32) -> MemoryType {
+        MemoryType {
+            ty: Memory {
+                memory64: false,
+                shared: true,
+                minimum: minimum.into(),
+                maximum: Some(maximum.into()),
+            },
+        }
+    }
+
     /// Returns whether this is a 64-bit memory or not.
     ///
     /// Note that 64-bit memories are part of the memory64 proposal for
     /// WebAssembly which is not standardized yet.
     pub fn is_64(&self) -> bool {
         self.ty.memory64
+    }
+
+    /// Returns whether this is a shared memory or not.
+    ///
+    /// Note that shared memories are part of the threads proposal for
+    /// WebAssembly which is not standardized yet.
+    pub fn is_shared(&self) -> bool {
+        self.ty.shared
     }
 
     /// Returns minimum number of WebAssembly pages this memory must have.
@@ -439,122 +557,6 @@ impl MemoryType {
     }
 }
 
-// Module Types
-
-/// A descriptor for a WebAssembly module type.
-///
-/// This is a part of the [WebAssembly module-linking proposal][proposal].
-///
-/// [proposal]: https://github.com/webassembly/module-linking
-#[derive(Debug, Clone)]
-pub struct ModuleType {
-    imports: Vec<(String, Option<String>, ExternType)>,
-    exports: Vec<(String, ExternType)>,
-}
-
-impl ModuleType {
-    /// Creates a new empty module type.
-    pub fn new() -> ModuleType {
-        ModuleType {
-            imports: Vec::new(),
-            exports: Vec::new(),
-        }
-    }
-
-    /// Adds a new export to this `ModuleType`.
-    pub fn add_named_export(&mut self, name: &str, ty: ExternType) {
-        self.exports.push((name.to_string(), ty));
-    }
-
-    /// Adds a new import to this `ModuleType`.
-    pub fn add_named_import(&mut self, module: &str, field: Option<&str>, ty: ExternType) {
-        self.imports
-            .push((module.to_string(), field.map(|f| f.to_string()), ty));
-    }
-
-    /// Returns the list of imports associated with this module type.
-    pub fn imports(&self) -> impl ExactSizeIterator<Item = ImportType<'_>> {
-        self.imports.iter().map(|(name, field, ty)| ImportType {
-            module: name,
-            name: field.as_deref(),
-            ty: EntityOrExtern::Extern(ty),
-        })
-    }
-
-    /// Returns the list of exports associated with this module type.
-    pub fn exports(&self) -> impl ExactSizeIterator<Item = ExportType<'_>> {
-        self.exports.iter().map(|(name, ty)| ExportType {
-            name,
-            ty: EntityOrExtern::Extern(ty),
-        })
-    }
-
-    pub(crate) fn from_wasmtime(
-        types: &TypeTables,
-        ty: &wasmtime_environ::ModuleSignature,
-    ) -> ModuleType {
-        let exports = &types.instance_signatures[ty.exports].exports;
-        ModuleType {
-            exports: exports
-                .iter()
-                .map(|(name, ty)| (name.to_string(), ExternType::from_wasmtime(types, ty)))
-                .collect(),
-            imports: ty
-                .imports
-                .iter()
-                .map(|(m, ty)| (m.to_string(), None, ExternType::from_wasmtime(types, ty)))
-                .collect(),
-        }
-    }
-}
-
-// Instance Types
-
-/// A descriptor for a WebAssembly instance type.
-///
-/// This is a part of the [WebAssembly module-linking proposal][proposal].
-///
-/// [proposal]: https://github.com/webassembly/module-linking
-#[derive(Debug, Clone)]
-pub struct InstanceType {
-    exports: Vec<(String, ExternType)>,
-}
-
-impl InstanceType {
-    /// Creates a new empty instance type.
-    pub fn new() -> InstanceType {
-        InstanceType {
-            exports: Vec::new(),
-        }
-    }
-
-    /// Adds a new export to this `ModuleType`.
-    pub fn add_named_export(&mut self, name: &str, ty: ExternType) {
-        self.exports.push((name.to_string(), ty));
-    }
-
-    /// Returns the list of exports associated with this module type.
-    pub fn exports(&self) -> impl ExactSizeIterator<Item = ExportType<'_>> {
-        self.exports.iter().map(|(name, ty)| ExportType {
-            name,
-            ty: EntityOrExtern::Extern(ty),
-        })
-    }
-
-    pub(crate) fn from_wasmtime(
-        types: &TypeTables,
-        ty: &wasmtime_environ::InstanceSignature,
-    ) -> InstanceType {
-        InstanceType {
-            exports: ty
-                .exports
-                .iter()
-                .map(|(name, ty)| (name.to_string(), ExternType::from_wasmtime(types, ty)))
-                .collect(),
-        }
-    }
-}
-
 // Import Types
 
 /// A descriptor for an imported value into a wasm module.
@@ -569,16 +571,11 @@ pub struct ImportType<'module> {
     module: &'module str,
 
     /// The field of the import.
-    name: Option<&'module str>,
+    name: &'module str,
 
     /// The type of the import.
-    ty: EntityOrExtern<'module>,
-}
-
-#[derive(Clone)]
-enum EntityOrExtern<'a> {
-    Entity(EntityType, &'a TypeTables),
-    Extern(&'a ExternType),
+    ty: EntityType,
+    types: &'module ModuleTypes,
 }
 
 impl<'module> ImportType<'module> {
@@ -586,14 +583,15 @@ impl<'module> ImportType<'module> {
     /// is of type `ty`.
     pub(crate) fn new(
         module: &'module str,
-        name: Option<&'module str>,
+        name: &'module str,
         ty: EntityType,
-        types: &'module TypeTables,
+        types: &'module ModuleTypes,
     ) -> ImportType<'module> {
         ImportType {
             module,
             name,
-            ty: EntityOrExtern::Entity(ty, types),
+            ty,
+            types,
         }
     }
 
@@ -604,20 +602,13 @@ impl<'module> ImportType<'module> {
 
     /// Returns the field name of the module that this import is expected to
     /// come from.
-    ///
-    /// Note that this is optional due to the module linking proposal. If the
-    /// module linking proposal is enabled this is always `None`, otherwise this
-    /// is always `Some`.
-    pub fn name(&self) -> Option<&'module str> {
+    pub fn name(&self) -> &'module str {
         self.name
     }
 
     /// Returns the expected type of this import.
     pub fn ty(&self) -> ExternType {
-        match &self.ty {
-            EntityOrExtern::Entity(e, types) => ExternType::from_wasmtime(types, e),
-            EntityOrExtern::Extern(e) => (*e).clone(),
-        }
+        ExternType::from_wasmtime(self.types, &self.ty)
     }
 }
 
@@ -645,7 +636,8 @@ pub struct ExportType<'module> {
     name: &'module str,
 
     /// The type of the export.
-    ty: EntityOrExtern<'module>,
+    ty: EntityType,
+    types: &'module ModuleTypes,
 }
 
 impl<'module> ExportType<'module> {
@@ -654,12 +646,9 @@ impl<'module> ExportType<'module> {
     pub(crate) fn new(
         name: &'module str,
         ty: EntityType,
-        types: &'module TypeTables,
+        types: &'module ModuleTypes,
     ) -> ExportType<'module> {
-        ExportType {
-            name,
-            ty: EntityOrExtern::Entity(ty, types),
-        }
+        ExportType { name, ty, types }
     }
 
     /// Returns the name by which this export is known.
@@ -669,10 +658,7 @@ impl<'module> ExportType<'module> {
 
     /// Returns the type of this export.
     pub fn ty(&self) -> ExternType {
-        match &self.ty {
-            EntityOrExtern::Entity(e, types) => ExternType::from_wasmtime(types, e),
-            EntityOrExtern::Extern(e) => (*e).clone(),
-        }
+        ExternType::from_wasmtime(self.types, &self.ty)
     }
 }
 

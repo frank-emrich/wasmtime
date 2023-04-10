@@ -2,13 +2,15 @@
 //!
 //! `Table` is to WebAssembly tables what `LinearMemory` is to WebAssembly linear memories.
 
-use crate::vmcontext::{VMCallerCheckedAnyfunc, VMTableDefinition};
-use crate::{Store, Trap, VMExternRef};
+use crate::vmcontext::{VMCallerCheckedFuncRef, VMTableDefinition};
+use crate::{Store, VMExternRef};
 use anyhow::{bail, format_err, Error, Result};
 use std::convert::{TryFrom, TryInto};
 use std::ops::Range;
 use std::ptr;
-use wasmtime_environ::{TablePlan, TrapCode, WasmType, FUNCREF_INIT_BIT, FUNCREF_MASK};
+use wasmtime_environ::{
+    TablePlan, Trap, WasmHeapType, WasmRefType, FUNCREF_INIT_BIT, FUNCREF_MASK,
+};
 
 /// An element going into or coming out of a table.
 ///
@@ -16,7 +18,7 @@ use wasmtime_environ::{TablePlan, TrapCode, WasmType, FUNCREF_INIT_BIT, FUNCREF_
 #[derive(Clone)]
 pub enum TableElement {
     /// A `funcref`.
-    FuncRef(*mut VMCallerCheckedAnyfunc),
+    FuncRef(*mut VMCallerCheckedFuncRef),
     /// An `exrernref`.
     ExternRef(Option<VMExternRef>),
     /// An uninitialized funcref value. This should never be exposed
@@ -26,13 +28,13 @@ pub enum TableElement {
     UninitFunc,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum TableElementType {
     Func,
     Extern,
 }
 
-// The usage of `*mut VMCallerCheckedAnyfunc` is safe w.r.t. thread safety, this
+// The usage of `*mut VMCallerCheckedFuncRef` is safe w.r.t. thread safety, this
 // just relies on thread-safety of `VMExternRef` itself.
 unsafe impl Send for TableElement where VMExternRef: Send {}
 unsafe impl Sync for TableElement where VMExternRef: Sync {}
@@ -103,7 +105,7 @@ impl TableElement {
     /// The same warnings as for `into_table_values()` apply.
     pub(crate) unsafe fn into_ref_asserting_initialized(self) -> usize {
         match self {
-            Self::FuncRef(e) => (e as usize),
+            Self::FuncRef(e) => e as usize,
             Self::ExternRef(e) => e.map_or(0, |e| e.into_raw() as usize),
             Self::UninitFunc => panic!("Uninitialized table element value outside of table slot"),
         }
@@ -119,8 +121,8 @@ impl TableElement {
     }
 }
 
-impl From<*mut VMCallerCheckedAnyfunc> for TableElement {
-    fn from(f: *mut VMCallerCheckedAnyfunc) -> TableElement {
+impl From<*mut VMCallerCheckedFuncRef> for TableElement {
+    fn from(f: *mut VMCallerCheckedFuncRef) -> TableElement {
         TableElement::FuncRef(f)
     }
 }
@@ -163,11 +165,11 @@ pub enum Table {
     },
 }
 
-fn wasm_to_table_type(ty: WasmType) -> Result<TableElementType> {
-    match ty {
-        WasmType::FuncRef => Ok(TableElementType::Func),
-        WasmType::ExternRef => Ok(TableElementType::Extern),
-        ty => bail!("invalid table element type {:?}", ty),
+fn wasm_to_table_type(rt: WasmRefType) -> Result<TableElementType> {
+    match rt.heap_type {
+        WasmHeapType::Func => Ok(TableElementType::Func),
+        WasmHeapType::Extern => Ok(TableElementType::Extern),
+        WasmHeapType::Index(_) => Ok(TableElementType::Func),
     }
 }
 
@@ -195,6 +197,14 @@ impl Table {
         Self::limit_new(plan, store)?;
         let size = plan.table.minimum;
         let ty = wasm_to_table_type(plan.table.wasm_ty)?;
+        if data.len() < (plan.table.minimum as usize) {
+            bail!(
+                "initial table size of {} exceeds the pooling allocator's \
+                 configured maximum table size of {} elements",
+                plan.table.minimum,
+                data.len(),
+            );
+        }
         let data = match plan.table.maximum {
             Some(max) if (max as usize) < data.len() => &mut data[..max as usize],
             _ => data,
@@ -258,7 +268,7 @@ impl Table {
     pub fn init_funcs(
         &mut self,
         dst: u32,
-        items: impl ExactSizeIterator<Item = *mut VMCallerCheckedAnyfunc>,
+        items: impl ExactSizeIterator<Item = *mut VMCallerCheckedFuncRef>,
     ) -> Result<(), Trap> {
         assert!(self.element_type() == TableElementType::Func);
 
@@ -268,11 +278,13 @@ impl Table {
             .and_then(|s| s.get_mut(..items.len()))
         {
             Some(elements) => elements,
-            None => return Err(Trap::wasm(TrapCode::TableOutOfBounds)),
+            None => return Err(Trap::TableOutOfBounds),
         };
 
         for (item, slot) in items.zip(elements) {
-            *slot = item as usize;
+            unsafe {
+                *slot = TableElement::FuncRef(item).into_table_value();
+            }
         }
         Ok(())
     }
@@ -284,10 +296,10 @@ impl Table {
         let start = dst as usize;
         let end = start
             .checked_add(len as usize)
-            .ok_or_else(|| Trap::wasm(TrapCode::TableOutOfBounds))?;
+            .ok_or_else(|| Trap::TableOutOfBounds)?;
 
         if end > self.size() as usize {
-            return Err(Trap::wasm(TrapCode::TableOutOfBounds));
+            return Err(Trap::TableOutOfBounds);
         }
 
         debug_assert!(self.type_matches(&val));
@@ -412,7 +424,7 @@ impl Table {
                 .checked_add(len)
                 .map_or(true, |m| m > (*dst_table).size())
         {
-            return Err(Trap::wasm(TrapCode::TableOutOfBounds));
+            return Err(Trap::TableOutOfBounds);
         }
 
         debug_assert!(

@@ -1,5 +1,14 @@
 use wasmtime::*;
 
+const EXTERN_REF: RefType = RefType {
+    nullable: true,
+    heap_type: HeapType::Extern,
+};
+const FUNC_REF: RefType = RefType {
+    nullable: true,
+    heap_type: HeapType::Func,
+};
+
 #[test]
 fn bad_globals() {
     let mut store = Store::<()>::default();
@@ -21,36 +30,32 @@ fn bad_globals() {
 fn bad_tables() {
     let mut store = Store::<()>::default();
 
-    // i32 not supported yet
-    let ty = TableType::new(ValType::I32, 0, Some(1));
-    assert!(Table::new(&mut store, ty.clone(), Val::I32(0)).is_err());
-
     // mismatched initializer
-    let ty = TableType::new(ValType::FuncRef, 0, Some(1));
+    let ty = TableType::new(FUNC_REF, 0, Some(1));
     assert!(Table::new(&mut store, ty.clone(), Val::I32(0)).is_err());
 
     // get out of bounds
-    let ty = TableType::new(ValType::FuncRef, 0, Some(1));
+    let ty = TableType::new(FUNC_REF, 0, Some(1));
     let t = Table::new(&mut store, ty.clone(), Val::FuncRef(None)).unwrap();
     assert!(t.get(&mut store, 0).is_none());
     assert!(t.get(&mut store, u32::max_value()).is_none());
 
     // set out of bounds or wrong type
-    let ty = TableType::new(ValType::FuncRef, 1, Some(1));
+    let ty = TableType::new(FUNC_REF, 1, Some(1));
     let t = Table::new(&mut store, ty.clone(), Val::FuncRef(None)).unwrap();
     assert!(t.set(&mut store, 0, Val::I32(0)).is_err());
     assert!(t.set(&mut store, 0, Val::FuncRef(None)).is_ok());
     assert!(t.set(&mut store, 1, Val::FuncRef(None)).is_err());
 
     // grow beyond max
-    let ty = TableType::new(ValType::FuncRef, 1, Some(1));
+    let ty = TableType::new(FUNC_REF, 1, Some(1));
     let t = Table::new(&mut store, ty.clone(), Val::FuncRef(None)).unwrap();
     assert!(t.grow(&mut store, 0, Val::FuncRef(None)).is_ok());
     assert!(t.grow(&mut store, 1, Val::FuncRef(None)).is_err());
     assert_eq!(t.size(&store), 1);
 
     // grow wrong type
-    let ty = TableType::new(ValType::FuncRef, 1, Some(2));
+    let ty = TableType::new(FUNC_REF, 1, Some(2));
     let t = Table::new(&mut store, ty.clone(), Val::FuncRef(None)).unwrap();
     assert!(t.grow(&mut store, 1, Val::I32(0)).is_err());
     assert_eq!(t.size(&store), 1);
@@ -71,7 +76,7 @@ fn cross_store() -> anyhow::Result<()> {
     let global = Global::new(&mut store2, ty, Val::I32(0))?;
     let ty = MemoryType::new(1, None);
     let memory = Memory::new(&mut store2, ty)?;
-    let ty = TableType::new(ValType::FuncRef, 1, None);
+    let ty = TableType::new(FUNC_REF, 1, None);
     let table = Table::new(&mut store2, ty, Val::FuncRef(None))?;
 
     let need_func = Module::new(&engine, r#"(module (import "" "" (func)))"#)?;
@@ -91,7 +96,7 @@ fn cross_store() -> anyhow::Result<()> {
     let store1val = Val::FuncRef(Some(Func::wrap(&mut store1, || {})));
     let store2val = Val::FuncRef(Some(Func::wrap(&mut store2, || {})));
 
-    let ty = GlobalType::new(ValType::FuncRef, Mutability::Var);
+    let ty = GlobalType::new(ValType::Ref(FUNC_REF), Mutability::Var);
     assert!(Global::new(&mut store2, ty.clone(), store1val.clone()).is_err());
     if let Ok(g) = Global::new(&mut store2, ty.clone(), store2val.clone()) {
         assert!(g.set(&mut store2, store1val.clone()).is_err());
@@ -99,7 +104,7 @@ fn cross_store() -> anyhow::Result<()> {
 
     // ============ Cross-store tables ==============
 
-    let ty = TableType::new(ValType::FuncRef, 1, None);
+    let ty = TableType::new(FUNC_REF, 1, None);
     assert!(Table::new(&mut store2, ty.clone(), store1val.clone()).is_err());
     let t1 = Table::new(&mut store2, ty.clone(), store2val.clone())?;
     assert!(t1.set(&mut store2, 0, store1val.clone()).is_err());
@@ -133,8 +138,8 @@ fn cross_store() -> anyhow::Result<()> {
         .call(&mut store2, &[Some(s2_f.clone()).into()], &mut [])
         .is_ok());
 
-    let s1_f_t = s1_f.typed::<Option<Func>, (), _>(&store1)?;
-    let s2_f_t = s2_f.typed::<Option<Func>, (), _>(&store2)?;
+    let s1_f_t = s1_f.typed::<Option<Func>, ()>(&store1)?;
+    let s2_f_t = s2_f.typed::<Option<Func>, ()>(&store2)?;
 
     assert!(s1_f_t.call(&mut store1, None).is_ok());
     assert!(s2_f_t.call(&mut store2, None).is_ok());
@@ -157,7 +162,7 @@ fn get_set_externref_globals_via_api() -> anyhow::Result<()> {
 
     let global = Global::new(
         &mut store,
-        GlobalType::new(ValType::ExternRef, Mutability::Var),
+        GlobalType::new(ValType::Ref(EXTERN_REF), Mutability::Var),
         Val::ExternRef(None),
     )?;
     assert!(global.get(&mut store).unwrap_externref().is_none());
@@ -174,7 +179,7 @@ fn get_set_externref_globals_via_api() -> anyhow::Result<()> {
 
     let global = Global::new(
         &mut store,
-        GlobalType::new(ValType::ExternRef, Mutability::Const),
+        GlobalType::new(ValType::Ref(EXTERN_REF), Mutability::Const),
         Val::ExternRef(Some(ExternRef::new(42_i32))),
     )?;
     let r = global.get(&mut store).unwrap_externref().unwrap();
@@ -197,7 +202,7 @@ fn get_set_funcref_globals_via_api() -> anyhow::Result<()> {
 
     let global = Global::new(
         &mut store,
-        GlobalType::new(ValType::FuncRef, Mutability::Var),
+        GlobalType::new(ValType::Ref(FUNC_REF), Mutability::Var),
         Val::FuncRef(None),
     )?;
     assert!(global.get(&mut store).unwrap_funcref().is_none());
@@ -210,7 +215,7 @@ fn get_set_funcref_globals_via_api() -> anyhow::Result<()> {
 
     let global = Global::new(
         &mut store,
-        GlobalType::new(ValType::FuncRef, Mutability::Var),
+        GlobalType::new(ValType::Ref(FUNC_REF), Mutability::Var),
         Val::FuncRef(Some(f.clone())),
     )?;
     let f2 = global.get(&mut store).unwrap_funcref().cloned().unwrap();
@@ -226,7 +231,7 @@ fn create_get_set_funcref_tables_via_api() -> anyhow::Result<()> {
     let engine = Engine::new(&cfg)?;
     let mut store = Store::new(&engine, ());
 
-    let table_ty = TableType::new(ValType::FuncRef, 10, None);
+    let table_ty = TableType::new(FUNC_REF, 10, None);
     let init = Val::FuncRef(Some(Func::wrap(&mut store, || {})));
     let table = Table::new(&mut store, table_ty, init)?;
 
@@ -244,7 +249,7 @@ fn fill_funcref_tables_via_api() -> anyhow::Result<()> {
     let engine = Engine::new(&cfg)?;
     let mut store = Store::new(&engine, ());
 
-    let table_ty = TableType::new(ValType::FuncRef, 10, None);
+    let table_ty = TableType::new(FUNC_REF, 10, None);
     let table = Table::new(&mut store, table_ty, Val::FuncRef(None))?;
 
     for i in 0..10 {
@@ -271,7 +276,7 @@ fn grow_funcref_tables_via_api() -> anyhow::Result<()> {
     let engine = Engine::new(&cfg)?;
     let mut store = Store::new(&engine, ());
 
-    let table_ty = TableType::new(ValType::FuncRef, 10, None);
+    let table_ty = TableType::new(FUNC_REF, 10, None);
     let table = Table::new(&mut store, table_ty, Val::FuncRef(None))?;
 
     assert_eq!(table.size(&store), 10);
@@ -288,7 +293,7 @@ fn create_get_set_externref_tables_via_api() -> anyhow::Result<()> {
     let engine = Engine::new(&cfg)?;
     let mut store = Store::new(&engine, ());
 
-    let table_ty = TableType::new(ValType::ExternRef, 10, None);
+    let table_ty = TableType::new(EXTERN_REF, 10, None);
     let table = Table::new(
         &mut store,
         table_ty,
@@ -323,7 +328,7 @@ fn fill_externref_tables_via_api() -> anyhow::Result<()> {
     let engine = Engine::new(&cfg)?;
     let mut store = Store::new(&engine, ());
 
-    let table_ty = TableType::new(ValType::ExternRef, 10, None);
+    let table_ty = TableType::new(EXTERN_REF, 10, None);
     let table = Table::new(&mut store, table_ty, Val::ExternRef(None))?;
 
     for i in 0..10 {
@@ -372,7 +377,7 @@ fn grow_externref_tables_via_api() -> anyhow::Result<()> {
     let engine = Engine::new(&cfg)?;
     let mut store = Store::new(&engine, ());
 
-    let table_ty = TableType::new(ValType::ExternRef, 10, None);
+    let table_ty = TableType::new(EXTERN_REF, 10, None);
     let table = Table::new(&mut store, table_ty, Val::ExternRef(None))?;
 
     assert_eq!(table.size(&store), 10);
@@ -430,4 +435,38 @@ fn read_write_memory_via_api() {
     // Write offset overflow.
     let res = mem.write(&mut store, usize::MAX, &mut buffer);
     assert!(res.is_err());
+}
+
+#[test]
+fn store_null_externref_into_nonnull_externref_table() -> anyhow::Result<()> {
+    let mut cfg = Config::new();
+    cfg.wasm_function_references(true);
+    let engine = Engine::new(&cfg)?;
+    let mut store = Store::new(&engine, ());
+
+    // Non-null externref table and initial externref.
+    let e = ExternRef::new(42_usize);
+    let table = Table::new(
+        &mut store,
+        TableType::new(
+            RefType {
+                nullable: false,
+                heap_type: HeapType::Extern,
+            },
+            1,
+            None,
+        ),
+        Val::ExternRef(Some(e)),
+    )?;
+    // Soundness check: expect position 0 to be inhabited.
+    assert!(table
+        .get(&mut store, 0)
+        .expect("some")
+        .unwrap_externref()
+        .is_some());
+
+    // Attempt to store a null ref into the non-nullable cell 0.
+    assert!(table.set(&mut store, 0, Val::ExternRef(None)).is_err());
+
+    Ok(())
 }

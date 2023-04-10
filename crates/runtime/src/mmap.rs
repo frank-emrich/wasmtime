@@ -3,7 +3,6 @@
 
 use anyhow::anyhow;
 use anyhow::{Context, Result};
-use more_asserts::assert_le;
 use std::convert::TryFrom;
 use std::fs::File;
 use std::ops::Range;
@@ -41,7 +40,8 @@ impl Mmap {
 
     /// Create a new `Mmap` pointing to at least `size` bytes of page-aligned accessible memory.
     pub fn with_at_least(size: usize) -> Result<Self> {
-        let rounded_size = region::page::ceil(size);
+        let page_size = crate::page_size();
+        let rounded_size = (size + (page_size - 1)) & !(page_size - 1);
         Self::accessible_reserved(rounded_size, rounded_size)
     }
 
@@ -64,11 +64,11 @@ impl Mmap {
                 .len();
             let len = usize::try_from(len).map_err(|_| anyhow!("file too large to map"))?;
             let ptr = unsafe {
-                rustix::io::mmap(
+                rustix::mm::mmap(
                     ptr::null_mut(),
                     len,
-                    rustix::io::ProtFlags::READ,
-                    rustix::io::MapFlags::PRIVATE,
+                    rustix::mm::ProtFlags::READ | rustix::mm::ProtFlags::WRITE,
+                    rustix::mm::MapFlags::PRIVATE,
                     &file,
                     0,
                 )
@@ -87,9 +87,10 @@ impl Mmap {
             use std::fs::OpenOptions;
             use std::io;
             use std::os::windows::prelude::*;
-            use winapi::um::handleapi::*;
-            use winapi::um::memoryapi::*;
-            use winapi::um::winnt::*;
+            use windows_sys::Win32::Foundation::*;
+            use windows_sys::Win32::Storage::FileSystem::*;
+            use windows_sys::Win32::System::Memory::*;
+
             unsafe {
                 // Open the file with read/execute access and only share for
                 // read. This will enable us to perform the proper mmap below
@@ -108,24 +109,35 @@ impl Mmap {
                     .len();
                 let len = usize::try_from(len).map_err(|_| anyhow!("file too large to map"))?;
 
-                // Create a file mapping that allows PAGE_EXECUTE_READ which
-                // we'll be using for mapped text sections in ELF images later.
+                // Create a file mapping that allows PAGE_EXECUTE_WRITECOPY.
+                // This enables up-to these permissions but we won't leave all
+                // of these permissions active at all times. Execution is
+                // necessary for the generated code from Cranelift and the
+                // WRITECOPY part is needed for possibly resolving relocations,
+                // but otherwise writes don't happen.
                 let mapping = CreateFileMappingW(
-                    file.as_raw_handle().cast(),
+                    file.as_raw_handle() as isize,
                     ptr::null_mut(),
-                    PAGE_EXECUTE_READ,
+                    PAGE_EXECUTE_WRITECOPY,
                     0,
                     0,
                     ptr::null(),
                 );
-                if mapping.is_null() {
+                if mapping == 0 {
                     return Err(io::Error::last_os_error())
                         .context("failed to create file mapping");
                 }
 
-                // Create a view for the entire file using `FILE_MAP_EXECUTE`
-                // here so that we can later change the text section to execute.
-                let ptr = MapViewOfFile(mapping, FILE_MAP_READ | FILE_MAP_EXECUTE, 0, 0, len);
+                // Create a view for the entire file using all our requisite
+                // permissions so that we can change the virtual permissions
+                // later on.
+                let ptr = MapViewOfFile(
+                    mapping,
+                    FILE_MAP_READ | FILE_MAP_EXECUTE | FILE_MAP_COPY,
+                    0,
+                    0,
+                    len,
+                );
                 let err = io::Error::last_os_error();
                 CloseHandle(mapping);
                 if ptr.is_null() {
@@ -139,10 +151,10 @@ impl Mmap {
                     file: Some(Arc::new(file)),
                 };
 
-                // Protect the entire file as PAGE_READONLY to start (i.e.
+                // Protect the entire file as PAGE_WRITECOPY to start (i.e.
                 // remove the execute bit)
                 let mut old = 0;
-                if VirtualProtect(ret.ptr as *mut _, ret.len, PAGE_READONLY, &mut old) == 0 {
+                if VirtualProtect(ret.ptr as *mut _, ret.len, PAGE_WRITECOPY, &mut old) == 0 {
                     return Err(io::Error::last_os_error())
                         .context("failed change pages to `PAGE_READONLY`");
                 }
@@ -157,8 +169,8 @@ impl Mmap {
     /// must be native page-size multiples.
     #[cfg(not(target_os = "windows"))]
     pub fn accessible_reserved(accessible_size: usize, mapping_size: usize) -> Result<Self> {
-        let page_size = region::page::size();
-        assert_le!(accessible_size, mapping_size);
+        let page_size = crate::page_size();
+        assert!(accessible_size <= mapping_size);
         assert_eq!(mapping_size & (page_size - 1), 0);
         assert_eq!(accessible_size & (page_size - 1), 0);
 
@@ -171,11 +183,11 @@ impl Mmap {
         Ok(if accessible_size == mapping_size {
             // Allocate a single read-write region at once.
             let ptr = unsafe {
-                rustix::io::mmap_anonymous(
+                rustix::mm::mmap_anonymous(
                     ptr::null_mut(),
                     mapping_size,
-                    rustix::io::ProtFlags::READ | rustix::io::ProtFlags::WRITE,
-                    rustix::io::MapFlags::PRIVATE,
+                    rustix::mm::ProtFlags::READ | rustix::mm::ProtFlags::WRITE,
+                    rustix::mm::MapFlags::PRIVATE,
                 )
                 .context(format!("mmap failed to allocate {:#x} bytes", mapping_size))?
             };
@@ -188,11 +200,11 @@ impl Mmap {
         } else {
             // Reserve the mapping size.
             let ptr = unsafe {
-                rustix::io::mmap_anonymous(
+                rustix::mm::mmap_anonymous(
                     ptr::null_mut(),
                     mapping_size,
-                    rustix::io::ProtFlags::empty(),
-                    rustix::io::MapFlags::PRIVATE,
+                    rustix::mm::ProtFlags::empty(),
+                    rustix::mm::MapFlags::PRIVATE,
                 )
                 .context(format!("mmap failed to allocate {:#x} bytes", mapping_size))?
             };
@@ -219,15 +231,14 @@ impl Mmap {
     pub fn accessible_reserved(accessible_size: usize, mapping_size: usize) -> Result<Self> {
         use anyhow::bail;
         use std::io;
-        use winapi::um::memoryapi::VirtualAlloc;
-        use winapi::um::winnt::{MEM_COMMIT, MEM_RESERVE, PAGE_NOACCESS, PAGE_READWRITE};
+        use windows_sys::Win32::System::Memory::*;
 
         if mapping_size == 0 {
             return Ok(Self::new());
         }
 
-        let page_size = region::page::size();
-        assert_le!(accessible_size, mapping_size);
+        let page_size = crate::page_size();
+        assert!(accessible_size <= mapping_size);
         assert_eq!(mapping_size & (page_size - 1), 0);
         assert_eq!(accessible_size & (page_size - 1), 0);
 
@@ -278,16 +289,22 @@ impl Mmap {
     /// `self`'s reserved memory.
     #[cfg(not(target_os = "windows"))]
     pub fn make_accessible(&mut self, start: usize, len: usize) -> Result<()> {
-        let page_size = region::page::size();
+        use rustix::mm::{mprotect, MprotectFlags};
+
+        let page_size = crate::page_size();
         assert_eq!(start & (page_size - 1), 0);
         assert_eq!(len & (page_size - 1), 0);
-        assert_le!(len, self.len);
-        assert_le!(start, self.len - len);
+        assert!(len <= self.len);
+        assert!(start <= self.len - len);
 
         // Commit the accessible size.
-        let ptr = self.ptr as *const u8;
+        let ptr = self.ptr as *mut u8;
         unsafe {
-            region::protect(ptr.add(start), len, region::Protection::READ_WRITE)?;
+            mprotect(
+                ptr.add(start).cast(),
+                len,
+                MprotectFlags::READ | MprotectFlags::WRITE,
+            )?;
         }
 
         Ok(())
@@ -299,15 +316,15 @@ impl Mmap {
     #[cfg(target_os = "windows")]
     pub fn make_accessible(&mut self, start: usize, len: usize) -> Result<()> {
         use anyhow::bail;
+        use std::ffi::c_void;
         use std::io;
-        use winapi::ctypes::c_void;
-        use winapi::um::memoryapi::VirtualAlloc;
-        use winapi::um::winnt::{MEM_COMMIT, PAGE_READWRITE};
-        let page_size = region::page::size();
+        use windows_sys::Win32::System::Memory::*;
+
+        let page_size = crate::page_size();
         assert_eq!(start & (page_size - 1), 0);
         assert_eq!(len & (page_size - 1), 0);
-        assert_le!(len, self.len);
-        assert_le!(start, self.len - len);
+        assert!(len <= self.len);
+        assert!(start <= self.len - len);
 
         // Commit the accessible size.
         let ptr = self.ptr as *const u8;
@@ -334,7 +351,6 @@ impl Mmap {
 
     /// Return the allocated memory as a mutable slice of u8.
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        debug_assert!(!self.is_readonly());
         unsafe { slice::from_raw_parts_mut(self.ptr as *mut u8, self.len) }
     }
 
@@ -358,65 +374,96 @@ impl Mmap {
         self.len() == 0
     }
 
-    /// Returns whether the underlying mapping is readonly, meaning that
-    /// attempts to write will fault.
-    pub fn is_readonly(&self) -> bool {
-        self.file.is_some()
-    }
-
-    /// Makes the specified `range` within this `Mmap` to be read/write.
-    pub unsafe fn make_writable(&self, range: Range<usize>) -> Result<()> {
+    /// Makes the specified `range` within this `Mmap` to be read/execute.
+    pub unsafe fn make_executable(
+        &self,
+        range: Range<usize>,
+        enable_branch_protection: bool,
+    ) -> Result<()> {
         assert!(range.start <= self.len());
         assert!(range.end <= self.len());
         assert!(range.start <= range.end);
         assert!(
-            range.start % region::page::size() == 0,
+            range.start % crate::page_size() == 0,
             "changing of protections isn't page-aligned",
         );
-
-        let base = self.as_ptr().add(range.start);
+        let base = self.as_ptr().add(range.start) as *mut _;
         let len = range.end - range.start;
 
-        // On Windows when we have a file mapping we need to specifically use
-        // `PAGE_WRITECOPY` to ensure that pages are COW'd into place because
-        // we don't want our modifications to go back to the original file.
         #[cfg(windows)]
         {
             use std::io;
-            use winapi::um::memoryapi::*;
-            use winapi::um::winnt::*;
+            use windows_sys::Win32::System::Memory::*;
 
-            if self.file.is_some() {
-                let mut old = 0;
-                if VirtualProtect(base as *mut _, len, PAGE_WRITECOPY, &mut old) == 0 {
-                    return Err(io::Error::last_os_error())
-                        .context("failed to change pages to `PAGE_WRITECOPY`");
-                }
-                return Ok(());
+            let flags = if enable_branch_protection {
+                // TODO: We use this check to avoid an unused variable warning,
+                // but some of the CFG-related flags might be applicable
+                PAGE_EXECUTE_READ
+            } else {
+                PAGE_EXECUTE_READ
+            };
+            let mut old = 0;
+            let result = VirtualProtect(base, len, flags, &mut old);
+            if result == 0 {
+                return Err(io::Error::last_os_error().into());
             }
         }
 
-        // If we're not on Windows or if we're on Windows with an anonymous
-        // mapping then we can use the `region` crate.
-        region::protect(base, len, region::Protection::READ_WRITE)?;
+        #[cfg(not(windows))]
+        {
+            use rustix::mm::{mprotect, MprotectFlags};
+
+            let flags = MprotectFlags::READ | MprotectFlags::EXEC;
+            let flags = if enable_branch_protection {
+                #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+                if std::arch::is_aarch64_feature_detected!("bti") {
+                    MprotectFlags::from_bits_unchecked(flags.bits() | /* PROT_BTI */ 0x10)
+                } else {
+                    flags
+                }
+
+                #[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]
+                flags
+            } else {
+                flags
+            };
+
+            mprotect(base, len, flags)?;
+        }
+
         Ok(())
     }
 
-    /// Makes the specified `range` within this `Mmap` to be read/execute.
-    pub unsafe fn make_executable(&self, range: Range<usize>) -> Result<()> {
+    /// Makes the specified `range` within this `Mmap` to be readonly.
+    pub unsafe fn make_readonly(&self, range: Range<usize>) -> Result<()> {
         assert!(range.start <= self.len());
         assert!(range.end <= self.len());
         assert!(range.start <= range.end);
         assert!(
-            range.start % region::page::size() == 0,
+            range.start % crate::page_size() == 0,
             "changing of protections isn't page-aligned",
         );
+        let base = self.as_ptr().add(range.start) as *mut _;
+        let len = range.end - range.start;
 
-        region::protect(
-            self.as_ptr().add(range.start),
-            range.end - range.start,
-            region::Protection::READ_EXECUTE,
-        )?;
+        #[cfg(windows)]
+        {
+            use std::io;
+            use windows_sys::Win32::System::Memory::*;
+
+            let mut old = 0;
+            let result = VirtualProtect(base, len, PAGE_READONLY, &mut old);
+            if result == 0 {
+                return Err(io::Error::last_os_error().into());
+            }
+        }
+
+        #[cfg(not(windows))]
+        {
+            use rustix::mm::{mprotect, MprotectFlags};
+            mprotect(base, len, MprotectFlags::READ)?;
+        }
+
         Ok(())
     }
 
@@ -430,7 +477,7 @@ impl Drop for Mmap {
     #[cfg(not(target_os = "windows"))]
     fn drop(&mut self) {
         if self.len != 0 {
-            unsafe { rustix::io::munmap(self.ptr as *mut std::ffi::c_void, self.len) }
+            unsafe { rustix::mm::munmap(self.ptr as *mut std::ffi::c_void, self.len) }
                 .expect("munmap failed");
         }
     }
@@ -438,9 +485,9 @@ impl Drop for Mmap {
     #[cfg(target_os = "windows")]
     fn drop(&mut self) {
         if self.len != 0 {
-            use winapi::ctypes::c_void;
-            use winapi::um::memoryapi::*;
-            use winapi::um::winnt::MEM_RELEASE;
+            use std::ffi::c_void;
+            use windows_sys::Win32::System::Memory::*;
+
             if self.file.is_none() {
                 let r = unsafe { VirtualFree(self.ptr as *mut c_void, 0, MEM_RELEASE) };
                 assert_ne!(r, 0);

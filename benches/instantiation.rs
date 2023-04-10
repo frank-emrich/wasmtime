@@ -23,10 +23,7 @@ fn instantiate(pre: &InstancePre<WasiCtx>, engine: &Engine) -> Result<()> {
 fn benchmark_name<'a>(strategy: &InstanceAllocationStrategy) -> &'static str {
     match strategy {
         InstanceAllocationStrategy::OnDemand => "default",
-        #[cfg(any(not(feature = "uffd"), not(target_os = "linux")))]
         InstanceAllocationStrategy::Pooling { .. } => "pooling",
-        #[cfg(all(feature = "uffd", target_os = "linux"))]
-        InstanceAllocationStrategy::Pooling { .. } => "uffd",
     }
 }
 
@@ -49,7 +46,7 @@ fn bench_sequential(c: &mut Criterion, path: &Path) {
             let mut linker = Linker::new(&engine);
             wasmtime_wasi::add_to_linker(&mut linker, |cx| cx).unwrap();
             let pre = linker
-                .instantiate_pre(&mut store(&engine), &module)
+                .instantiate_pre(&module)
                 .expect("failed to pre-instantiate");
             (engine, pre)
         });
@@ -80,13 +77,13 @@ fn bench_parallel(c: &mut Criterion, path: &Path) {
             wasmtime_wasi::add_to_linker(&mut linker, |cx| cx).unwrap();
             let pre = Arc::new(
                 linker
-                    .instantiate_pre(&mut store(&engine), &module)
+                    .instantiate_pre(&module)
                     .expect("failed to pre-instantiate"),
             );
             (engine, pre)
         });
 
-        for threads in 1..=num_cpus::get_physical() {
+        for threads in 1..=num_cpus::get_physical().min(16) {
             let name = format!(
                 "{}: with {} thread{}",
                 path.file_name().unwrap().to_str().unwrap(),
@@ -203,21 +200,15 @@ fn bench_instantiation(c: &mut Criterion) {
 }
 
 fn strategies() -> impl Iterator<Item = InstanceAllocationStrategy> {
-    std::array::IntoIter::new([
-        // Skip the on-demand allocator when uffd is enabled
-        #[cfg(any(not(feature = "uffd"), not(target_os = "linux")))]
+    [
         InstanceAllocationStrategy::OnDemand,
-        InstanceAllocationStrategy::Pooling {
-            strategy: Default::default(),
-            module_limits: ModuleLimits {
-                functions: 40_000,
-                memory_pages: 1_000,
-                types: 200,
-                ..ModuleLimits::default()
-            },
-            instance_limits: InstanceLimits::default(),
-        },
-    ])
+        InstanceAllocationStrategy::Pooling({
+            let mut config = PoolingAllocationConfig::default();
+            config.instance_memory_pages(10_000);
+            config
+        }),
+    ]
+    .into_iter()
 }
 
 criterion_group!(benches, bench_instantiation);

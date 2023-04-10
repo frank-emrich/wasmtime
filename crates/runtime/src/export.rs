@@ -1,8 +1,8 @@
 use crate::vmcontext::{
-    VMCallerCheckedAnyfunc, VMContext, VMGlobalDefinition, VMMemoryDefinition, VMTableDefinition,
+    VMCallerCheckedFuncRef, VMContext, VMGlobalDefinition, VMMemoryDefinition, VMTableDefinition,
 };
 use std::ptr::NonNull;
-use wasmtime_environ::{Global, MemoryPlan, TablePlan};
+use wasmtime_environ::{DefinedMemoryIndex, Global, MemoryPlan, TablePlan};
 
 /// The value of an export passed from one instance to another.
 pub enum Export {
@@ -22,11 +22,11 @@ pub enum Export {
 /// A function export value.
 #[derive(Debug, Clone, Copy)]
 pub struct ExportFunction {
-    /// The `VMCallerCheckedAnyfunc` for this exported function.
+    /// The `VMCallerCheckedFuncRef` for this exported function.
     ///
     /// Note that exported functions cannot be a null funcref, so this is a
     /// non-null pointer.
-    pub anyfunc: NonNull<VMCallerCheckedAnyfunc>,
+    pub anyfunc: NonNull<VMCallerCheckedFuncRef>,
 }
 
 // It's part of the contract of using `ExportFunction` that synchronization
@@ -69,8 +69,10 @@ pub struct ExportMemory {
     pub definition: *mut VMMemoryDefinition,
     /// Pointer to the containing `VMContext`.
     pub vmctx: *mut VMContext,
-    /// The memory declaration, used for compatibilty checking.
+    /// The memory declaration, used for compatibility checking.
     pub memory: MemoryPlan,
+    /// The index at which the memory is defined within the `vmctx`.
+    pub index: DefinedMemoryIndex,
 }
 
 // See docs on send/sync for `ExportFunction` above.
@@ -88,9 +90,6 @@ impl From<ExportMemory> for Export {
 pub struct ExportGlobal {
     /// The address of the global storage.
     pub definition: *mut VMGlobalDefinition,
-    /// Pointer to a `VMContext` which has a lifetime at least as long as the
-    /// global. This may not be the `VMContext` which defines the global.
-    pub vmctx: *mut VMContext,
     /// The global declaration, used for compatibilty checking.
     pub global: Global,
 }

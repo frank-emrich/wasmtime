@@ -14,6 +14,8 @@ extern "C" {
 }
 
 impl UnwindRegistration {
+    pub const SECTION_NAME: &str = ".eh_frame";
+
     /// Registers precompiled unwinding information with the system.
     ///
     /// The `_base_address` field is ignored here (only used on other
@@ -26,7 +28,7 @@ impl UnwindRegistration {
         unwind_len: usize,
     ) -> Result<UnwindRegistration> {
         debug_assert_eq!(
-            unwind_info as usize % region::page::size(),
+            unwind_info as usize % wasmtime_runtime::page_size(),
             0,
             "The unwind info must always be aligned to a page"
         );
@@ -66,10 +68,6 @@ impl UnwindRegistration {
         }
 
         Ok(UnwindRegistration { registrations })
-    }
-
-    pub fn section_name() -> &'static str {
-        ".eh_frame"
     }
 }
 

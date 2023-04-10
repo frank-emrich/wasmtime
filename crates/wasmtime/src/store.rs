@@ -76,9 +76,10 @@
 //! contents of `StoreOpaque`. This is an invariant that we, as the authors of
 //! `wasmtime`, must uphold for the public interface to be safe.
 
+use crate::linker::Definition;
 use crate::module::BareModuleInfo;
 use crate::{module::ModuleRegistry, Engine, Module, Trap, Val, ValRaw};
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::convert::TryFrom;
@@ -94,8 +95,9 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use wasmtime_runtime::{
     InstanceAllocationRequest, InstanceAllocator, InstanceHandle, ModuleInfo,
-    OnDemandInstanceAllocator, SignalHandler, StorePtr, VMCallerCheckedAnyfunc, VMContext,
-    VMExternRef, VMExternRefActivationsTable, VMInterrupts, VMSharedSignatureIndex, VMTrampoline,
+    OnDemandInstanceAllocator, SignalHandler, StorePtr, VMCallerCheckedFuncRef, VMContext,
+    VMExternRef, VMExternRefActivationsTable, VMRuntimeLimits, VMSharedSignatureIndex,
+    VMTrampoline, WasmFault,
 };
 
 mod context;
@@ -199,7 +201,8 @@ pub struct StoreInner<T> {
     inner: StoreOpaque,
 
     limiter: Option<ResourceLimiterInner<T>>,
-    call_hook: Option<Box<dyn FnMut(&mut T, CallHook) -> Result<(), crate::Trap> + Send + Sync>>,
+    call_hook: Option<CallHookInner<T>>,
+    epoch_deadline_behavior: EpochDeadline<T>,
     // for comments about `ManuallyDrop`, see `Store::into_data`
     data: ManuallyDrop<T>,
 }
@@ -208,6 +211,21 @@ enum ResourceLimiterInner<T> {
     Sync(Box<dyn FnMut(&mut T) -> &mut (dyn crate::ResourceLimiter) + Send + Sync>),
     #[cfg(feature = "async")]
     Async(Box<dyn FnMut(&mut T) -> &mut (dyn crate::ResourceLimiterAsync) + Send + Sync>),
+}
+
+/// An object that can take callbacks when the runtime enters or exits hostcalls.
+#[cfg(feature = "async")]
+#[async_trait::async_trait]
+pub trait CallHookHandler<T>: Send {
+    /// A callback to run when wasmtime is about to enter a host call, or when about to
+    /// exit the hostcall.
+    async fn handle_call_event(&self, t: &mut T, ch: CallHook) -> Result<()>;
+}
+
+enum CallHookInner<T> {
+    Sync(Box<dyn FnMut(&mut T, CallHook) -> Result<()> + Send + Sync>),
+    #[cfg(feature = "async")]
+    Async(Box<dyn CallHookHandler<T> + Send + Sync>),
 }
 
 // Forward methods on `StoreOpaque` to also being on `StoreInner<T>`
@@ -255,7 +273,7 @@ pub struct StoreOpaque {
     _marker: marker::PhantomPinned,
 
     engine: Engine,
-    interrupts: Arc<VMInterrupts>,
+    runtime_limits: VMRuntimeLimits,
     instances: Vec<StoreInstance>,
     signal_handler: Option<Box<SignalHandler<'static>>>,
     externref_activations_table: VMExternRefActivationsTable,
@@ -273,15 +291,20 @@ pub struct StoreOpaque {
     memory_limit: usize,
     table_count: usize,
     table_limit: usize,
-    /// An adjustment to add to the fuel consumed value in `interrupts` above
+    /// An adjustment to add to the fuel consumed value in `runtime_limits` above
     /// to get the true amount of fuel consumed.
     fuel_adj: i64,
     #[cfg(feature = "async")]
     async_state: AsyncState,
     out_of_gas_behavior: OutOfGas,
-    epoch_deadline_behavior: EpochDeadline,
-    store_data: StoreData,
-    default_callee: InstanceHandle,
+    /// Indexed data within this `Store`, used to store information about
+    /// globals, functions, memories, etc.
+    ///
+    /// Note that this is `ManuallyDrop` because it needs to be dropped before
+    /// `rooted_host_funcs` below. This structure contains pointers which are
+    /// otherwise kept alive by the `Arc` references in `rooted_host_funcs`.
+    store_data: ManuallyDrop<StoreData>,
+    default_caller: InstanceHandle,
 
     /// Used to optimzed wasm->host calls when the host function is defined with
     /// `Func::new` to avoid allocating a new vector each time a function is
@@ -290,12 +313,25 @@ pub struct StoreOpaque {
     /// Same as `hostcall_val_storage`, but for the direction of the host
     /// calling wasm.
     wasm_val_raw_storage: Vec<ValRaw>,
+
+    /// A list of lists of definitions which have been used to instantiate
+    /// within this `Store`.
+    ///
+    /// Note that not all instantiations end up pushing to this list. At the
+    /// time of this writing only the `InstancePre<T>` type will push to this
+    /// list. Pushes to this list are typically accompanied with
+    /// `HostFunc::to_func_store_rooted` to clone an `Arc` here once which
+    /// preserves a strong reference to the `Arc` for each `HostFunc` stored
+    /// within the list of `Definition`s.
+    ///
+    /// Note that this is `ManuallyDrop` as it must be dropped after
+    /// `store_data` above, where the function pointers are stored.
+    rooted_host_funcs: ManuallyDrop<Vec<Arc<[Definition]>>>,
 }
 
 #[cfg(feature = "async")]
 struct AsyncState {
-    current_suspend:
-        UnsafeCell<*const wasmtime_fiber::Suspend<Result<(), Trap>, (), Result<(), Trap>>>,
+    current_suspend: UnsafeCell<*const wasmtime_fiber::Suspend<Result<()>, (), Result<()>>>,
     current_poll_cx: UnsafeCell<*mut Context<'static>>,
 }
 
@@ -389,10 +425,13 @@ enum OutOfGas {
 
 /// What to do when the engine epoch reaches the deadline for a Store
 /// during execution of a function using that store.
-#[derive(Copy, Clone)]
-enum EpochDeadline {
+#[derive(Default)]
+enum EpochDeadline<T> {
     /// Return early with a trap.
+    #[default]
     Trap,
+    /// Call a custom deadline handler.
+    Callback(Box<dyn FnMut(StoreContextMut<T>) -> Result<u64> + Send + Sync>),
     /// Extend the deadline by the specified number of ticks after
     /// yielding to the async executor loop.
     #[cfg(feature = "async")]
@@ -417,7 +456,7 @@ impl<T> Store<T> {
         // single "default callee" for the entire `Store`. This is then used as
         // part of `Func::call` to guarantee that the `callee: *mut VMContext`
         // is never null.
-        let default_callee = unsafe {
+        let default_callee = {
             let module = Arc::new(wasmtime_environ::Module::default());
             let shim = BareModuleInfo::empty(module).into_traitobj();
             OnDemandInstanceAllocator::default()
@@ -434,7 +473,7 @@ impl<T> Store<T> {
             inner: StoreOpaque {
                 _marker: marker::PhantomPinned,
                 engine: engine.clone(),
-                interrupts: Default::default(),
+                runtime_limits: Default::default(),
                 instances: Vec::new(),
                 signal_handler: None,
                 externref_activations_table: VMExternRefActivationsTable::new(),
@@ -454,14 +493,15 @@ impl<T> Store<T> {
                     current_poll_cx: UnsafeCell::new(ptr::null_mut()),
                 },
                 out_of_gas_behavior: OutOfGas::Trap,
-                epoch_deadline_behavior: EpochDeadline::Trap,
-                store_data: StoreData::new(),
-                default_callee,
+                store_data: ManuallyDrop::new(StoreData::new()),
+                default_caller: default_callee,
                 hostcall_val_storage: Vec::new(),
                 wasm_val_raw_storage: Vec::new(),
+                rooted_host_funcs: ManuallyDrop::new(Vec::new()),
             },
             limiter: None,
             call_hook: None,
+            epoch_deadline_behavior: EpochDeadline::Trap,
             data: ManuallyDrop::new(data),
         });
 
@@ -475,7 +515,7 @@ impl<T> Store<T> {
                 *mut (dyn wasmtime_runtime::Store + '_),
                 *mut (dyn wasmtime_runtime::Store + 'static),
             >(&mut *inner);
-            inner.default_callee.set_store(traitobj);
+            inner.default_caller.set_store(traitobj);
         }
 
         Self {
@@ -528,12 +568,57 @@ impl<T> Store<T> {
         }
     }
 
-    /// Configures the [`ResourceLimiter`](crate::ResourceLimiter) used to limit
-    /// resource creation within this [`Store`].
+    /// Configures the [`ResourceLimiter`] used to limit resource creation
+    /// within this [`Store`].
+    ///
+    /// Whenever resources such as linear memory, tables, or instances are
+    /// allocated the `limiter` specified here is invoked with the store's data
+    /// `T` and the returned [`ResourceLimiter`] is used to limit the operation
+    /// being allocated. The returned [`ResourceLimiter`] is intended to live
+    /// within the `T` itself, for example by storing a
+    /// [`StoreLimits`](crate::StoreLimits).
     ///
     /// Note that this limiter is only used to limit the creation/growth of
     /// resources in the future, this does not retroactively attempt to apply
     /// limits to the [`Store`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wasmtime::*;
+    ///
+    /// struct MyApplicationState {
+    ///     my_state: u32,
+    ///     limits: StoreLimits,
+    /// }
+    ///
+    /// let engine = Engine::default();
+    /// let my_state = MyApplicationState {
+    ///     my_state: 42,
+    ///     limits: StoreLimitsBuilder::new()
+    ///         .memory_size(1 << 20 /* 1 MB */)
+    ///         .instances(2)
+    ///         .build(),
+    /// };
+    /// let mut store = Store::new(&engine, my_state);
+    /// store.limiter(|state| &mut state.limits);
+    ///
+    /// // Creation of smaller memories is allowed
+    /// Memory::new(&mut store, MemoryType::new(1, None)).unwrap();
+    ///
+    /// // Creation of a larger memory, however, will exceed the 1MB limit we've
+    /// // configured
+    /// assert!(Memory::new(&mut store, MemoryType::new(1000, None)).is_err());
+    ///
+    /// // The number of instances in this store is limited to 2, so the third
+    /// // instance here should fail.
+    /// let module = Module::new(&engine, "(module)").unwrap();
+    /// assert!(Instance::new(&mut store, &module, &[]).is_ok());
+    /// assert!(Instance::new(&mut store, &module, &[]).is_ok());
+    /// assert!(Instance::new(&mut store, &module, &[]).is_err());
+    /// ```
+    ///
+    /// [`ResourceLimiter`]: crate::ResourceLimiter
     pub fn limiter(
         &mut self,
         mut limiter: impl FnMut(&mut T) -> &mut (dyn crate::ResourceLimiter) + Send + Sync + 'static,
@@ -553,20 +638,12 @@ impl<T> Store<T> {
         inner.limiter = Some(ResourceLimiterInner::Sync(Box::new(limiter)));
     }
 
-    #[cfg_attr(nightlydoc, doc(cfg(feature = "async")))]
     /// Configures the [`ResourceLimiterAsync`](crate::ResourceLimiterAsync)
-    /// used to limit resource creation within this [`Store`]. Must be used
-    /// with an async `Store`!.
+    /// used to limit resource creation within this [`Store`].
     ///
-    /// Note that this limiter is only used to limit the creation/growth of
-    /// resources in the future, this does not retroactively attempt to apply
-    /// limits to the [`Store`].
-    ///
-    /// This variation on the [`ResourceLimiter`](`crate::ResourceLimiter`)
-    /// makes the `memory_growing` and `table_growing` functions `async`. This
-    /// means that, as part of your resource limiting strategy, the async
-    /// resource limiter may yield execution until a resource becomes
-    /// available.
+    /// This method is an asynchronous variant of the [`Store::limiter`] method
+    /// where the embedder can block the wasm request for more resources with
+    /// host `async` execution of futures.
     ///
     /// By using a [`ResourceLimiterAsync`](`crate::ResourceLimiterAsync`)
     /// with a [`Store`], you can no longer use
@@ -578,7 +655,14 @@ impl<T> Store<T> {
     /// [`Memory::grow_async`](`crate::Memory::grow_async`),
     /// [`Table::new_async`](`crate::Table::new_async`), and
     /// [`Table::grow_async`](`crate::Table::grow_async`).
+    ///
+    /// Note that this limiter is only used to limit the creation/growth of
+    /// resources in the future, this does not retroactively attempt to apply
+    /// limits to the [`Store`]. Additionally this must be used with an async
+    /// [`Store`] configured via
+    /// [`Config::async_support`](crate::Config::async_support).
     #[cfg(feature = "async")]
+    #[cfg_attr(nightlydoc, doc(cfg(feature = "async")))]
     pub fn limiter_async(
         &mut self,
         mut limiter: impl FnMut(&mut T) -> &mut (dyn crate::ResourceLimiterAsync)
@@ -602,6 +686,27 @@ impl<T> Store<T> {
         inner.limiter = Some(ResourceLimiterInner::Async(Box::new(limiter)));
     }
 
+    #[cfg_attr(nightlydoc, doc(cfg(feature = "async")))]
+    /// Configures an async function that runs on calls and returns between
+    /// WebAssembly and host code. For the non-async equivalent of this method,
+    /// see [`Store::call_hook`].
+    ///
+    /// The function is passed a [`CallHook`] argument, which indicates which
+    /// state transition the VM is making.
+    ///
+    /// This function's future may return a [`Trap`]. If a trap is returned
+    /// when an import was called, it is immediately raised as-if the host
+    /// import had returned the trap. If a trap is returned after wasm returns
+    /// to the host then the wasm function's result is ignored and this trap is
+    /// returned instead.
+    ///
+    /// After this function returns a trap, it may be called for subsequent
+    /// returns to host or wasm code as the trap propagates to the root call.
+    #[cfg(feature = "async")]
+    pub fn call_hook_async(&mut self, hook: impl CallHookHandler<T> + Send + Sync + 'static) {
+        self.inner.call_hook = Some(CallHookInner::Async(Box::new(hook)));
+    }
+
     /// Configure a function that runs on calls and returns between WebAssembly
     /// and host code.
     ///
@@ -615,100 +720,17 @@ impl<T> Store<T> {
     /// instead.
     ///
     /// After this function returns a trap, it may be called for subsequent returns
-    /// to host or wasm code as the trap propogates to the root call.
+    /// to host or wasm code as the trap propagates to the root call.
     pub fn call_hook(
         &mut self,
-        hook: impl FnMut(&mut T, CallHook) -> Result<(), Trap> + Send + Sync + 'static,
+        hook: impl FnMut(&mut T, CallHook) -> Result<()> + Send + Sync + 'static,
     ) {
-        self.inner.call_hook = Some(Box::new(hook));
+        self.inner.call_hook = Some(CallHookInner::Sync(Box::new(hook)));
     }
 
     /// Returns the [`Engine`] that this store is associated with.
     pub fn engine(&self) -> &Engine {
         self.inner.engine()
-    }
-
-    /// Creates an [`InterruptHandle`] which can be used to interrupt the
-    /// execution of instances within this `Store`.
-    ///
-    /// An [`InterruptHandle`] handle is a mechanism of ensuring that guest code
-    /// doesn't execute for too long. For example it's used to prevent wasm
-    /// programs for executing infinitely in infinite loops or recursive call
-    /// chains.
-    ///
-    /// The [`InterruptHandle`] type is sendable to other threads so you can
-    /// interact with it even while the thread with this `Store` is executing
-    /// wasm code.
-    ///
-    /// There's one method on an interrupt handle:
-    /// [`InterruptHandle::interrupt`]. This method is used to generate an
-    /// interrupt and cause wasm code to exit "soon".
-    ///
-    /// ## When are interrupts delivered?
-    ///
-    /// The term "interrupt" here refers to one of two different behaviors that
-    /// are interrupted in wasm:
-    ///
-    /// * The head of every loop in wasm has a check to see if it's interrupted.
-    /// * The prologue of every function has a check to see if it's interrupted.
-    ///
-    /// This interrupt mechanism makes no attempt to signal interrupts to
-    /// native code. For example if a host function is blocked, then sending
-    /// an interrupt will not interrupt that operation.
-    ///
-    /// Interrupts are consumed as soon as possible when wasm itself starts
-    /// executing. This means that if you interrupt wasm code then it basically
-    /// guarantees that the next time wasm is executing on the target thread it
-    /// will return quickly (either normally if it were already in the process
-    /// of returning or with a trap from the interrupt). Once an interrupt
-    /// trap is generated then an interrupt is consumed, and further execution
-    /// will not be interrupted (unless another interrupt is set).
-    ///
-    /// When implementing interrupts you'll want to ensure that the delivery of
-    /// interrupts into wasm code is also handled in your host imports and
-    /// functionality. Host functions need to either execute for bounded amounts
-    /// of time or you'll need to arrange for them to be interrupted as well.
-    ///
-    /// ## Return Value
-    ///
-    /// This function returns a `Result` since interrupts are not always
-    /// enabled. Interrupts are enabled via the
-    /// [`Config::interruptable`](crate::Config::interruptable) method, and if
-    /// this store's [`Config`](crate::Config) hasn't been configured to enable
-    /// interrupts then an error is returned.
-    ///
-    /// ## Examples
-    ///
-    /// ```
-    /// # use anyhow::Result;
-    /// # use wasmtime::*;
-    /// # fn main() -> Result<()> {
-    /// // Enable interruptable code via `Config` and then create an interrupt
-    /// // handle which we'll use later to interrupt running code.
-    /// let engine = Engine::new(Config::new().interruptable(true))?;
-    /// let mut store = Store::new(&engine, ());
-    /// let interrupt_handle = store.interrupt_handle()?;
-    ///
-    /// // Compile and instantiate a small example with an infinite loop.
-    /// let module = Module::new(&engine, r#"
-    ///     (func (export "run") (loop br 0))
-    /// "#)?;
-    /// let instance = Instance::new(&mut store, &module, &[])?;
-    /// let run = instance.get_typed_func::<(), (), _>(&mut store, "run")?;
-    ///
-    /// // Spin up a thread to send us an interrupt in a second
-    /// std::thread::spawn(move || {
-    ///     std::thread::sleep(std::time::Duration::from_secs(1));
-    ///     interrupt_handle.interrupt();
-    /// });
-    ///
-    /// let trap = run.call(&mut store, ()).unwrap_err();
-    /// assert!(trap.to_string().contains("wasm trap: interrupt"));
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn interrupt_handle(&self) -> Result<InterruptHandle> {
-        self.inner.interrupt_handle()
     }
 
     /// Perform garbage collection of `ExternRef`s.
@@ -746,10 +768,10 @@ impl<T> Store<T> {
     /// Note that at this time when fuel is entirely consumed it will cause
     /// wasm to trap. More usages of fuel are planned for the future.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// This function will panic if the store's [`Config`](crate::Config) did
-    /// not have fuel consumption enabled.
+    /// This function will return an error if fuel consumption is not enabled via
+    /// [`Config::consume_fuel`](crate::Config::consume_fuel).
     pub fn add_fuel(&mut self, fuel: u64) -> Result<()> {
         self.inner.add_fuel(fuel)
     }
@@ -770,9 +792,9 @@ impl<T> Store<T> {
     ///
     /// # Errors
     ///
-    /// This function will return an either either if fuel consumption via
-    /// [`Config`](crate::Config) is disabled or if `fuel` exceeds the amount
-    /// of remaining fuel within this store.
+    /// This function will return an error either if fuel consumption is not
+    /// enabled via [`Config::consume_fuel`](crate::Config::consume_fuel) or if
+    /// `fuel` exceeds the amount of remaining fuel within this store.
     pub fn consume_fuel(&mut self, fuel: u64) -> Result<u64> {
         self.inner.consume_fuel(fuel)
     }
@@ -849,6 +871,10 @@ impl<T> Store<T> {
     /// [`Engine::increment_epoch()`] has been invoked at least
     /// `ticks_beyond_current` times.
     ///
+    /// By default a store will trap immediately with an epoch deadline of 0
+    /// (which has always "elapsed"). This method is required to be configured
+    /// for stores with epochs enabled to some future epoch deadline.
+    ///
     /// See documentation on
     /// [`Config::epoch_interruption()`](crate::Config::epoch_interruption)
     /// for an introduction to epoch-based interruption.
@@ -866,8 +892,37 @@ impl<T> Store<T> {
     ///
     /// This behavior is the default if the store is not otherwise
     /// configured via
-    /// [`epoch_deadline_trap()`](Store::epoch_deadline_trap) or
+    /// [`epoch_deadline_trap()`](Store::epoch_deadline_trap),
+    /// [`epoch_deadline_callback()`](Store::epoch_deadline_callback) or
     /// [`epoch_deadline_async_yield_and_update()`](Store::epoch_deadline_async_yield_and_update).
+    ///
+    /// This setting is intended to allow for coarse-grained
+    /// interruption, but not a deterministic deadline of a fixed,
+    /// finite interval. For deterministic interruption, see the
+    /// "fuel" mechanism instead.
+    ///
+    /// Note that when this is used it's required to call
+    /// [`Store::set_epoch_deadline`] or otherwise wasm will always immediately
+    /// trap.
+    ///
+    /// See documentation on
+    /// [`Config::epoch_interruption()`](crate::Config::epoch_interruption)
+    /// for an introduction to epoch-based interruption.
+    pub fn epoch_deadline_trap(&mut self) {
+        self.inner.epoch_deadline_trap();
+    }
+
+    /// Configures epoch-deadline expiration to invoke a custom callback
+    /// function.
+    ///
+    /// When epoch-interruption-instrumented code is executed on this
+    /// store and the epoch deadline is reached before completion, the
+    /// provided callback function is invoked.
+    ///
+    /// This function should return a positive `delta`, which is used to
+    /// update the new epoch, setting it to the current epoch plus
+    /// `delta` ticks. Alternatively, the callback may return an error,
+    /// which will terminate execution.
     ///
     /// This setting is intended to allow for coarse-grained
     /// interruption, but not a deterministic deadline of a fixed,
@@ -877,8 +932,11 @@ impl<T> Store<T> {
     /// See documentation on
     /// [`Config::epoch_interruption()`](crate::Config::epoch_interruption)
     /// for an introduction to epoch-based interruption.
-    pub fn epoch_deadline_trap(&mut self) {
-        self.inner.epoch_deadline_trap();
+    pub fn epoch_deadline_callback(
+        &mut self,
+        callback: impl FnMut(StoreContextMut<T>) -> Result<u64> + Send + Sync + 'static,
+    ) {
+        self.inner.epoch_deadline_callback(Box::new(callback));
     }
 
     #[cfg_attr(nightlydoc, doc(cfg(feature = "async")))]
@@ -921,17 +979,10 @@ impl<'a, T> StoreContext<'a, T> {
         self.0.engine()
     }
 
-    /// Returns an [`InterruptHandle`] to interrupt wasm execution.
-    ///
-    /// See [`Store::interrupt_handle`] for more information.
-    pub fn interrupt_handle(&self) -> Result<InterruptHandle> {
-        self.0.interrupt_handle()
-    }
-
     /// Access the underlying data owned by this `Store`.
     ///
     /// Same as [`Store::data`].
-    pub fn data(&self) -> &T {
+    pub fn data(&self) -> &'a T {
         self.0.data()
     }
 
@@ -961,13 +1012,6 @@ impl<'a, T> StoreContextMut<'a, T> {
     /// Returns the underlying [`Engine`] this store is connected to.
     pub fn engine(&self) -> &Engine {
         self.0.engine()
-    }
-
-    /// Returns an [`InterruptHandle`] to interrupt wasm execution.
-    ///
-    /// See [`Store::interrupt_handle`] for more information.
-    pub fn interrupt_handle(&self) -> Result<InterruptHandle> {
-        self.0.interrupt_handle()
     }
 
     /// Perform garbage collection of `ExternRef`s.
@@ -1051,16 +1095,30 @@ impl<T> StoreInner<T> {
         &mut self.data
     }
 
-    pub fn call_hook(&mut self, s: CallHook) -> Result<(), Trap> {
-        if let Some(hook) = &mut self.call_hook {
-            hook(&mut self.data, s)
-        } else {
-            Ok(())
+    pub fn call_hook(&mut self, s: CallHook) -> Result<()> {
+        match &mut self.call_hook {
+            Some(CallHookInner::Sync(hook)) => hook(&mut self.data, s),
+
+            #[cfg(feature = "async")]
+            Some(CallHookInner::Async(handler)) => unsafe {
+                Ok(self
+                    .inner
+                    .async_cx()
+                    .ok_or_else(|| anyhow!("couldn't grab async_cx for call hook"))?
+                    .block_on(handler.handle_call_event(&mut self.data, s).as_mut())??)
+            },
+
+            None => Ok(()),
         }
     }
 }
 
+#[doc(hidden)]
 impl StoreOpaque {
+    pub fn id(&self) -> StoreId {
+        self.store_data.id()
+    }
+
     pub fn bump_resource_counts(&mut self, module: &Module) -> Result<()> {
         fn bump(slot: &mut usize, max: usize, amt: usize, desc: &str) -> Result<()> {
             let new = slot.saturating_add(amt);
@@ -1111,14 +1169,9 @@ impl StoreOpaque {
         &mut self.store_data
     }
 
-    pub fn interrupt_handle(&self) -> Result<InterruptHandle> {
-        if self.engine.config().tunables.interruptable {
-            Ok(InterruptHandle {
-                interrupts: self.interrupts.clone(),
-            })
-        } else {
-            bail!("interrupts aren't enabled for this `Store`")
-        }
+    #[inline]
+    pub(crate) fn modules(&self) -> &ModuleRegistry {
+        &self.modules
     }
 
     #[inline]
@@ -1148,8 +1201,8 @@ impl StoreOpaque {
     }
 
     #[inline]
-    pub fn interrupts(&self) -> &VMInterrupts {
-        &self.interrupts
+    pub fn runtime_limits(&self) -> &VMRuntimeLimits {
+        &self.runtime_limits
     }
 
     #[inline]
@@ -1212,7 +1265,7 @@ impl StoreOpaque {
     /// `self.host_trampolines` we lazily populate `self.host_trampolines` by
     /// iterating over `self.store_data().funcs`, inserting trampolines as we
     /// go. If we find the right trampoline then it's returned.
-    pub fn lookup_trampoline(&mut self, anyfunc: &VMCallerCheckedAnyfunc) -> VMTrampoline {
+    pub fn lookup_trampoline(&mut self, anyfunc: &VMCallerCheckedFuncRef) -> VMTrampoline {
         // First try to see if the `anyfunc` belongs to any module. Each module
         // has its own map of trampolines-per-type-index and the code pointer in
         // the `anyfunc` will enable us to quickly find a module.
@@ -1249,21 +1302,36 @@ impl StoreOpaque {
         panic!("trampoline missing")
     }
 
+    /// Yields the async context, assuming that we are executing on a fiber and
+    /// that fiber is not in the process of dying. This function will return
+    /// None in the latter case (the fiber is dying), and panic if
+    /// `async_support()` is false.
     #[cfg(feature = "async")]
     #[inline]
-    pub fn async_cx(&self) -> AsyncCx {
+    pub fn async_cx(&self) -> Option<AsyncCx> {
         debug_assert!(self.async_support());
-        AsyncCx {
-            current_suspend: self.async_state.current_suspend.get(),
-            current_poll_cx: self.async_state.current_poll_cx.get(),
+
+        let poll_cx_box_ptr = self.async_state.current_poll_cx.get();
+        if poll_cx_box_ptr.is_null() {
+            return None;
         }
+
+        let poll_cx_inner_ptr = unsafe { *poll_cx_box_ptr };
+        if poll_cx_inner_ptr.is_null() {
+            return None;
+        }
+
+        Some(AsyncCx {
+            current_suspend: self.async_state.current_suspend.get(),
+            current_poll_cx: poll_cx_box_ptr,
+        })
     }
 
     pub fn fuel_consumed(&self) -> Option<u64> {
         if !self.engine.config().tunables.consume_fuel {
             return None;
         }
-        let consumed = unsafe { *self.interrupts.fuel_consumed.get() };
+        let consumed = unsafe { *self.runtime_limits.fuel_consumed.get() };
         Some(u64::try_from(self.fuel_adj + consumed).unwrap())
     }
 
@@ -1287,7 +1355,7 @@ impl StoreOpaque {
     /// This only works on async futures and stores, and assumes that we're
     /// executing on a fiber. This will yield execution back to the caller once.
     #[cfg(feature = "async")]
-    fn async_yield_impl(&mut self) -> Result<(), Trap> {
+    fn async_yield_impl(&mut self) -> Result<()> {
         // Small future that yields once and then returns ()
         #[derive(Default)]
         struct Yield {
@@ -1313,14 +1381,18 @@ impl StoreOpaque {
 
         let mut future = Yield::default();
 
-        // When control returns, we have a `Result<(), Trap>` passed
+        // When control returns, we have a `Result<()>` passed
         // in from the host fiber. If this finished successfully then
         // we were resumed normally via a `poll`, so keep going.  If
         // the future was dropped while we were yielded, then we need
         // to clean up this fiber. Do so by raising a trap which will
         // abort all wasm and get caught on the other side to clean
         // things up.
-        unsafe { self.async_cx().block_on(Pin::new_unchecked(&mut future)) }
+        unsafe {
+            self.async_cx()
+                .expect("attempted to pull async context during shutdown")
+                .block_on(Pin::new_unchecked(&mut future))
+        }
     }
 
     fn add_fuel(&mut self, fuel: u64) -> Result<()> {
@@ -1335,7 +1407,7 @@ impl StoreOpaque {
         // reasonable amount of time anyway.
         let fuel = i64::try_from(fuel).unwrap_or(i64::max_value());
         let adj = self.fuel_adj;
-        let consumed_ptr = unsafe { &mut *self.interrupts.fuel_consumed.get() };
+        let consumed_ptr = unsafe { &mut *self.runtime_limits.fuel_consumed.get() };
 
         match (consumed_ptr.checked_sub(fuel), adj.checked_add(fuel)) {
             // If we succesfully did arithmetic without overflowing then we can
@@ -1358,33 +1430,17 @@ impl StoreOpaque {
     }
 
     fn consume_fuel(&mut self, fuel: u64) -> Result<u64> {
-        let consumed_ptr = unsafe { &mut *self.interrupts.fuel_consumed.get() };
+        let consumed_ptr = unsafe { &mut *self.runtime_limits.fuel_consumed.get() };
         match i64::try_from(fuel)
             .ok()
             .and_then(|fuel| consumed_ptr.checked_add(fuel))
         {
-            Some(consumed) if consumed < 0 => {
+            Some(consumed) if consumed <= 0 => {
                 *consumed_ptr = consumed;
                 Ok(u64::try_from(-consumed).unwrap())
             }
             _ => bail!("not enough fuel remaining in store"),
         }
-    }
-
-    fn epoch_deadline_trap(&mut self) {
-        self.epoch_deadline_behavior = EpochDeadline::Trap;
-    }
-
-    fn epoch_deadline_async_yield_and_update(&mut self, delta: u64) {
-        assert!(
-            self.async_support(),
-            "cannot use `epoch_deadline_async_yield_and_update` without enabling async support in the config"
-        );
-        #[cfg(feature = "async")]
-        {
-            self.epoch_deadline_behavior = EpochDeadline::YieldAndExtendDeadline { delta };
-        }
-        drop(delta); // suppress warning in non-async build
     }
 
     #[inline]
@@ -1394,8 +1450,8 @@ impl StoreOpaque {
     }
 
     #[inline]
-    pub fn vminterrupts(&self) -> *mut VMInterrupts {
-        &*self.interrupts as *const VMInterrupts as *mut VMInterrupts
+    pub fn vmruntime_limits(&self) -> *mut VMRuntimeLimits {
+        &self.runtime_limits as *const VMRuntimeLimits as *mut VMRuntimeLimits
     }
 
     pub unsafe fn insert_vmexternref_without_gc(&mut self, r: VMExternRef) {
@@ -1403,12 +1459,12 @@ impl StoreOpaque {
     }
 
     #[inline]
-    pub fn default_callee(&self) -> *mut VMContext {
-        self.default_callee.vmctx_ptr()
+    pub fn default_caller(&self) -> *mut VMContext {
+        self.default_caller.vmctx_ptr()
     }
 
     pub fn traitobj(&self) -> *mut dyn wasmtime_runtime::Store {
-        self.default_callee.store()
+        self.default_caller.store()
     }
 
     /// Takes the cached `Vec<Val>` stored internally across hostcalls to get
@@ -1443,6 +1499,72 @@ impl StoreOpaque {
             self.wasm_val_raw_storage = storage;
         }
     }
+
+    pub(crate) fn push_rooted_funcs(&mut self, funcs: Arc<[Definition]>) {
+        self.rooted_host_funcs.push(funcs);
+    }
+
+    /// Translates a WebAssembly fault at the native `pc` and native `addr` to a
+    /// WebAssembly-relative fault.
+    ///
+    /// This function may abort the process if `addr` is not found to actually
+    /// reside in any linear memory. In such a situation it means that the
+    /// segfault was erroneously caught by Wasmtime and is possibly indicative
+    /// of a code generator bug.
+    ///
+    /// This function returns `None` for dynamically-bounds-checked-memories
+    /// with spectre mitigations enabled since the hardware fault address is
+    /// always zero in these situations which means that the trapping context
+    /// doesn't have enough information to report the fault address.
+    pub(crate) fn wasm_fault(&self, pc: usize, addr: usize) -> Option<WasmFault> {
+        // Explicitly bounds-checked memories with spectre-guards enabled will
+        // cause out-of-bounds accesses to get routed to address 0, so allow
+        // wasm instructions to fault on the null address.
+        if addr == 0 {
+            return None;
+        }
+
+        // Search all known instances in this store for this address. Note that
+        // this is probably not the speediest way to do this. Traps, however,
+        // are generally not expected to be super fast and additionally stores
+        // probably don't have all that many instances or memories.
+        //
+        // If this loop becomes hot in the future, however, it should be
+        // possible to precompute maps about linear memories in a store and have
+        // a quicker lookup.
+        let mut fault = None;
+        for instance in self.instances.iter() {
+            if let Some(f) = instance.handle.wasm_fault(addr) {
+                assert!(fault.is_none());
+                fault = Some(f);
+            }
+        }
+        if fault.is_some() {
+            return fault;
+        }
+
+        eprintln!(
+            "\
+Wasmtime caught a segfault for a wasm program because the faulting instruction
+is allowed to segfault due to how linear memories are implemented. The address
+that was accessed, however, is not known to any linear memory in use within this
+Store. This may be indicative of a critical bug in Wasmtime's code generation
+because all addresses which are known to be reachable from wasm won't reach this
+message.
+
+    pc:      0x{pc:x}
+    address: 0x{addr:x}
+
+This is a possible security issue because WebAssembly has accessed something it
+shouldn't have been able to. Other accesses may have succeeded and this one just
+happened to be caught. The process will now be aborted to prevent this damage
+from going any further and to alert what's going on. If this is a security
+issue please reach out to the Wasmtime team via its security policy
+at https://bytecodealliance.org/security.
+"
+        );
+        std::process::abort();
+    }
 }
 
 impl<T> StoreContextMut<'_, T> {
@@ -1459,7 +1581,7 @@ impl<T> StoreContextMut<'_, T> {
     pub(crate) async fn on_fiber<R>(
         &mut self,
         func: impl FnOnce(&mut StoreContextMut<'_, T>) -> R + Send,
-    ) -> Result<R, Trap>
+    ) -> Result<R>
     where
         T: Send,
     {
@@ -1471,11 +1593,7 @@ impl<T> StoreContextMut<'_, T> {
         let future = {
             let current_poll_cx = self.0.async_state.current_poll_cx.get();
             let current_suspend = self.0.async_state.current_suspend.get();
-            let stack = self
-                .engine()
-                .allocator()
-                .allocate_fiber_stack()
-                .map_err(|e| Trap::from(anyhow::Error::from(e)))?;
+            let stack = self.engine().allocator().allocate_fiber_stack()?;
 
             let engine = self.engine().clone();
             let slot = &mut slot;
@@ -1499,8 +1617,7 @@ impl<T> StoreContextMut<'_, T> {
                     *slot = Some(func(self));
                     Ok(())
                 }
-            })
-            .map_err(|e| Trap::from(anyhow::Error::from(e)))?;
+            })?;
 
             // Once we have the fiber representing our synchronous computation, we
             // wrap that in a custom future implementation which does the
@@ -1516,7 +1633,7 @@ impl<T> StoreContextMut<'_, T> {
         return Ok(slot.unwrap());
 
         struct FiberFuture<'a> {
-            fiber: wasmtime_fiber::Fiber<'a, Result<(), Trap>, (), Result<(), Trap>>,
+            fiber: wasmtime_fiber::Fiber<'a, Result<()>, (), Result<()>>,
             current_poll_cx: *mut *mut Context<'static>,
             engine: Engine,
         }
@@ -1585,7 +1702,7 @@ impl<T> StoreContextMut<'_, T> {
         unsafe impl Send for FiberFuture<'_> {}
 
         impl Future for FiberFuture<'_> {
-            type Output = Result<(), Trap>;
+            type Output = Result<()>;
 
             fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
                 // We need to carry over this `cx` into our fiber's runtime
@@ -1640,7 +1757,7 @@ impl<T> StoreContextMut<'_, T> {
         impl Drop for FiberFuture<'_> {
             fn drop(&mut self) {
                 if !self.fiber.done() {
-                    let result = self.fiber.resume(Err(Trap::new("future dropped")));
+                    let result = self.fiber.resume(Err(anyhow!("future dropped")));
                     // This resumption with an error should always complete the
                     // fiber. While it's technically possible for host code to catch
                     // the trap and re-resume, we'd ideally like to signal that to
@@ -1660,7 +1777,7 @@ impl<T> StoreContextMut<'_, T> {
 
 #[cfg(feature = "async")]
 pub struct AsyncCx {
-    current_suspend: *mut *const wasmtime_fiber::Suspend<Result<(), Trap>, (), Result<(), Trap>>,
+    current_suspend: *mut *const wasmtime_fiber::Suspend<Result<()>, (), Result<()>>,
     current_poll_cx: *mut *mut Context<'static>,
 }
 
@@ -1689,7 +1806,7 @@ impl AsyncCx {
     pub unsafe fn block_on<U>(
         &self,
         mut future: Pin<&mut (dyn Future<Output = U> + Send)>,
-    ) -> Result<U, Trap> {
+    ) -> Result<U> {
         // Take our current `Suspend` context which was configured as soon as
         // our fiber started. Note that we must load it at the front here and
         // save it on our stack frame. While we're polling the future other
@@ -1722,17 +1839,17 @@ impl AsyncCx {
                 Poll::Pending => {}
             }
 
-            let before = wasmtime_runtime::TlsRestore::take().map_err(Trap::from_runtime_box)?;
+            let before = wasmtime_runtime::TlsRestore::take();
             let res = (*suspend).suspend(());
-            before.replace().map_err(Trap::from_runtime_box)?;
+            before.replace();
             res?;
         }
     }
 }
 
 unsafe impl<T> wasmtime_runtime::Store for StoreInner<T> {
-    fn vminterrupts(&self) -> *mut VMInterrupts {
-        <StoreOpaque>::vminterrupts(self)
+    fn vmruntime_limits(&self) -> *mut VMRuntimeLimits {
+        <StoreOpaque>::vmruntime_limits(self)
     }
 
     fn epoch_ptr(&self) -> *const AtomicU64 {
@@ -1755,28 +1872,20 @@ unsafe impl<T> wasmtime_runtime::Store for StoreInner<T> {
         desired: usize,
         maximum: Option<usize>,
     ) -> Result<bool, anyhow::Error> {
-        // Need to borrow async_cx before the mut borrow of the limiter.
-        // self.async_cx() panicks when used with a non-async store, so
-        // wrap this in an option.
-        #[cfg(feature = "async")]
-        let async_cx = if self.async_support() {
-            Some(self.async_cx())
-        } else {
-            None
-        };
         match self.limiter {
             Some(ResourceLimiterInner::Sync(ref mut limiter)) => {
-                Ok(limiter(&mut self.data).memory_growing(current, desired, maximum))
+                limiter(&mut self.data).memory_growing(current, desired, maximum)
             }
             #[cfg(feature = "async")]
             Some(ResourceLimiterInner::Async(ref mut limiter)) => unsafe {
-                Ok(async_cx
+                self.inner
+                    .async_cx()
                     .expect("ResourceLimiterAsync requires async Store")
                     .block_on(
                         limiter(&mut self.data)
                             .memory_growing(current, desired, maximum)
                             .as_mut(),
-                    )?)
+                    )?
             },
             None => Ok(true),
         }
@@ -1806,24 +1915,24 @@ unsafe impl<T> wasmtime_runtime::Store for StoreInner<T> {
         // wrap this in an option.
         #[cfg(feature = "async")]
         let async_cx = if self.async_support() {
-            Some(self.async_cx())
+            Some(self.async_cx().unwrap())
         } else {
             None
         };
 
         match self.limiter {
             Some(ResourceLimiterInner::Sync(ref mut limiter)) => {
-                Ok(limiter(&mut self.data).table_growing(current, desired, maximum))
+                limiter(&mut self.data).table_growing(current, desired, maximum)
             }
             #[cfg(feature = "async")]
             Some(ResourceLimiterInner::Async(ref mut limiter)) => unsafe {
-                Ok(async_cx
+                async_cx
                     .expect("ResourceLimiterAsync requires async Store")
                     .block_on(
                         limiter(&mut self.data)
                             .table_growing(current, desired, maximum)
                             .as_mut(),
-                    )?)
+                    )?
             },
             None => Ok(true),
         }
@@ -1844,14 +1953,14 @@ unsafe impl<T> wasmtime_runtime::Store for StoreInner<T> {
 
     fn out_of_gas(&mut self) -> Result<(), anyhow::Error> {
         return match &mut self.out_of_gas_behavior {
-            OutOfGas::Trap => Err(anyhow::Error::new(OutOfGasError)),
+            OutOfGas::Trap => Err(Trap::OutOfFuel.into()),
             #[cfg(feature = "async")]
             OutOfGas::InjectFuel {
                 injection_count,
                 fuel_to_inject,
             } => {
                 if *injection_count == 0 {
-                    return Err(anyhow::Error::new(OutOfGasError));
+                    return Err(Trap::OutOfFuel.into());
                 }
                 *injection_count -= 1;
                 let fuel = *fuel_to_inject;
@@ -1864,24 +1973,24 @@ unsafe impl<T> wasmtime_runtime::Store for StoreInner<T> {
             #[cfg(not(feature = "async"))]
             OutOfGas::InjectFuel { .. } => unreachable!(),
         };
-
-        #[derive(Debug)]
-        struct OutOfGasError;
-
-        impl fmt::Display for OutOfGasError {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("all fuel consumed by WebAssembly")
-            }
-        }
-
-        impl std::error::Error for OutOfGasError {}
     }
 
     fn new_epoch(&mut self) -> Result<u64, anyhow::Error> {
-        return match &self.epoch_deadline_behavior {
-            &EpochDeadline::Trap => Err(anyhow::Error::new(EpochDeadlineError)),
+        // Temporarily take the configured behavior to avoid mutably borrowing
+        // multiple times.
+        let mut behavior = std::mem::take(&mut self.epoch_deadline_behavior);
+        let delta_result = match &mut behavior {
+            EpochDeadline::Trap => Err(Trap::Interrupt.into()),
+            EpochDeadline::Callback(callback) => {
+                let delta = callback((&mut *self).as_context_mut())?;
+                // Set a new deadline and return the new epoch deadline so
+                // the Wasm code doesn't have to reload it.
+                self.set_epoch_deadline(delta);
+                Ok(self.get_epoch_deadline())
+            }
             #[cfg(feature = "async")]
-            &EpochDeadline::YieldAndExtendDeadline { delta } => {
+            EpochDeadline::YieldAndExtendDeadline { delta } => {
+                let delta = *delta;
                 // Do the async yield. May return a trap if future was
                 // canceled while we're yielded.
                 self.async_yield_impl()?;
@@ -1894,16 +2003,9 @@ unsafe impl<T> wasmtime_runtime::Store for StoreInner<T> {
             }
         };
 
-        #[derive(Debug)]
-        struct EpochDeadlineError;
-
-        impl fmt::Display for EpochDeadlineError {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("epoch deadline reached during execution")
-            }
-        }
-
-        impl std::error::Error for EpochDeadlineError {}
+        // Put back the original behavior which was replaced by `take`.
+        self.epoch_deadline_behavior = behavior;
+        delta_result
     }
 }
 
@@ -1912,21 +2014,44 @@ impl<T> StoreInner<T> {
         // Set a new deadline based on the "epoch deadline delta".
         //
         // Safety: this is safe because the epoch deadline in the
-        // `VMInterrupts` is accessed only here and by Wasm guest code
+        // `VMRuntimeLimits` is accessed only here and by Wasm guest code
         // running in this store, and we have a `&mut self` here.
         //
         // Also, note that when this update is performed while Wasm is
         // on the stack, the Wasm will reload the new value once we
         // return into it.
-        let epoch_deadline = unsafe { (*self.vminterrupts()).epoch_deadline.get_mut() };
+        let epoch_deadline = unsafe { (*self.vmruntime_limits()).epoch_deadline.get_mut() };
         *epoch_deadline = self.engine().current_epoch() + delta;
+    }
+
+    fn epoch_deadline_trap(&mut self) {
+        self.epoch_deadline_behavior = EpochDeadline::Trap;
+    }
+
+    fn epoch_deadline_callback(
+        &mut self,
+        callback: Box<dyn FnMut(StoreContextMut<T>) -> Result<u64> + Send + Sync>,
+    ) {
+        self.epoch_deadline_behavior = EpochDeadline::Callback(callback);
+    }
+
+    fn epoch_deadline_async_yield_and_update(&mut self, delta: u64) {
+        assert!(
+            self.async_support(),
+            "cannot use `epoch_deadline_async_yield_and_update` without enabling async support in the config"
+        );
+        #[cfg(feature = "async")]
+        {
+            self.epoch_deadline_behavior = EpochDeadline::YieldAndExtendDeadline { delta };
+        }
+        drop(delta); // suppress warning in non-async build
     }
 
     fn get_epoch_deadline(&self) -> u64 {
         // Safety: this is safe because, as above, it is only invoked
         // from within `new_epoch` which is called from guest Wasm
         // code, which will have an exclusive borrow on the Store.
-        let epoch_deadline = unsafe { (*self.vminterrupts()).epoch_deadline.get_mut() };
+        let epoch_deadline = unsafe { (*self.vmruntime_limits()).epoch_deadline.get_mut() };
         *epoch_deadline
     }
 }
@@ -1962,46 +2087,29 @@ impl Drop for StoreOpaque {
         // NB it's important that this destructor does not access `self.data`.
         // That is deallocated by `Drop for Store<T>` above.
 
-        let allocator = self.engine.allocator();
         unsafe {
+            let allocator = self.engine.allocator();
             let ondemand = OnDemandInstanceAllocator::default();
-            for instance in self.instances.iter() {
+            for instance in self.instances.iter_mut() {
                 if instance.ondemand {
-                    ondemand.deallocate(&instance.handle);
+                    ondemand.deallocate(&mut instance.handle);
                 } else {
-                    allocator.deallocate(&instance.handle);
+                    allocator.deallocate(&mut instance.handle);
                 }
             }
-            ondemand.deallocate(&self.default_callee);
+            ondemand.deallocate(&mut self.default_caller);
+
+            // See documentation for these fields on `StoreOpaque` for why they
+            // must be dropped in this order.
+            ManuallyDrop::drop(&mut self.store_data);
+            ManuallyDrop::drop(&mut self.rooted_host_funcs);
         }
     }
 }
 
 impl wasmtime_runtime::ModuleInfoLookup for ModuleRegistry {
-    fn lookup(&self, pc: usize) -> Option<Arc<dyn ModuleInfo>> {
+    fn lookup(&self, pc: usize) -> Option<&dyn ModuleInfo> {
         self.lookup_module(pc)
-    }
-}
-
-/// A threadsafe handle used to interrupt instances executing within a
-/// particular `Store`.
-///
-/// This structure is created by the [`Store::interrupt_handle`] method.
-#[derive(Debug)]
-pub struct InterruptHandle {
-    interrupts: Arc<VMInterrupts>,
-}
-
-impl InterruptHandle {
-    /// Flags that execution within this handle's original [`Store`] should be
-    /// interrupted.
-    ///
-    /// This will not immediately interrupt execution of wasm modules, but
-    /// rather it will interrupt wasm execution of loop headers and wasm
-    /// execution of function entries. For more information see
-    /// [`Store::interrupt_handle`].
-    pub fn interrupt(&self) {
-        self.interrupts.interrupt()
     }
 }
 

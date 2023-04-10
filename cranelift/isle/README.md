@@ -1,6 +1,6 @@
 # ISLE: Instruction Selection/Lowering Expressions DSL
 
-See also: [Language Reference](../docs/isle.md)
+See also: [Language Reference](./docs/language-reference.md)
 
 ## Table of Contents
 
@@ -171,7 +171,7 @@ There are a few things to notice about this generated Rust code:
   incrementally porting hand-written lowering code to ISLE.
 
 * There is a helpful comment documenting where in the ISLE source code a rule
-  was defined. The goal is to ISLE more transparent and less magical.
+  was defined. The goal is to make ISLE more transparent and less magical.
 
 * The code is parameterized by a type that implements a `Context`
   trait. Implementing this trait is how you glue the generated code into your

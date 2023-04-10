@@ -4,7 +4,7 @@
 ))]
 mod tests {
     use anyhow::Result;
-    use rustix::io::{mprotect, MprotectFlags};
+    use rustix::mm::{mprotect, MprotectFlags};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use wasmtime::unix::StoreExt;
@@ -47,7 +47,7 @@ mod tests {
 
     fn invoke_export(store: &mut Store<()>, instance: Instance, func_name: &str) -> Result<i32> {
         let ret = instance
-            .get_typed_func::<(), i32, _>(&mut *store, func_name)?
+            .get_typed_func::<(), i32>(&mut *store, func_name)?
             .call(store, ())?;
         Ok(ret)
     }
@@ -106,12 +106,11 @@ mod tests {
         module
             .imports()
             .map(|import| {
-                assert_eq!(Some("hostcall_read"), import.name());
+                assert_eq!("hostcall_read", import.name());
                 let func = Func::wrap(&mut *store, {
                     move |mut caller: Caller<'_, _>| {
                         let mem = caller.get_export("memory").unwrap().into_memory().unwrap();
                         let memory = mem.data(&caller);
-                        use std::convert::TryInto;
                         i32::from_le_bytes(memory[0..4].try_into().unwrap())
                     }
                 });
@@ -171,17 +170,12 @@ mod tests {
             let trap = invoke_export(&mut store, instance, "read_out_of_bounds")
                 .unwrap_err()
                 .downcast::<Trap>()?;
-            assert!(
-                trap.to_string()
-                    .contains("wasm trap: out of bounds memory access"),
-                "bad trap message: {:?}",
-                trap.to_string()
-            );
+            assert_eq!(trap, Trap::MemoryOutOfBounds);
         }
 
         // these invoke wasmtime_call_trampoline from callable.rs
         {
-            let read_func = instance.get_typed_func::<(), i32, _>(&mut store, "read")?;
+            let read_func = instance.get_typed_func::<(), i32>(&mut store, "read")?;
             println!("calling read...");
             let result = read_func
                 .call(&mut store, ())
@@ -191,12 +185,13 @@ mod tests {
 
         {
             let read_out_of_bounds_func =
-                instance.get_typed_func::<(), i32, _>(&mut store, "read_out_of_bounds")?;
+                instance.get_typed_func::<(), i32>(&mut store, "read_out_of_bounds")?;
             println!("calling read_out_of_bounds...");
-            let trap = read_out_of_bounds_func.call(&mut store, ()).unwrap_err();
-            assert!(trap
-                .to_string()
-                .contains("wasm trap: out of bounds memory access"));
+            let trap = read_out_of_bounds_func
+                .call(&mut store, ())
+                .unwrap_err()
+                .downcast::<Trap>()?;
+            assert_eq!(trap, Trap::MemoryOutOfBounds);
         }
         Ok(())
     }

@@ -29,6 +29,8 @@
 //! `suspend`, which has 0xB000 so it can find this, will read that and write
 //! its own resumption information into this slot as well.
 
+#![allow(unused_macros)]
+
 use crate::RunResult;
 use std::cell::Cell;
 use std::io;
@@ -47,7 +49,7 @@ impl FiberStack {
     pub fn new(size: usize) -> io::Result<Self> {
         // Round up our stack size request to the nearest multiple of the
         // page size.
-        let page_size = rustix::process::page_size();
+        let page_size = rustix::param::page_size();
         let size = if size == 0 {
             page_size
         } else {
@@ -57,17 +59,17 @@ impl FiberStack {
         unsafe {
             // Add in one page for a guard page and then ask for some memory.
             let mmap_len = size + page_size;
-            let mmap = rustix::io::mmap_anonymous(
+            let mmap = rustix::mm::mmap_anonymous(
                 ptr::null_mut(),
                 mmap_len,
-                rustix::io::ProtFlags::empty(),
-                rustix::io::MapFlags::PRIVATE,
+                rustix::mm::ProtFlags::empty(),
+                rustix::mm::MapFlags::PRIVATE,
             )?;
 
-            rustix::io::mprotect(
+            rustix::mm::mprotect(
                 mmap.cast::<u8>().add(page_size).cast(),
                 size,
-                rustix::io::MprotectFlags::READ | rustix::io::MprotectFlags::WRITE,
+                rustix::mm::MprotectFlags::READ | rustix::mm::MprotectFlags::WRITE,
             )?;
 
             Ok(Self {
@@ -84,13 +86,21 @@ impl FiberStack {
     pub fn top(&self) -> Option<*mut u8> {
         Some(self.top)
     }
+
+    pub unsafe fn parent(&self) -> *mut u8 {
+        self.top.cast::<*mut u8>().offset(-2).read()
+    }
+
+    pub unsafe fn write_parent(&self, tsp: *mut u8) {
+        self.top.cast::<*mut u8>().offset(-2).write(tsp);
+    }
 }
 
 impl Drop for FiberStack {
     fn drop(&mut self) {
         unsafe {
             if let Some(len) = self.len {
-                let ret = rustix::io::munmap(self.top.sub(len) as _, len);
+                let ret = rustix::mm::munmap(self.top.sub(len) as _, len);
                 debug_assert!(ret.is_ok());
             }
         }
@@ -108,6 +118,8 @@ extern "C" {
         entry_arg0: *mut u8,
     );
     fn wasmtime_fiber_switch(top_of_stack: *mut u8);
+    #[allow(dead_code)] // only used in inline assembly for some platforms
+    fn wasmtime_fiber_start();
 }
 
 extern "C" fn fiber_start<F, A, B, C>(arg0: *mut u8, top_of_stack: *mut u8)
@@ -152,7 +164,7 @@ impl Fiber {
 }
 
 impl Suspend {
-    pub(crate) fn switch<A, B, C>(&self, result: RunResult<A, B, C>) -> A {
+    pub fn switch<A, B, C>(&self, result: RunResult<A, B, C>) -> A {
         unsafe {
             // Calculate 0xAff8 and then write to it
             (*self.result_location::<A, B, C>()).set(result);
@@ -172,5 +184,28 @@ impl Suspend {
         let ret = self.0.cast::<*const u8>().offset(-1).read();
         assert!(!ret.is_null());
         ret.cast()
+    }
+
+    pub fn from_top_ptr(ptr: *mut u8) -> Self {
+        Suspend(ptr)
+    }
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(target_arch = "aarch64")] {
+        mod aarch64;
+    } else if #[cfg(target_arch = "x86_64")] {
+        mod x86_64;
+    } else if #[cfg(target_arch = "x86")] {
+        mod x86;
+    } else if #[cfg(target_arch = "arm")] {
+        mod arm;
+    } else if #[cfg(target_arch = "s390x")] {
+        // currently `global_asm!` isn't stable on s390x so this is an external
+        // assembler file built with the `build.rs`.
+    } else if #[cfg(target_arch = "riscv64")]  {
+        mod riscv64;
+    }else {
+        compile_error!("fibers are not supported on this CPU architecture");
     }
 }

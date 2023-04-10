@@ -3,6 +3,11 @@ use wasmtime::*;
 
 const WASM_PAGE_SIZE: usize = wasmtime_environ::WASM_PAGE_SIZE as usize;
 
+const FUNC_REF: RefType = RefType {
+    nullable: true,
+    heap_type: HeapType::Func,
+};
+
 #[test]
 fn test_limits() -> Result<()> {
     let engine = Engine::default();
@@ -50,7 +55,7 @@ fn test_limits() -> Result<()> {
         instance.get_table(&mut store, "t").unwrap(),
         Table::new(
             &mut store,
-            TableType::new(ValType::FuncRef, 0, None),
+            TableType::new(FUNC_REF, 0, None),
             Val::FuncRef(None),
         )?,
     ]) {
@@ -78,7 +83,7 @@ fn test_limits() -> Result<()> {
     store.limiter(|s| s as &mut dyn ResourceLimiter);
     let instance = Instance::new(&mut store, &module, &[])?;
     let grow = instance.get_func(&mut store, "grow").unwrap();
-    let grow = grow.typed::<i32, i32, _>(&store).unwrap();
+    let grow = grow.typed::<i32, i32>(&store).unwrap();
 
     grow.call(&mut store, 3).unwrap();
     grow.call(&mut store, 5).unwrap();
@@ -111,16 +116,16 @@ async fn test_limits_async() -> Result<()> {
             _current: usize,
             desired: usize,
             _maximum: Option<usize>,
-        ) -> bool {
-            desired <= self.memory_size
+        ) -> Result<bool> {
+            Ok(desired <= self.memory_size)
         }
         async fn table_growing(
             &mut self,
             _current: u32,
             desired: u32,
             _maximum: Option<u32>,
-        ) -> bool {
-            desired <= self.table_elements
+        ) -> Result<bool> {
+            Ok(desired <= self.table_elements)
         }
     }
 
@@ -160,7 +165,7 @@ async fn test_limits_async() -> Result<()> {
         instance.get_table(&mut store, "t").unwrap(),
         Table::new_async(
             &mut store,
-            TableType::new(ValType::FuncRef, 0, None),
+            TableType::new(FUNC_REF, 0, None),
             Val::FuncRef(None),
         )
         .await?,
@@ -223,7 +228,7 @@ fn test_limits_memory_only() -> Result<()> {
         instance.get_table(&mut store, "t").unwrap(),
         Table::new(
             &mut store,
-            TableType::new(ValType::FuncRef, 0, None),
+            TableType::new(FUNC_REF, 0, None),
             Val::FuncRef(None),
         )?,
     ]) {
@@ -253,7 +258,7 @@ fn test_initial_memory_limits_exceeded() -> Result<()> {
         Ok(_) => unreachable!(),
         Err(e) => assert_eq!(
             e.to_string(),
-            "Insufficient resources: memory minimum size of 11 pages exceeds memory limits"
+            "memory minimum size of 11 pages exceeds memory limits"
         ),
     }
 
@@ -261,7 +266,7 @@ fn test_initial_memory_limits_exceeded() -> Result<()> {
         Ok(_) => unreachable!(),
         Err(e) => assert_eq!(
             e.to_string(),
-            "Insufficient resources: memory minimum size of 25 pages exceeds memory limits"
+            "memory minimum size of 25 pages exceeds memory limits"
         ),
     }
 
@@ -297,7 +302,7 @@ fn test_limits_table_only() -> Result<()> {
         instance.get_table(&mut store, "t").unwrap(),
         Table::new(
             &mut store,
-            TableType::new(ValType::FuncRef, 0, None),
+            TableType::new(FUNC_REF, 0, None),
             Val::FuncRef(None),
         )?,
     ]) {
@@ -329,19 +334,19 @@ fn test_initial_table_limits_exceeded() -> Result<()> {
         Ok(_) => unreachable!(),
         Err(e) => assert_eq!(
             e.to_string(),
-            "Insufficient resources: table minimum size of 23 elements exceeds table limits"
+            "table minimum size of 23 elements exceeds table limits"
         ),
     }
 
     match Table::new(
         &mut store,
-        TableType::new(ValType::FuncRef, 99, None),
+        TableType::new(FUNC_REF, 99, None),
         Val::FuncRef(None),
     ) {
         Ok(_) => unreachable!(),
         Err(e) => assert_eq!(
             e.to_string(),
-            "Insufficient resources: table minimum size of 99 elements exceeds table limits"
+            "table minimum size of 99 elements exceeds table limits"
         ),
     }
 
@@ -350,19 +355,11 @@ fn test_initial_table_limits_exceeded() -> Result<()> {
 
 #[test]
 fn test_pooling_allocator_initial_limits_exceeded() -> Result<()> {
+    let mut pool = PoolingAllocationConfig::default();
+    pool.instance_count(1).instance_memories(2);
     let mut config = Config::new();
     config.wasm_multi_memory(true);
-    config.allocation_strategy(InstanceAllocationStrategy::Pooling {
-        strategy: PoolingAllocationStrategy::NextAvailable,
-        module_limits: ModuleLimits {
-            memories: 2,
-            ..Default::default()
-        },
-        instance_limits: InstanceLimits {
-            count: 1,
-            ..Default::default()
-        },
-    });
+    config.allocation_strategy(InstanceAllocationStrategy::Pooling(pool));
 
     let engine = Engine::new(&config)?;
     let module = Module::new(
@@ -382,7 +379,7 @@ fn test_pooling_allocator_initial_limits_exceeded() -> Result<()> {
         Ok(_) => unreachable!(),
         Err(e) => assert_eq!(
             e.to_string(),
-            "Insufficient resources: memory minimum size of 5 pages exceeds memory limits"
+            "memory minimum size of 5 pages exceeds memory limits"
         ),
     }
 
@@ -402,7 +399,12 @@ struct MemoryContext {
 }
 
 impl ResourceLimiter for MemoryContext {
-    fn memory_growing(&mut self, current: usize, desired: usize, maximum: Option<usize>) -> bool {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> Result<bool> {
         // Check if the desired exceeds a maximum (either from Wasm or from the host)
         assert!(desired < maximum.unwrap_or(usize::MAX));
 
@@ -411,14 +413,19 @@ impl ResourceLimiter for MemoryContext {
 
         if desired + self.host_memory_used > self.memory_limit {
             self.limit_exceeded = true;
-            return false;
+            return Ok(false);
         }
 
         self.wasm_memory_used = desired;
-        true
+        Ok(true)
     }
-    fn table_growing(&mut self, _current: u32, _desired: u32, _maximum: Option<u32>) -> bool {
-        true
+    fn table_growing(
+        &mut self,
+        _current: u32,
+        _desired: u32,
+        _maximum: Option<u32>,
+    ) -> Result<bool> {
+        Ok(true)
     }
 }
 
@@ -472,7 +479,7 @@ fn test_custom_memory_limiter() -> Result<()> {
     assert!(!store.data().limit_exceeded);
 
     // Grow the host "memory" by 384 KiB
-    let f = instance.get_typed_func::<u32, u32, _>(&mut store, "f")?;
+    let f = instance.get_typed_func::<u32, u32>(&mut store, "f")?;
 
     assert_eq!(f.call(&mut store, 1 * 0x10000)?, 1);
     assert_eq!(f.call(&mut store, 3 * 0x10000)?, 1);
@@ -509,7 +516,7 @@ impl ResourceLimiterAsync for MemoryContext {
         current: usize,
         desired: usize,
         maximum: Option<usize>,
-    ) -> bool {
+    ) -> Result<bool> {
         // Show we can await in this async context:
         tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         // Check if the desired exceeds a maximum (either from Wasm or from the host)
@@ -520,14 +527,19 @@ impl ResourceLimiterAsync for MemoryContext {
 
         if desired + self.host_memory_used > self.memory_limit {
             self.limit_exceeded = true;
-            return false;
+            return Ok(false);
         }
 
         self.wasm_memory_used = desired;
-        true
+        Ok(true)
     }
-    async fn table_growing(&mut self, _current: u32, _desired: u32, _maximum: Option<u32>) -> bool {
-        true
+    async fn table_growing(
+        &mut self,
+        _current: u32,
+        _desired: u32,
+        _maximum: Option<u32>,
+    ) -> Result<bool> {
+        Ok(true)
     }
     fn table_grow_failed(&mut self, _e: &anyhow::Error) {}
 }
@@ -584,7 +596,7 @@ async fn test_custom_memory_limiter_async() -> Result<()> {
     assert!(!store.data().limit_exceeded);
 
     // Grow the host "memory" by 384 KiB
-    let f = instance.get_typed_func::<u32, u32, _>(&mut store, "f")?;
+    let f = instance.get_typed_func::<u32, u32>(&mut store, "f")?;
 
     assert_eq!(f.call_async(&mut store, 1 * 0x10000).await?, 1);
     assert_eq!(f.call_async(&mut store, 3 * 0x10000).await?, 1);
@@ -627,20 +639,20 @@ impl ResourceLimiter for TableContext {
         _current: usize,
         _desired: usize,
         _maximum: Option<usize>,
-    ) -> bool {
-        true
+    ) -> Result<bool> {
+        Ok(true)
     }
-    fn table_growing(&mut self, current: u32, desired: u32, maximum: Option<u32>) -> bool {
+    fn table_growing(&mut self, current: u32, desired: u32, maximum: Option<u32>) -> Result<bool> {
         // Check if the desired exceeds a maximum (either from Wasm or from the host)
         assert!(desired < maximum.unwrap_or(u32::MAX));
         assert_eq!(current, self.elements_used);
-        if desired > self.element_limit {
+        Ok(if desired > self.element_limit {
             self.limit_exceeded = true;
-            return false;
+            false
         } else {
             self.elements_used = desired;
             true
-        }
+        })
     }
 }
 
@@ -701,18 +713,23 @@ struct FailureDetector {
 }
 
 impl ResourceLimiter for FailureDetector {
-    fn memory_growing(&mut self, current: usize, desired: usize, _maximum: Option<usize>) -> bool {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> Result<bool> {
         self.memory_current = current;
         self.memory_desired = desired;
-        true
+        Ok(true)
     }
     fn memory_grow_failed(&mut self, err: &anyhow::Error) {
         self.memory_error = Some(err.to_string());
     }
-    fn table_growing(&mut self, current: u32, desired: u32, _maximum: Option<u32>) -> bool {
+    fn table_growing(&mut self, current: u32, desired: u32, _maximum: Option<u32>) -> Result<bool> {
         self.table_current = current;
         self.table_desired = desired;
-        true
+        Ok(true)
     }
     fn table_grow_failed(&mut self, err: &anyhow::Error) {
         self.table_error = Some(err.to_string());
@@ -724,18 +741,10 @@ fn custom_limiter_detect_grow_failure() -> Result<()> {
     if std::env::var("WASMTIME_TEST_NO_HOG_MEMORY").is_ok() {
         return Ok(());
     }
+    let mut pool = PoolingAllocationConfig::default();
+    pool.instance_memory_pages(10).instance_table_elements(10);
     let mut config = Config::new();
-    config.allocation_strategy(InstanceAllocationStrategy::Pooling {
-        strategy: PoolingAllocationStrategy::NextAvailable,
-        module_limits: ModuleLimits {
-            memory_pages: 10,
-            table_elements: 10,
-            ..Default::default()
-        },
-        instance_limits: InstanceLimits {
-            ..Default::default()
-        },
-    });
+    config.allocation_strategy(InstanceAllocationStrategy::Pooling(pool));
     let engine = Engine::new(&config).unwrap();
     let linker = Linker::new(&engine);
 
@@ -809,21 +818,26 @@ impl ResourceLimiterAsync for FailureDetector {
         current: usize,
         desired: usize,
         _maximum: Option<usize>,
-    ) -> bool {
+    ) -> Result<bool> {
         // Show we can await in this async context:
         tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         self.memory_current = current;
         self.memory_desired = desired;
-        true
+        Ok(true)
     }
     fn memory_grow_failed(&mut self, err: &anyhow::Error) {
         self.memory_error = Some(err.to_string());
     }
 
-    async fn table_growing(&mut self, current: u32, desired: u32, _maximum: Option<u32>) -> bool {
+    async fn table_growing(
+        &mut self,
+        current: u32,
+        desired: u32,
+        _maximum: Option<u32>,
+    ) -> Result<bool> {
         self.table_current = current;
         self.table_desired = desired;
-        true
+        Ok(true)
     }
     fn table_grow_failed(&mut self, err: &anyhow::Error) {
         self.table_error = Some(err.to_string());
@@ -835,19 +849,11 @@ async fn custom_limiter_async_detect_grow_failure() -> Result<()> {
     if std::env::var("WASMTIME_TEST_NO_HOG_MEMORY").is_ok() {
         return Ok(());
     }
+    let mut pool = PoolingAllocationConfig::default();
+    pool.instance_memory_pages(10).instance_table_elements(10);
     let mut config = Config::new();
     config.async_support(true);
-    config.allocation_strategy(InstanceAllocationStrategy::Pooling {
-        strategy: PoolingAllocationStrategy::NextAvailable,
-        module_limits: ModuleLimits {
-            memory_pages: 10,
-            table_elements: 10,
-            ..Default::default()
-        },
-        instance_limits: InstanceLimits {
-            ..Default::default()
-        },
-    });
+    config.allocation_strategy(InstanceAllocationStrategy::Pooling(pool));
     let engine = Engine::new(&config).unwrap();
     let linker = Linker::new(&engine);
 
@@ -927,10 +933,15 @@ impl ResourceLimiter for Panic {
         _current: usize,
         _desired: usize,
         _maximum: Option<usize>,
-    ) -> bool {
+    ) -> Result<bool> {
         panic!("resource limiter memory growing");
     }
-    fn table_growing(&mut self, _current: u32, _desired: u32, _maximum: Option<u32>) -> bool {
+    fn table_growing(
+        &mut self,
+        _current: u32,
+        _desired: u32,
+        _maximum: Option<u32>,
+    ) -> Result<bool> {
         panic!("resource limiter table growing");
     }
 }
@@ -941,10 +952,15 @@ impl ResourceLimiterAsync for Panic {
         _current: usize,
         _desired: usize,
         _maximum: Option<usize>,
-    ) -> bool {
+    ) -> Result<bool> {
         panic!("async resource limiter memory growing");
     }
-    async fn table_growing(&mut self, _current: u32, _desired: u32, _maximum: Option<u32>) -> bool {
+    async fn table_growing(
+        &mut self,
+        _current: u32,
+        _desired: u32,
+        _maximum: Option<u32>,
+    ) -> Result<bool> {
         panic!("async resource limiter table growing");
     }
 }
@@ -989,7 +1005,7 @@ fn panic_in_memory_limiter_wasm_stack() {
     store.limiter(|s| s as &mut dyn ResourceLimiter);
     let instance = linker.instantiate(&mut store, &module).unwrap();
     let grow = instance.get_func(&mut store, "grow").unwrap();
-    let grow = grow.typed::<i32, i32, _>(&store).unwrap();
+    let grow = grow.typed::<i32, i32>(&store).unwrap();
 
     // Grow the memory, which should panic
     grow.call(&mut store, 3).unwrap();
@@ -1056,7 +1072,7 @@ async fn panic_in_async_memory_limiter_wasm_stack() {
     store.limiter_async(|s| s as &mut dyn ResourceLimiterAsync);
     let instance = linker.instantiate_async(&mut store, &module).await.unwrap();
     let grow = instance.get_func(&mut store, "grow").unwrap();
-    let grow = grow.typed::<i32, i32, _>(&store).unwrap();
+    let grow = grow.typed::<i32, i32>(&store).unwrap();
 
     // Grow the memory, which should panic
     grow.call_async(&mut store, 3).await.unwrap();
@@ -1082,4 +1098,62 @@ async fn panic_in_async_table_limiter() {
         .grow_async(&mut store, 3, Val::FuncRef(None))
         .await
         .unwrap();
+}
+
+#[test]
+fn growth_trap() -> Result<()> {
+    let engine = Engine::default();
+    let module = Module::new(
+        &engine,
+        r#"(module
+            (memory $m (export "m") 0)
+            (table (export "t") 0 anyfunc)
+            (func (export "grow") (param i32) (result i32)
+              (memory.grow $m (local.get 0)))
+           )"#,
+    )?;
+
+    let mut store = Store::new(
+        &engine,
+        StoreLimitsBuilder::new()
+            .memory_size(WASM_PAGE_SIZE)
+            .table_elements(1)
+            .trap_on_grow_failure(true)
+            .build(),
+    );
+    store.limiter(|s| s as &mut dyn ResourceLimiter);
+
+    let instance = Instance::new(&mut store, &module, &[])?;
+
+    // Test instance exports and host objects hitting the limit
+    for memory in [
+        instance.get_memory(&mut store, "m").unwrap(),
+        Memory::new(&mut store, MemoryType::new(0, None))?,
+    ] {
+        memory.grow(&mut store, 1)?;
+        assert!(memory.grow(&mut store, 1).is_err());
+    }
+
+    // Test instance exports and host objects hitting the limit
+    for table in [
+        instance.get_table(&mut store, "t").unwrap(),
+        Table::new(
+            &mut store,
+            TableType::new(FUNC_REF, 0, None),
+            Val::FuncRef(None),
+        )?,
+    ] {
+        table.grow(&mut store, 1, Val::FuncRef(None))?;
+        assert!(table.grow(&mut store, 1, Val::FuncRef(None)).is_err());
+    }
+
+    let mut store = Store::new(&engine, store.data().clone());
+    store.limiter(|s| s as &mut dyn ResourceLimiter);
+    let instance = Instance::new(&mut store, &module, &[])?;
+    let grow = instance.get_func(&mut store, "grow").unwrap();
+    let grow = grow.typed::<i32, i32>(&store).unwrap();
+    grow.call(&mut store, 1)?;
+    assert!(grow.call(&mut store, 1).is_err());
+
+    Ok(())
 }

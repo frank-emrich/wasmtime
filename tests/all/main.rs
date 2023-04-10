@@ -1,6 +1,7 @@
 mod async_functions;
 mod call_hook;
 mod cli_tests;
+mod component_model;
 mod custom_signal_handler;
 mod debug;
 mod epoch_interruption;
@@ -21,7 +22,6 @@ mod linker;
 mod memory;
 mod memory_creator;
 mod module;
-mod module_linking;
 mod module_serialize;
 mod name;
 mod pooling_allocator;
@@ -29,11 +29,19 @@ mod relocs;
 mod stack_overflow;
 mod store;
 mod table;
+mod threads;
 mod traps;
+mod valtype_util;
+mod wait_notify;
+mod wasi_testsuite;
 mod wast;
+// Currently Winch is only supported in x86_64 unix platforms.
+#[cfg(all(target_arch = "x86_64", target_family = "unix"))]
+mod winch;
 
 /// A helper to compile a module in a new store with reference types enabled.
 pub(crate) fn ref_types_module(
+    use_epochs: bool,
     source: &str,
 ) -> anyhow::Result<(wasmtime::Store<()>, wasmtime::Module)> {
     use wasmtime::*;
@@ -42,9 +50,15 @@ pub(crate) fn ref_types_module(
 
     let mut config = Config::new();
     config.wasm_reference_types(true);
+    if use_epochs {
+        config.epoch_interruption(true);
+    }
 
     let engine = Engine::new(&config)?;
-    let store = Store::new(&engine, ());
+    let mut store = Store::new(&engine, ());
+    if use_epochs {
+        store.set_epoch_deadline(1);
+    }
 
     let module = Module::new(&engine, source)?;
 

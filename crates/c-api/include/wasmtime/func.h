@@ -101,6 +101,8 @@ WASM_API_EXTERN void wasmtime_func_new(
  *        array depends on the function type that the host function is created
  *        with, but it will be the maximum of the number of parameters and
  *        number of results.
+ * \param num_args_and_results the size of the `args_and_results` parameter in
+ *        units of #wasmtime_val_raw_t.
  *
  * This callback can optionally return a #wasm_trap_t indicating that a trap
  * should be raised in WebAssembly. It's expected that in this case the caller
@@ -121,7 +123,8 @@ WASM_API_EXTERN void wasmtime_func_new(
 typedef wasm_trap_t* (*wasmtime_func_unchecked_callback_t)(
     void *env,
     wasmtime_caller_t* caller,
-    wasmtime_val_raw_t *args_and_results);
+    wasmtime_val_raw_t *args_and_results,
+    size_t num_args_and_results);
 
 /**
  * \brief Creates a new host function in the same manner of #wasmtime_func_new,
@@ -238,10 +241,11 @@ WASM_API_EXTERN wasmtime_error_t *wasmtime_func_call(
  * faster than that function, but the tradeoff is that embeddings must uphold
  * more invariants rather than relying on Wasmtime to check them for you.
  */
-WASM_API_EXTERN wasm_trap_t *wasmtime_func_call_unchecked(
+WASM_API_EXTERN wasmtime_error_t *wasmtime_func_call_unchecked(
     wasmtime_context_t *store,
     const wasmtime_func_t *func,
-    wasmtime_val_raw_t *args_and_results
+    wasmtime_val_raw_t *args_and_results,
+    wasm_trap_t **trap
 );
 
 /**

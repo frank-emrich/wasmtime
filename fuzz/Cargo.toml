@@ -1,30 +1,43 @@
 [package]
 name = "wasmtime-fuzz"
 version = "0.0.0"
-authors = ["The Wasmtime Project Developers"]
-edition = "2018"
+edition.workspace = true
 publish = false
 
 [package.metadata]
 cargo-fuzz = true
 
 [dependencies]
-cranelift-codegen = { path = "../cranelift/codegen" }
-cranelift-reader = { path = "../cranelift/reader" }
-cranelift-wasm = { path = "../cranelift/wasm" }
-cranelift-filetests = { path = "../cranelift/filetests" }
-cranelift-interpreter = { path = "../cranelift/interpreter" }
-cranelift-fuzzgen = { path = "../cranelift/fuzzgen" }
-libfuzzer-sys = "0.4.0"
-target-lexicon = "0.12"
-wasmtime = { path = "../crates/wasmtime" }
-wasmtime-fuzzing = { path = "../crates/fuzzing" }
+anyhow = { workspace = true }
+once_cell = { workspace = true }
+cranelift-codegen = { workspace = true, features = ["incremental-cache", "x86", "arm64", "s390x", "riscv64"] }
+cranelift-reader = { workspace = true }
+cranelift-wasm = { workspace = true }
+cranelift-filetests = { workspace = true }
+cranelift-interpreter = { workspace = true }
+cranelift-fuzzgen = { workspace = true }
+cranelift-native = { workspace = true }
+cranelift-control = { workspace = true }
+libfuzzer-sys = { version = "0.4.0", features = ["arbitrary-derive"] }
+target-lexicon = { workspace = true }
+smallvec = { workspace = true }
+wasmtime = { workspace = true }
+wasmtime-fuzzing = { workspace = true }
+component-test-util = { workspace = true }
+component-fuzz-util = { workspace = true }
+
+[build-dependencies]
+anyhow = { workspace = true }
+proc-macro2 = "1.0"
+arbitrary = { version = "1.1.0", features = ["derive"] }
+rand = { version = "0.8.0" }
+quote = "1.0"
+component-fuzz-util = { workspace = true }
 
 [features]
-# Leave a stub feature with no side-effects in place for now: the OSS-Fuzz
-# config builds fuzz targets with this feature enabled and we don't want to
-# break the build.
-experimental_x64 = []
+default = ['fuzz-spec-interpreter']
+fuzz-spec-interpreter = ['wasmtime-fuzzing/fuzz-spec-interpreter']
+chaos = ["cranelift-control/chaos"]
 
 [[bin]]
 name = "compile"
@@ -51,18 +64,6 @@ test = false
 doc = false
 
 [[bin]]
-name = "differential_wasmi"
-path = "fuzz_targets/differential_wasmi.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "differential_v8"
-path = "fuzz_targets/differential_v8.rs"
-test = false
-doc = false
-
-[[bin]]
 name = "spectests"
 path = "fuzz_targets/spectests.rs"
 test = false
@@ -71,6 +72,12 @@ doc = false
 [[bin]]
 name = "table_ops"
 path = "fuzz_targets/table_ops.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "stacks"
+path = "fuzz_targets/stacks.rs"
 test = false
 doc = false
 
@@ -87,13 +94,19 @@ test = false
 doc = false
 
 [[bin]]
-name = "cranelift-fuzzgen-verify"
-path = "fuzz_targets/cranelift-fuzzgen-verify.rs"
+name = "instantiate-many"
+path = "fuzz_targets/instantiate-many.rs"
 test = false
 doc = false
 
 [[bin]]
-name = "instantiate-many"
-path = "fuzz_targets/instantiate-many.rs"
+name = "component_api"
+path = "fuzz_targets/component_api.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "cranelift-icache"
+path = "fuzz_targets/cranelift-icache.rs"
 test = false
 doc = false

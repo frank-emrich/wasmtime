@@ -4,6 +4,7 @@ use io_extras::os::windows::{AsRawHandleOrSocket, RawHandleOrSocket};
 #[cfg(not(windows))]
 use io_lifetimes::AsFd;
 use std::any::Any;
+use std::borrow::Borrow;
 use std::io;
 use wasi_common::{
     file::{Advice, FdFlags, FileType, Filestat, WasiFile},
@@ -94,6 +95,14 @@ macro_rules! wasi_file_impl {
             fn as_any(&self) -> &dyn Any {
                 self
             }
+            #[cfg(unix)]
+            fn pollable(&self) -> Option<rustix::fd::BorrowedFd> {
+                Some(self.0.as_fd())
+            }
+            #[cfg(windows)]
+            fn pollable(&self) -> Option<io_extras::os::windows::RawHandleOrSocket> {
+                Some(self.0.as_raw_handle_or_socket())
+            }
             async fn datasync(&self) -> Result<(), Error> {
                 block_on_dummy_executor(|| self.0.datasync())
             }
@@ -157,8 +166,8 @@ macro_rules! wasi_file_impl {
             ) -> Result<(), Error> {
                 block_on_dummy_executor(move || self.0.set_times(atime, mtime))
             }
-            async fn num_ready_bytes(&self) -> Result<u64, Error> {
-                block_on_dummy_executor(|| self.0.num_ready_bytes())
+            fn num_ready_bytes(&self) -> Result<u64, Error> {
+                self.0.num_ready_bytes()
             }
             fn isatty(&self) -> bool {
                 self.0.isatty()
@@ -173,7 +182,7 @@ macro_rules! wasi_file_impl {
                 // lifetime of the AsyncFd.
                 use std::os::unix::io::AsRawFd;
                 use tokio::io::{unix::AsyncFd, Interest};
-                let rawfd = self.0.as_fd().as_raw_fd();
+                let rawfd = self.0.borrow().as_fd().as_raw_fd();
                 match AsyncFd::with_interest(rawfd, Interest::READABLE) {
                     Ok(asyncfd) => {
                         let _ = asyncfd.readable().await?;
@@ -187,12 +196,6 @@ macro_rules! wasi_file_impl {
                     Err(e) => Err(e.into()),
                 }
             }
-            #[cfg(windows)]
-            async fn readable(&self) -> Result<(), Error> {
-                // Windows uses a rawfd based scheduler :(
-                use wasi_common::ErrorExt;
-                Err(Error::badf())
-            }
 
             #[cfg(not(windows))]
             async fn writable(&self) -> Result<(), Error> {
@@ -203,7 +206,7 @@ macro_rules! wasi_file_impl {
                 // lifetime of the AsyncFd.
                 use std::os::unix::io::AsRawFd;
                 use tokio::io::{unix::AsyncFd, Interest};
-                let rawfd = self.0.as_fd().as_raw_fd();
+                let rawfd = self.0.borrow().as_fd().as_raw_fd();
                 match AsyncFd::with_interest(rawfd, Interest::WRITABLE) {
                     Ok(asyncfd) => {
                         let _ = asyncfd.writable().await?;
@@ -217,14 +220,8 @@ macro_rules! wasi_file_impl {
                     Err(e) => Err(e.into()),
                 }
             }
-            #[cfg(windows)]
-            async fn writable(&self) -> Result<(), Error> {
-                // Windows uses a rawfd based scheduler :(
-                use wasi_common::ErrorExt;
-                Err(Error::badf())
-            }
 
-            async fn sock_accept(&mut self, fdflags: FdFlags) -> Result<Box<dyn WasiFile>, Error> {
+            async fn sock_accept(&self, fdflags: FdFlags) -> Result<Box<dyn WasiFile>, Error> {
                 block_on_dummy_executor(|| self.0.sock_accept(fdflags))
             }
         }
@@ -232,7 +229,7 @@ macro_rules! wasi_file_impl {
         impl AsRawHandleOrSocket for $ty {
             #[inline]
             fn as_raw_handle_or_socket(&self) -> RawHandleOrSocket {
-                self.0.as_raw_handle_or_socket()
+                self.0.borrow().as_raw_handle_or_socket()
             }
         }
     };

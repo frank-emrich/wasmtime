@@ -19,70 +19,70 @@
         clippy::use_self
     )
 )]
-#![cfg_attr(not(memfd), allow(unused_variables, unreachable_code))]
-
-use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
 
 use anyhow::Error;
-use wasmtime_environ::DefinedFuncIndex;
-use wasmtime_environ::DefinedMemoryIndex;
-use wasmtime_environ::FunctionInfo;
-use wasmtime_environ::SignatureIndex;
+use std::fmt;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
+use wasmtime_environ::{DefinedFuncIndex, DefinedMemoryIndex, HostPtr, VMOffsets};
 
+#[macro_use]
+mod trampolines;
+
+#[cfg(feature = "component-model")]
+pub mod component;
 mod export;
 mod externref;
 mod imports;
 mod instance;
-mod jit_int;
 mod memory;
 mod mmap;
 mod mmap_vec;
+mod parking_spot;
 mod table;
 mod traphandlers;
 mod vmcontext;
 
 pub mod debug_builtins;
+pub mod continuation;
 pub mod libcalls;
+
+pub use wasmtime_jit_debug::gdb_jit_int::GdbJitImageRegistration;
 
 pub use crate::export::*;
 pub use crate::externref::*;
 pub use crate::imports::Imports;
 pub use crate::instance::{
-    InstanceAllocationRequest, InstanceAllocator, InstanceHandle, InstantiationError, LinkError,
-    OnDemandInstanceAllocator, StorePtr,
+    InstanceAllocationRequest, InstanceAllocator, InstanceHandle, OnDemandInstanceAllocator,
+    StorePtr,
 };
 #[cfg(feature = "pooling-allocator")]
 pub use crate::instance::{
-    InstanceLimits, ModuleLimits, PoolingAllocationStrategy, PoolingInstanceAllocator,
+    InstanceLimits, PoolingInstanceAllocator, PoolingInstanceAllocatorConfig,
 };
-pub use crate::jit_int::GdbJitImageRegistration;
-pub use crate::memory::{DefaultMemoryCreator, Memory, RuntimeLinearMemory, RuntimeMemoryCreator};
+pub use crate::memory::{
+    DefaultMemoryCreator, Memory, RuntimeLinearMemory, RuntimeMemoryCreator, SharedMemory,
+};
 pub use crate::mmap::Mmap;
 pub use crate::mmap_vec::MmapVec;
 pub use crate::table::{Table, TableElement};
+pub use crate::trampolines::prepare_host_to_wasm_trampoline;
 pub use crate::traphandlers::{
     catch_traps, init_traps, raise_lib_trap, raise_user_trap, resume_panic, tls_eager_initialize,
-    SignalHandler, TlsRestore, Trap,
+    Backtrace, SignalHandler, TlsRestore, Trap, TrapReason,
 };
 pub use crate::vmcontext::{
-    VMCallerCheckedAnyfunc, VMContext, VMFunctionBody, VMFunctionImport, VMGlobalDefinition,
-    VMGlobalImport, VMInterrupts, VMInvokeArgument, VMMemoryDefinition, VMMemoryImport,
-    VMSharedSignatureIndex, VMTableDefinition, VMTableImport, VMTrampoline, ValRaw,
+    VMCallerCheckedFuncRef, VMContext, VMFunctionBody, VMFunctionImport, VMGlobalDefinition,
+    VMGlobalImport, VMHostFuncContext, VMInvokeArgument, VMMemoryDefinition, VMMemoryImport,
+    VMOpaqueContext, VMRuntimeLimits, VMSharedSignatureIndex, VMTableDefinition, VMTableImport,
+    VMTrampoline, ValRaw,
 };
 
 mod module_id;
 pub use module_id::{CompiledModuleId, CompiledModuleIdAllocator};
 
-#[cfg(memfd)]
-mod memfd;
-#[cfg(memfd)]
-pub use crate::memfd::{MemFdSlot, MemoryMemFd, ModuleMemFds};
-
-#[cfg(not(memfd))]
-mod memfd_disabled;
-#[cfg(not(memfd))]
-pub use crate::memfd_disabled::{MemFdSlot, MemoryMemFd, ModuleMemFds};
+mod cow;
+pub use crate::cow::{MemoryImage, MemoryImageSlot, ModuleMemoryImages};
 
 /// Version number of this crate.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -101,11 +101,11 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// is that `wasmtime::Store` handles all this correctly.
 pub unsafe trait Store {
     /// Returns the raw pointer in memory where this store's shared
-    /// `VMInterrupts` structure is located.
+    /// `VMRuntimeLimits` structure is located.
     ///
     /// Used to configure `VMContext` initialization and store the right pointer
     /// in the `VMContext`.
-    fn vminterrupts(&self) -> *mut VMInterrupts;
+    fn vmruntime_limits(&self) -> *mut VMRuntimeLimits;
 
     /// Returns a pointer to the global epoch counter.
     ///
@@ -157,8 +157,8 @@ pub unsafe trait Store {
 /// is chiefly needed for lazy initialization of various bits of
 /// instance state.
 ///
-/// When an instance is created, it holds an Arc<dyn ModuleRuntimeInfo>
-/// so that it can get to signatures, metadata on functions, memfd and
+/// When an instance is created, it holds an `Arc<dyn ModuleRuntimeInfo>`
+/// so that it can get to signatures, metadata on functions, memory and
 /// funcref-table images, etc. All of these things are ordinarily known
 /// by the higher-level layers of Wasmtime. Specifically, the main
 /// implementation of this trait is provided by
@@ -170,18 +170,13 @@ pub trait ModuleRuntimeInfo: Send + Sync + 'static {
     /// The underlying Module.
     fn module(&self) -> &Arc<wasmtime_environ::Module>;
 
-    /// The signatures.
-    fn signature(&self, index: SignatureIndex) -> VMSharedSignatureIndex;
+    /// Returns the address, in memory, that the function `index` resides at.
+    fn function(&self, index: DefinedFuncIndex) -> *mut VMFunctionBody;
 
-    /// The base address of where JIT functions are located.
-    fn image_base(&self) -> usize;
-
-    /// Descriptors about each compiled function, such as the offset from
-    /// `image_base`.
-    fn function_info(&self, func_index: DefinedFuncIndex) -> &FunctionInfo;
-
-    /// memfd images, if any, for this module.
-    fn memfd_image(&self, memory: DefinedMemoryIndex) -> anyhow::Result<Option<&Arc<MemoryMemFd>>>;
+    /// Returns the `MemoryImage` structure used for copy-on-write
+    /// initialization of the memory, if it's applicable.
+    fn memory_image(&self, memory: DefinedMemoryIndex)
+        -> anyhow::Result<Option<&Arc<MemoryImage>>>;
 
     /// A unique ID for this particular module. This can be used to
     /// allow for fastpaths to optimize a "re-instantiate the same
@@ -194,4 +189,72 @@ pub trait ModuleRuntimeInfo: Send + Sync + 'static {
     /// Returns an array, indexed by `SignatureIndex` of all
     /// `VMSharedSignatureIndex` entries corresponding to the `SignatureIndex`.
     fn signature_ids(&self) -> &[VMSharedSignatureIndex];
+
+    /// Offset information for the current host.
+    fn offsets(&self) -> &VMOffsets<HostPtr>;
+}
+
+/// Returns the host OS page size, in bytes.
+pub fn page_size() -> usize {
+    static PAGE_SIZE: AtomicUsize = AtomicUsize::new(0);
+
+    return match PAGE_SIZE.load(Ordering::Relaxed) {
+        0 => {
+            let size = get_page_size();
+            assert!(size != 0);
+            PAGE_SIZE.store(size, Ordering::Relaxed);
+            size
+        }
+        n => n,
+    };
+
+    #[cfg(windows)]
+    fn get_page_size() -> usize {
+        use std::mem::MaybeUninit;
+        use windows_sys::Win32::System::SystemInformation::*;
+
+        unsafe {
+            let mut info = MaybeUninit::uninit();
+            GetSystemInfo(info.as_mut_ptr());
+            info.assume_init_ref().dwPageSize as usize
+        }
+    }
+
+    #[cfg(unix)]
+    fn get_page_size() -> usize {
+        unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
+    }
+}
+
+/// Result of [`Memory::atomic_wait32`] and [`Memory::atomic_wait64`]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum WaitResult {
+    /// Indicates that a `wait` completed by being awoken by a different thread.
+    /// This means the thread went to sleep and didn't time out.
+    Ok = 0,
+    /// Indicates that `wait` did not complete and instead returned due to the
+    /// value in memory not matching the expected value.
+    Mismatch = 1,
+    /// Indicates that `wait` completed with a timeout, meaning that the
+    /// original value matched as expected but nothing ever called `notify`.
+    TimedOut = 2,
+}
+
+/// Description about a fault that occurred in WebAssembly.
+#[derive(Debug)]
+pub struct WasmFault {
+    /// The size of memory, in bytes, at the time of the fault.
+    pub memory_size: usize,
+    /// The WebAssembly address at which the fault occurred.
+    pub wasm_address: u64,
+}
+
+impl fmt::Display for WasmFault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "memory fault at wasm address 0x{:x} in linear memory of size 0x{:x}",
+            self.wasm_address, self.memory_size,
+        )
+    }
 }

@@ -1,11 +1,12 @@
 test run
-; target s390x TODO: Not yet implemented on s390x
+target s390x
 target aarch64
 set enable_simd
 target x86_64 has_sse3 has_ssse3 has_sse41
+target x86_64 has_sse3 has_ssse3 has_sse41 has_avx
 
 
-function %vconst_zeroes() -> b1 {
+function %vconst_zeroes() -> i8 {
 block0:
     v0 = vconst.i8x16 0x00
     v1 = extractlane v0, 4
@@ -14,7 +15,7 @@ block0:
 }
 ; run
 
-function %vconst_ones() -> b1 {
+function %vconst_ones() -> i8 {
 block0:
     v0 = vconst.i8x16 0xffffffffffffffffffffffffffffffff
     v1 = extractlane v0, 2
@@ -24,7 +25,7 @@ block0:
 ; run
 
 
-function %splat_i64x2() -> b1 {
+function %splat_i64x2() -> i8 {
 block0:
     v0 = iconst.i64 -1
     v1 = splat.i64x2 v0

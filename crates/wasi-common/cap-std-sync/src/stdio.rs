@@ -16,7 +16,7 @@ use io_lifetimes::{AsFd, BorrowedFd};
 #[cfg(windows)]
 use io_lifetimes::{AsHandle, BorrowedHandle};
 use wasi_common::{
-    file::{Advice, FdFlags, FileType, Filestat, WasiFile},
+    file::{FdFlags, FileType, WasiFile},
     Error, ErrorExt,
 };
 
@@ -31,12 +31,17 @@ impl WasiFile for Stdin {
     fn as_any(&self) -> &dyn Any {
         self
     }
-    async fn datasync(&self) -> Result<(), Error> {
-        Ok(())
+
+    #[cfg(unix)]
+    fn pollable(&self) -> Option<rustix::fd::BorrowedFd> {
+        Some(self.0.as_fd())
     }
-    async fn sync(&self) -> Result<(), Error> {
-        Ok(())
+
+    #[cfg(windows)]
+    fn pollable(&self) -> Option<io_extras::os::windows::RawHandleOrSocket> {
+        Some(self.0.as_raw_handle_or_socket())
     }
+
     async fn get_filetype(&self) -> Result<FileType, Error> {
         if self.isatty() {
             Ok(FileType::CharacterDevice)
@@ -44,36 +49,8 @@ impl WasiFile for Stdin {
             Ok(FileType::Unknown)
         }
     }
-    async fn get_fdflags(&self) -> Result<FdFlags, Error> {
-        Ok(FdFlags::empty())
-    }
-    async fn set_fdflags(&mut self, _fdflags: FdFlags) -> Result<(), Error> {
-        Err(Error::badf())
-    }
-    async fn get_filestat(&self) -> Result<Filestat, Error> {
-        let meta = self.0.as_filelike_view::<File>().metadata()?;
-        Ok(Filestat {
-            device_id: 0,
-            inode: 0,
-            filetype: self.get_filetype().await?,
-            nlink: 0,
-            size: meta.len(),
-            atim: meta.accessed().ok(),
-            mtim: meta.modified().ok(),
-            ctim: meta.created().ok(),
-        })
-    }
-    async fn set_filestat_size(&self, _size: u64) -> Result<(), Error> {
-        Err(Error::badf())
-    }
-    async fn advise(&self, _offset: u64, _len: u64, _advice: Advice) -> Result<(), Error> {
-        Err(Error::badf())
-    }
-    async fn allocate(&self, _offset: u64, _len: u64) -> Result<(), Error> {
-        Err(Error::badf())
-    }
     async fn read_vectored<'a>(&self, bufs: &mut [io::IoSliceMut<'a>]) -> Result<u64, Error> {
-        let n = self.0.as_filelike_view::<File>().read_vectored(bufs)?;
+        let n = (&*self.0.as_filelike_view::<File>()).read_vectored(bufs)?;
         Ok(n.try_into().map_err(|_| Error::range())?)
     }
     async fn read_vectored_at<'a>(
@@ -82,16 +59,6 @@ impl WasiFile for Stdin {
         _offset: u64,
     ) -> Result<u64, Error> {
         Err(Error::seek_pipe())
-    }
-    async fn write_vectored<'a>(&self, _bufs: &[io::IoSlice<'a>]) -> Result<u64, Error> {
-        Err(Error::badf())
-    }
-    async fn write_vectored_at<'a>(
-        &self,
-        _bufs: &[io::IoSlice<'a>],
-        _offset: u64,
-    ) -> Result<u64, Error> {
-        Err(Error::badf())
     }
     async fn seek(&self, _pos: std::io::SeekFrom) -> Result<u64, Error> {
         Err(Error::seek_pipe())
@@ -108,21 +75,11 @@ impl WasiFile for Stdin {
             .set_times(convert_systimespec(atime), convert_systimespec(mtime))?;
         Ok(())
     }
-    async fn num_ready_bytes(&self) -> Result<u64, Error> {
+    fn num_ready_bytes(&self) -> Result<u64, Error> {
         Ok(self.0.num_ready_bytes()?)
     }
     fn isatty(&self) -> bool {
         self.0.is_terminal()
-    }
-    async fn readable(&self) -> Result<(), Error> {
-        Err(Error::badf())
-    }
-    async fn writable(&self) -> Result<(), Error> {
-        Err(Error::badf())
-    }
-
-    async fn sock_accept(&mut self, _fdflags: FdFlags) -> Result<Box<dyn WasiFile>, Error> {
-        Err(Error::badf())
     }
 }
 #[cfg(windows)]
@@ -152,11 +109,13 @@ macro_rules! wasi_file_write_impl {
             fn as_any(&self) -> &dyn Any {
                 self
             }
-            async fn datasync(&self) -> Result<(), Error> {
-                Ok(())
+            #[cfg(unix)]
+            fn pollable(&self) -> Option<rustix::fd::BorrowedFd> {
+                Some(self.0.as_fd())
             }
-            async fn sync(&self) -> Result<(), Error> {
-                Ok(())
+            #[cfg(windows)]
+            fn pollable(&self) -> Option<io_extras::os::windows::RawHandleOrSocket> {
+                Some(self.0.as_raw_handle_or_socket())
             }
             async fn get_filetype(&self) -> Result<FileType, Error> {
                 if self.isatty() {
@@ -168,47 +127,11 @@ macro_rules! wasi_file_write_impl {
             async fn get_fdflags(&self) -> Result<FdFlags, Error> {
                 Ok(FdFlags::APPEND)
             }
-            async fn set_fdflags(&mut self, _fdflags: FdFlags) -> Result<(), Error> {
-                Err(Error::badf())
-            }
-            async fn get_filestat(&self) -> Result<Filestat, Error> {
-                let meta = self.0.as_filelike_view::<File>().metadata()?;
-                Ok(Filestat {
-                    device_id: 0,
-                    inode: 0,
-                    filetype: self.get_filetype().await?,
-                    nlink: 0,
-                    size: meta.len(),
-                    atim: meta.accessed().ok(),
-                    mtim: meta.modified().ok(),
-                    ctim: meta.created().ok(),
-                })
-            }
-            async fn set_filestat_size(&self, _size: u64) -> Result<(), Error> {
-                Err(Error::badf())
-            }
-            async fn advise(&self, _offset: u64, _len: u64, _advice: Advice) -> Result<(), Error> {
-                Err(Error::badf())
-            }
-            async fn allocate(&self, _offset: u64, _len: u64) -> Result<(), Error> {
-                Err(Error::badf())
-            }
-            async fn read_vectored<'a>(
-                &self,
-                _bufs: &mut [io::IoSliceMut<'a>],
-            ) -> Result<u64, Error> {
-                Err(Error::badf())
-            }
-            async fn read_vectored_at<'a>(
-                &self,
-                _bufs: &mut [io::IoSliceMut<'a>],
-                _offset: u64,
-            ) -> Result<u64, Error> {
-                Err(Error::badf())
-            }
             async fn write_vectored<'a>(&self, bufs: &[io::IoSlice<'a>]) -> Result<u64, Error> {
-                let n = self.0.as_filelike_view::<File>().write_vectored(bufs)?;
-                Ok(n.try_into().map_err(|c| Error::range().context(c))?)
+                let n = (&*self.0.as_filelike_view::<File>()).write_vectored(bufs)?;
+                Ok(n.try_into().map_err(|_| {
+                    Error::range().context("converting write_vectored total length")
+                })?)
             }
             async fn write_vectored_at<'a>(
                 &self,
@@ -220,9 +143,6 @@ macro_rules! wasi_file_write_impl {
             async fn seek(&self, _pos: std::io::SeekFrom) -> Result<u64, Error> {
                 Err(Error::seek_pipe())
             }
-            async fn peek(&self, _buf: &mut [u8]) -> Result<u64, Error> {
-                Err(Error::badf())
-            }
             async fn set_times(
                 &self,
                 atime: Option<wasi_common::SystemTimeSpec>,
@@ -232,20 +152,8 @@ macro_rules! wasi_file_write_impl {
                     .set_times(convert_systimespec(atime), convert_systimespec(mtime))?;
                 Ok(())
             }
-            async fn num_ready_bytes(&self) -> Result<u64, Error> {
-                Ok(0)
-            }
             fn isatty(&self) -> bool {
                 self.0.is_terminal()
-            }
-            async fn readable(&self) -> Result<(), Error> {
-                Err(Error::badf())
-            }
-            async fn writable(&self) -> Result<(), Error> {
-                Err(Error::badf())
-            }
-            async fn sock_accept(&mut self, _fdflags: FdFlags) -> Result<Box<dyn WasiFile>, Error> {
-                Err(Error::badf())
             }
         }
         #[cfg(windows)]

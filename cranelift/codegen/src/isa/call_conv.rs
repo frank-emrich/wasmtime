@@ -14,19 +14,14 @@ pub enum CallConv {
     Fast,
     /// Smallest caller code size, not ABI-stable.
     Cold,
+    /// Supports tail calls, not ABI-stable.
+    Tail,
     /// System V-style convention used on many platforms.
     SystemV,
     /// Windows "fastcall" convention, also used for x64 and ARM.
     WindowsFastcall,
     /// Mac aarch64 calling convention, which is a tweaked aarch64 ABI.
     AppleAarch64,
-    /// SpiderMonkey WebAssembly convention on systems using natively SystemV.
-    BaldrdashSystemV,
-    /// SpiderMonkey WebAssembly convention on Windows.
-    BaldrdashWindows,
-    /// SpiderMonkey WebAssembly convention for "ABI-2020", with extra TLS
-    /// register slots in the frame.
-    Baldrdash2020,
     /// Specialized convention for the probestack function.
     Probestack,
     /// Wasmtime equivalent of SystemV, not ABI-stable.
@@ -67,17 +62,22 @@ impl CallConv {
             LibcallCallConv::SystemV => Self::SystemV,
             LibcallCallConv::WindowsFastcall => Self::WindowsFastcall,
             LibcallCallConv::AppleAarch64 => Self::AppleAarch64,
-            LibcallCallConv::BaldrdashSystemV => Self::BaldrdashSystemV,
-            LibcallCallConv::BaldrdashWindows => Self::BaldrdashWindows,
-            LibcallCallConv::Baldrdash2020 => Self::Baldrdash2020,
             LibcallCallConv::Probestack => Self::Probestack,
+        }
+    }
+
+    /// Does this calling convention support tail calls?
+    pub fn supports_tail_calls(&self) -> bool {
+        match self {
+            CallConv::Tail => true,
+            _ => false,
         }
     }
 
     /// Is the calling convention extending the Windows Fastcall ABI?
     pub fn extends_windows_fastcall(self) -> bool {
         match self {
-            Self::WindowsFastcall | Self::BaldrdashWindows | Self::WasmtimeFastcall => true,
+            Self::WindowsFastcall | Self::WasmtimeFastcall => true,
             _ => false,
         }
     }
@@ -86,14 +86,6 @@ impl CallConv {
     pub fn extends_apple_aarch64(self) -> bool {
         match self {
             Self::AppleAarch64 | Self::WasmtimeAppleAarch64 => true,
-            _ => false,
-        }
-    }
-
-    /// Is the calling convention extending the Baldrdash ABI?
-    pub fn extends_baldrdash(self) -> bool {
-        match self {
-            Self::BaldrdashSystemV | Self::BaldrdashWindows | Self::Baldrdash2020 => true,
             _ => false,
         }
     }
@@ -112,12 +104,10 @@ impl fmt::Display for CallConv {
         f.write_str(match *self {
             Self::Fast => "fast",
             Self::Cold => "cold",
+            Self::Tail => "tail",
             Self::SystemV => "system_v",
             Self::WindowsFastcall => "windows_fastcall",
             Self::AppleAarch64 => "apple_aarch64",
-            Self::BaldrdashSystemV => "baldrdash_system_v",
-            Self::BaldrdashWindows => "baldrdash_windows",
-            Self::Baldrdash2020 => "baldrdash_2020",
             Self::Probestack => "probestack",
             Self::WasmtimeSystemV => "wasmtime_system_v",
             Self::WasmtimeFastcall => "wasmtime_fastcall",
@@ -132,12 +122,10 @@ impl str::FromStr for CallConv {
         match s {
             "fast" => Ok(Self::Fast),
             "cold" => Ok(Self::Cold),
+            "tail" => Ok(Self::Tail),
             "system_v" => Ok(Self::SystemV),
             "windows_fastcall" => Ok(Self::WindowsFastcall),
             "apple_aarch64" => Ok(Self::AppleAarch64),
-            "baldrdash_system_v" => Ok(Self::BaldrdashSystemV),
-            "baldrdash_windows" => Ok(Self::BaldrdashWindows),
-            "baldrdash_2020" => Ok(Self::Baldrdash2020),
             "probestack" => Ok(Self::Probestack),
             "wasmtime_system_v" => Ok(Self::WasmtimeSystemV),
             "wasmtime_fastcall" => Ok(Self::WasmtimeFastcall),

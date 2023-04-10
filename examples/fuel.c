@@ -15,6 +15,10 @@ You can compile and run this example on Linux with:
 
 Note that on Windows and macOS the command will be similar, but you'll need
 to tweak the `-lpthread` and such annotations.
+
+You can also build using cmake:
+
+mkdir build && cd build && cmake .. && cmake --build . --target wasmtime-fuel
 */
 
 #include <assert.h>
@@ -96,6 +100,11 @@ int main() {
     wasmtime_val_t results[1];
     error = wasmtime_func_call(context, &fib.of.func, params, 1, results, 1, &trap);
     if (error != NULL || trap != NULL) {
+      if (trap != NULL) {
+        wasmtime_trap_code_t code;
+        assert(wasmtime_trap_code(trap, &code));
+        assert(code == WASMTIME_TRAP_CODE_OUT_OF_FUEL);
+      }
       printf("Exhausted fuel computing fib(%d)\n", n);
       break;
     }

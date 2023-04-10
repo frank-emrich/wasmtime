@@ -1,64 +1,57 @@
 //! The module that implements the `wasmtime compile` command.
 
-use crate::CommonOptions;
 use anyhow::{bail, Context, Result};
+use clap::Parser;
+use once_cell::sync::Lazy;
 use std::fs;
 use std::path::PathBuf;
-use structopt::{clap::AppSettings, StructOpt};
-use target_lexicon::Triple;
 use wasmtime::Engine;
+use wasmtime_cli_flags::CommonOptions;
 
-lazy_static::lazy_static! {
-    static ref AFTER_HELP: String = {
-        format!(
-            "By default, no CPU features or presets will be enabled for the compilation.\n\
-            \n\
-            {}\
-            \n\
-            Usage examples:\n\
-            \n\
-            Compiling a WebAssembly module for the current platform:\n\
-            \n  \
-            wasmtime compile example.wasm
-            \n\
-            Specifying the output file:\n\
-            \n  \
-            wasmtime compile -o output.cwasm input.wasm\n\
-            \n\
-            Compiling for a specific platform (Linux) and CPU preset (Skylake):\n\
-            \n  \
-            wasmtime compile --target x86_64-unknown-linux --cranelift-enable skylake foo.wasm\n",
-            crate::FLAG_EXPLANATIONS.as_str()
-        )
-    };
-}
+static AFTER_HELP: Lazy<String> = Lazy::new(|| {
+    format!(
+        "By default, no CPU features or presets will be enabled for the compilation.\n\
+        \n\
+        {}\
+        \n\
+        Usage examples:\n\
+        \n\
+        Compiling a WebAssembly module for the current platform:\n\
+        \n  \
+        wasmtime compile example.wasm
+        \n\
+        Specifying the output file:\n\
+        \n  \
+        wasmtime compile -o output.cwasm input.wasm\n\
+        \n\
+        Compiling for a specific platform (Linux) and CPU preset (Skylake):\n\
+        \n  \
+        wasmtime compile --target x86_64-unknown-linux --cranelift-enable skylake foo.wasm\n",
+        crate::FLAG_EXPLANATIONS.as_str()
+    )
+});
 
 /// Compiles a WebAssembly module.
-#[derive(StructOpt)]
+#[derive(Parser)]
 #[structopt(
     name = "compile",
-    version = env!("CARGO_PKG_VERSION"),
-    setting = AppSettings::ColoredHelp,
+    version,
     after_help = AFTER_HELP.as_str()
 )]
 pub struct CompileCommand {
-    #[structopt(flatten)]
+    #[clap(flatten)]
     common: CommonOptions,
 
-    /// Enable support for interrupting WebAssembly code.
-    #[structopt(long)]
-    interruptable: bool,
-
     /// The target triple; default is the host triple
-    #[structopt(long, value_name = "TARGET")]
+    #[clap(long, value_name = "TARGET")]
     target: Option<String>,
 
     /// The path of the output compiled module; defaults to <MODULE>.cwasm
-    #[structopt(short = "o", long, value_name = "OUTPUT", parse(from_os_str))]
+    #[clap(short = 'o', long, value_name = "OUTPUT", parse(from_os_str))]
     output: Option<PathBuf>,
 
     /// The path of the WebAssembly to compile
-    #[structopt(index = 1, value_name = "MODULE", parse(from_os_str))]
+    #[clap(index = 1, value_name = "MODULE", parse(from_os_str))]
     module: PathBuf,
 }
 
@@ -67,13 +60,7 @@ impl CompileCommand {
     pub fn execute(mut self) -> Result<()> {
         self.common.init_logging();
 
-        let target = self
-            .target
-            .take()
-            .unwrap_or_else(|| Triple::host().to_string());
-
-        let mut config = self.common.config(Some(&target))?;
-        config.interruptable(self.interruptable);
+        let config = self.common.config(self.target.as_deref())?;
 
         let engine = Engine::new(&config)?;
 
@@ -84,7 +71,7 @@ impl CompileCommand {
             );
         }
 
-        let input = fs::read(&self.module).with_context(|| "failed to read input file")?;
+        let input = wat::parse_file(&self.module).with_context(|| "failed to read input file")?;
 
         let output = self.output.take().unwrap_or_else(|| {
             let mut output: PathBuf = self.module.file_name().unwrap().into();
@@ -92,6 +79,24 @@ impl CompileCommand {
             output
         });
 
+        // If the component-model proposal is enabled and the binary we're
+        // compiling looks like a component, tested by sniffing the first 8
+        // bytes with the current component model proposal.
+        #[cfg(feature = "component-model")]
+        {
+            if let Ok(wasmparser::Chunk::Parsed {
+                payload:
+                    wasmparser::Payload::Version {
+                        encoding: wasmparser::Encoding::Component,
+                        ..
+                    },
+                ..
+            }) = wasmparser::Parser::new(0).parse(&input, true)
+            {
+                fs::write(output, engine.precompile_component(&input)?)?;
+                return Ok(());
+            }
+        }
         fs::write(output, engine.precompile_module(&input)?)?;
 
         Ok(())
@@ -115,7 +120,7 @@ mod test {
 
         let output_path = NamedTempFile::new()?.into_temp_path();
 
-        let command = CompileCommand::from_iter_safe(vec![
+        let command = CompileCommand::try_parse_from(vec![
             "compile",
             "--disable-logging",
             "-o",
@@ -130,7 +135,7 @@ mod test {
         let module = unsafe { Module::deserialize(&engine, contents)? };
         let mut store = Store::new(&engine, ());
         let instance = Instance::new(&mut store, &module, &[])?;
-        let f = instance.get_typed_func::<i32, i32, _>(&mut store, "f")?;
+        let f = instance.get_typed_func::<i32, i32>(&mut store, "f")?;
         assert_eq!(f.call(&mut store, 1234).unwrap(), 1234);
 
         Ok(())
@@ -146,7 +151,7 @@ mod test {
         let output_path = NamedTempFile::new()?.into_temp_path();
 
         // Set all the x64 flags to make sure they work
-        let command = CompileCommand::from_iter_safe(vec![
+        let command = CompileCommand::try_parse_from(vec![
             "compile",
             "--disable-logging",
             "--cranelift-enable",
@@ -161,6 +166,8 @@ mod test {
             "has_avx",
             "--cranelift-enable",
             "has_avx2",
+            "--cranelift-enable",
+            "has_fma",
             "--cranelift-enable",
             "has_avx512dq",
             "--cranelift-enable",
@@ -195,11 +202,19 @@ mod test {
         let output_path = NamedTempFile::new()?.into_temp_path();
 
         // Set all the aarch64 flags to make sure they work
-        let command = CompileCommand::from_iter_safe(vec![
+        let command = CompileCommand::try_parse_from(vec![
             "compile",
             "--disable-logging",
             "--cranelift-enable",
             "has_lse",
+            "--cranelift-enable",
+            "has_pauth",
+            "--cranelift-enable",
+            "sign_return_address",
+            "--cranelift-enable",
+            "sign_return_address_all",
+            "--cranelift-enable",
+            "sign_return_address_with_bkey",
             "-o",
             output_path.to_str().unwrap(),
             input_path.to_str().unwrap(),
@@ -220,7 +235,7 @@ mod test {
         let output_path = NamedTempFile::new()?.into_temp_path();
 
         // aarch64 flags should not be supported
-        let command = CompileCommand::from_iter_safe(vec![
+        let command = CompileCommand::try_parse_from(vec![
             "compile",
             "--disable-logging",
             "--cranelift-enable",
@@ -256,7 +271,7 @@ mod test {
             "icelake",
             "znver1",
         ] {
-            let command = CompileCommand::from_iter_safe(vec![
+            let command = CompileCommand::try_parse_from(vec![
                 "compile",
                 "--disable-logging",
                 "--cranelift-enable",

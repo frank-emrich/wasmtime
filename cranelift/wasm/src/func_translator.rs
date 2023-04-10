@@ -4,13 +4,11 @@
 //! function to Cranelift IR guided by a `FuncEnvironment` which provides information about the
 //! WebAssembly module and the runtime environment.
 
-use crate::code_translator::{bitcast_arguments, translate_operator, wasm_param_types};
-use crate::environ::{FuncEnvironment, ReturnMode};
+use crate::code_translator::{bitcast_wasm_returns, translate_operator};
+use crate::environ::FuncEnvironment;
 use crate::state::FuncTranslationState;
 use crate::translation_utils::get_vmctx_value_label;
-use crate::wasm_unsupported;
 use crate::WasmResult;
-use core::convert::TryInto;
 use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::{self, Block, InstBuilder, ValueLabel};
 use cranelift_codegen::timing;
@@ -95,12 +93,11 @@ impl FuncTranslator {
         debug_assert_eq!(func.dfg.num_blocks(), 0, "Function must be empty");
         debug_assert_eq!(func.dfg.num_insts(), 0, "Function must be empty");
 
-        // This clears the `FunctionBuilderContext`.
         let mut builder = FunctionBuilder::new(func, &mut self.func_ctx);
         builder.set_srcloc(cur_srcloc(&reader));
         let entry_block = builder.create_block();
         builder.append_block_params_for_function_params(entry_block);
-        builder.switch_to_block(entry_block); // This also creates values for the arguments.
+        builder.switch_to_block(entry_block);
         builder.seal_block(entry_block); // Declare all predecessors known.
 
         // Make sure the entry block is inserted in the layout before we make any callbacks to
@@ -119,6 +116,7 @@ impl FuncTranslator {
         parse_function_body(validator, reader, &mut builder, &mut self.state, environ)?;
 
         builder.finalize();
+        log::trace!("translated Wasm to CLIF:\n{}", func.display());
         Ok(())
     }
 }
@@ -172,7 +170,7 @@ fn parse_local_decls<FE: FuncEnvironment + ?Sized>(
         builder.set_srcloc(cur_srcloc(reader));
         let pos = reader.original_position();
         let count = reader.read_var_u32()?;
-        let ty = reader.read_type()?;
+        let ty = reader.read()?;
         validator.define_locals(pos, count, ty)?;
         declare_locals(builder, count, ty, &mut next_local, environ)?;
     }
@@ -184,16 +182,16 @@ fn parse_local_decls<FE: FuncEnvironment + ?Sized>(
 
 /// Declare `count` local variables of the same type, starting from `next_local`.
 ///
-/// Fail of too many locals are declared in the function, or if the type is not valid for a local.
+/// Fail if too many locals are declared in the function, or if the type is not valid for a local.
 fn declare_locals<FE: FuncEnvironment + ?Sized>(
     builder: &mut FunctionBuilder,
     count: u32,
-    wasm_type: wasmparser::Type,
+    wasm_type: wasmparser::ValType,
     next_local: &mut usize,
     environ: &mut FE,
 ) -> WasmResult<()> {
     // All locals are initialized to 0.
-    use wasmparser::Type::*;
+    use wasmparser::ValType::*;
     let zeroval = match wasm_type {
         I32 => builder.ins().iconst(ir::types::I32, 0),
         I64 => builder.ins().iconst(ir::types::I64, 0),
@@ -203,10 +201,7 @@ fn declare_locals<FE: FuncEnvironment + ?Sized>(
             let constant_handle = builder.func.dfg.constants.insert([0; 16].to_vec().into());
             builder.ins().vconst(ir::types::I8X16, constant_handle)
         }
-        ExternRef | FuncRef => {
-            environ.translate_ref_null(builder.cursor(), wasm_type.try_into()?)?
-        }
-        ty => return Err(wasm_unsupported!("unsupported local type {:?}", ty)),
+        Ref(rt) => environ.translate_ref_null(builder.cursor(), rt.heap_type.into())?,
     };
 
     let ty = builder.func.dfg.value_type(zeroval);
@@ -239,9 +234,10 @@ fn parse_function_body<FE: FuncEnvironment + ?Sized>(
         let pos = reader.original_position();
         builder.set_srcloc(cur_srcloc(&reader));
         let op = reader.read_operator()?;
+        let ty = validator.get_operand_type(0).unwrap_or_default();
         validator.op(pos, &op)?;
         environ.before_translate_operator(&op, builder, state)?;
-        translate_operator(validator, &op, builder, state, environ)?;
+        translate_operator(validator, &op, builder, state, environ, ty)?;
         environ.after_translate_operator(&op, builder, state)?;
     }
     environ.after_translate_function(builder, state)?;
@@ -255,16 +251,8 @@ fn parse_function_body<FE: FuncEnvironment + ?Sized>(
     // generate a return instruction that doesn't match the signature.
     if state.reachable {
         if !builder.is_unreachable() {
-            match environ.return_mode() {
-                ReturnMode::NormalReturns => {
-                    let return_types = wasm_param_types(&builder.func.signature.returns, |i| {
-                        environ.is_wasm_return(&builder.func.signature, i)
-                    });
-                    bitcast_arguments(&mut state.stack, &return_types, builder);
-                    builder.ins().return_(&state.stack)
-                }
-                ReturnMode::FallthroughReturn => builder.ins().fallthrough_return(&state.stack),
-            };
+            bitcast_wasm_returns(environ, &mut state.stack, builder);
+            builder.ins().return_(&state.stack);
         }
     }
 
@@ -284,7 +272,7 @@ fn cur_srcloc(reader: &BinaryReader) -> ir::SourceLoc {
 
 #[cfg(test)]
 mod tests {
-    use super::{FuncTranslator, ReturnMode};
+    use super::FuncTranslator;
     use crate::environ::DummyEnvironment;
     use cranelift_codegen::ir::types::I32;
     use cranelift_codegen::{ir, isa, settings, Context};
@@ -315,13 +303,12 @@ mod tests {
                 default_call_conv: isa::CallConv::Fast,
                 pointer_width: PointerWidth::U64,
             },
-            ReturnMode::NormalReturns,
             false,
         );
 
         let mut ctx = Context::new();
 
-        ctx.func.name = ir::ExternalName::testcase("small1");
+        ctx.func.name = ir::UserFuncName::testcase("small1");
         ctx.func.signature.params.push(ir::AbiParam::new(I32));
         ctx.func.signature.returns.push(ir::AbiParam::new(I32));
 
@@ -354,13 +341,12 @@ mod tests {
                 default_call_conv: isa::CallConv::Fast,
                 pointer_width: PointerWidth::U64,
             },
-            ReturnMode::NormalReturns,
             false,
         );
 
         let mut ctx = Context::new();
 
-        ctx.func.name = ir::ExternalName::testcase("small2");
+        ctx.func.name = ir::UserFuncName::testcase("small2");
         ctx.func.signature.params.push(ir::AbiParam::new(I32));
         ctx.func.signature.returns.push(ir::AbiParam::new(I32));
 
@@ -398,13 +384,12 @@ mod tests {
                 default_call_conv: isa::CallConv::Fast,
                 pointer_width: PointerWidth::U64,
             },
-            ReturnMode::NormalReturns,
             false,
         );
 
         let mut ctx = Context::new();
 
-        ctx.func.name = ir::ExternalName::testcase("infloop");
+        ctx.func.name = ir::UserFuncName::testcase("infloop");
         ctx.func.signature.returns.push(ir::AbiParam::new(I32));
 
         let (body, mut validator) = extract_func(&wasm);
@@ -419,7 +404,10 @@ mod tests {
         let mut validator = Validator::new();
         for payload in Parser::new(0).parse_all(wat) {
             match validator.payload(&payload.unwrap()).unwrap() {
-                ValidPayload::Func(validator, body) => return (body, validator),
+                ValidPayload::Func(validator, body) => {
+                    let validator = validator.into_validator(Default::default());
+                    return (body, validator);
+                }
                 _ => {}
             }
         }

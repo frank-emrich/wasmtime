@@ -8,31 +8,22 @@
 // We suspect there are bugs in this scheduler, however, we have not
 // taken the time to improve it. See bug #2880.
 
-use anyhow::Context;
-use io_extras::os::windows::{AsRawHandleOrSocket, RawHandleOrSocket};
+use once_cell::sync::Lazy;
 use std::ops::Deref;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
-use wasi_common::{
-    file::WasiFile,
-    sched::{
-        subscription::{RwEventFlags, Subscription},
-        Poll,
-    },
-    Error, ErrorExt,
-};
+use wasi_common::sched::subscription::{RwEventFlags, Subscription};
+use wasi_common::{file::WasiFile, sched::Poll, Error, ErrorExt};
 
 pub async fn poll_oneoff<'a>(poll: &mut Poll<'a>) -> Result<(), Error> {
-    poll_oneoff_(poll, wasi_file_is_stdin, wasi_file_raw_handle).await
+    poll_oneoff_(poll, wasi_file_is_stdin).await
 }
 
-// For reuse by wasi-tokio, which has a different WasiFile -> RawHandle translator.
 pub async fn poll_oneoff_<'a>(
     poll: &mut Poll<'a>,
     file_is_stdin: impl Fn(&dyn WasiFile) -> bool,
-    file_to_handle: impl Fn(&dyn WasiFile) -> Option<RawHandleOrSocket>,
 ) -> Result<(), Error> {
     if poll.is_empty() {
         return Ok(());
@@ -61,21 +52,17 @@ pub async fn poll_oneoff_<'a>(
             Subscription::Read(r) => {
                 if file_is_stdin(r.file.deref()) {
                     stdin_read_subs.push(r);
-                } else if file_to_handle(r.file.deref()).is_some() {
+                } else if r.file.pollable().is_some() {
                     immediate_reads.push(r);
                 } else {
-                    return Err(
-                        Error::invalid_argument().context("read subscription fd downcast failed")
-                    );
+                    return Err(Error::invalid_argument().context("file is not pollable"));
                 }
             }
             Subscription::Write(w) => {
-                if file_to_handle(w.file.deref()).is_some() {
+                if w.file.pollable().is_some() {
                     immediate_writes.push(w);
                 } else {
-                    return Err(
-                        Error::invalid_argument().context("write subscription fd downcast failed")
-                    );
+                    return Err(Error::invalid_argument().context("file is not pollable"));
                 }
             }
             Subscription::MonotonicClock { .. } => unreachable!(),
@@ -85,7 +72,7 @@ pub async fn poll_oneoff_<'a>(
     if !stdin_read_subs.is_empty() {
         let state = STDIN_POLL
             .lock()
-            .map_err(|_| Error::trap("failed to take lock of STDIN_POLL"))?
+            .map_err(|_| Error::trap(anyhow::Error::msg("failed to take lock of STDIN_POLL")))?
             .poll(waitmode)?;
         for readsub in stdin_read_subs.into_iter() {
             match state {
@@ -109,7 +96,7 @@ pub async fn poll_oneoff_<'a>(
         }
     }
     for r in immediate_reads {
-        match r.file.num_ready_bytes().await {
+        match r.file.num_ready_bytes() {
             Ok(ready_bytes) => {
                 r.complete(ready_bytes, RwEventFlags::empty());
                 ready = true;
@@ -139,49 +126,6 @@ pub fn wasi_file_is_stdin(f: &dyn WasiFile) -> bool {
     f.as_any().is::<crate::stdio::Stdin>()
 }
 
-pub fn wasi_file_raw_handle(f: &dyn WasiFile) -> Option<RawHandleOrSocket> {
-    let a = f.as_any();
-    if a.is::<crate::file::File>() {
-        Some(
-            a.downcast_ref::<crate::file::File>()
-                .unwrap()
-                .as_raw_handle_or_socket(),
-        )
-    } else if a.is::<crate::net::TcpStream>() {
-        Some(
-            a.downcast_ref::<crate::net::TcpStream>()
-                .unwrap()
-                .as_raw_handle_or_socket(),
-        )
-    } else if a.is::<crate::net::TcpListener>() {
-        Some(
-            a.downcast_ref::<crate::net::TcpListener>()
-                .unwrap()
-                .as_raw_handle_or_socket(),
-        )
-    } else if a.is::<crate::stdio::Stdin>() {
-        Some(
-            a.downcast_ref::<crate::stdio::Stdin>()
-                .unwrap()
-                .as_raw_handle_or_socket(),
-        )
-    } else if a.is::<crate::stdio::Stdout>() {
-        Some(
-            a.downcast_ref::<crate::stdio::Stdout>()
-                .unwrap()
-                .as_raw_handle_or_socket(),
-        )
-    } else if a.is::<crate::stdio::Stderr>() {
-        Some(
-            a.downcast_ref::<crate::stdio::Stderr>()
-                .unwrap()
-                .as_raw_handle_or_socket(),
-        )
-    } else {
-        None
-    }
-}
-
 enum PollState {
     Ready,
     NotReady, // Not ready, but did not wait
@@ -201,9 +145,7 @@ struct StdinPoll {
     notify_rx: Receiver<PollState>,
 }
 
-lazy_static::lazy_static! {
-    static ref STDIN_POLL: Mutex<StdinPoll> = StdinPoll::new();
-}
+static STDIN_POLL: Lazy<Mutex<StdinPoll>> = Lazy::new(StdinPoll::new);
 
 impl StdinPoll {
     pub fn new() -> Mutex<Self> {
@@ -224,34 +166,36 @@ impl StdinPoll {
             // Clean up possibly unread result from previous poll.
             Ok(_) | Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
-                return Err(Error::trap("StdinPoll notify_rx channel closed"))
+                return Err(Error::trap(anyhow::Error::msg(
+                    "StdinPoll notify_rx channel closed",
+                )))
             }
         }
 
         // Notify the worker thread to poll stdin
         self.request_tx
             .send(())
-            .context("request_tx channel closed")?;
+            .map_err(|_| Error::trap(anyhow::Error::msg("request_tx channel closed")))?;
 
         // Wait for the worker thread to send a readiness notification
         match wait_mode {
             WaitMode::Timeout(timeout) => match self.notify_rx.recv_timeout(timeout) {
                 Ok(r) => Ok(r),
                 Err(RecvTimeoutError::Timeout) => Ok(PollState::TimedOut),
-                Err(RecvTimeoutError::Disconnected) => {
-                    Err(Error::trap("StdinPoll notify_rx channel closed"))
-                }
+                Err(RecvTimeoutError::Disconnected) => Err(Error::trap(anyhow::Error::msg(
+                    "StdinPoll notify_rx channel closed",
+                ))),
             },
             WaitMode::Infinite => self
                 .notify_rx
                 .recv()
-                .context("StdinPoll notify_rx channel closed"),
+                .map_err(|_| Error::trap(anyhow::Error::msg("StdinPoll notify_rx channel closed"))),
             WaitMode::Immediate => match self.notify_rx.try_recv() {
                 Ok(r) => Ok(r),
                 Err(TryRecvError::Empty) => Ok(PollState::NotReady),
-                Err(TryRecvError::Disconnected) => {
-                    Err(Error::trap("StdinPoll notify_rx channel closed"))
-                }
+                Err(TryRecvError::Disconnected) => Err(Error::trap(anyhow::Error::msg(
+                    "StdinPoll notify_rx channel closed",
+                ))),
             },
         }
     }

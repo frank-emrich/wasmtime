@@ -1,8 +1,6 @@
 //! Helper functions and structures for the translation.
 use crate::environ::TargetEnvironment;
-use crate::wasm_unsupported;
 use crate::WasmResult;
-use core::convert::TryInto;
 use core::u32;
 use cranelift_codegen::ir;
 use cranelift_frontend::FunctionBuilder;
@@ -10,86 +8,37 @@ use cranelift_frontend::FunctionBuilder;
 use serde::{Deserialize, Serialize};
 use wasmparser::{FuncValidator, WasmFuncType, WasmModuleResources};
 
-/// WebAssembly table element. Can be a function or a scalar type.
-#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
-#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
-pub enum TableElementType {
-    /// A scalar type.
-    Val(ir::Type),
-    /// A function.
-    Func,
-}
-
-/// Helper function translating wasmparser types to Cranelift types when possible.
-pub fn type_to_type<PE: TargetEnvironment + ?Sized>(
-    ty: wasmparser::Type,
-    environ: &PE,
-) -> WasmResult<ir::Type> {
-    match ty {
-        wasmparser::Type::I32 => Ok(ir::types::I32),
-        wasmparser::Type::I64 => Ok(ir::types::I64),
-        wasmparser::Type::F32 => Ok(ir::types::F32),
-        wasmparser::Type::F64 => Ok(ir::types::F64),
-        wasmparser::Type::V128 => Ok(ir::types::I8X16),
-        wasmparser::Type::ExternRef | wasmparser::Type::FuncRef => {
-            Ok(environ.reference_type(ty.try_into()?))
-        }
-        ty => Err(wasm_unsupported!("type_to_type: wasm type {:?}", ty)),
-    }
-}
-
-/// Helper function translating wasmparser possible table types to Cranelift types when possible,
-/// or None for Func tables.
-pub fn tabletype_to_type<PE: TargetEnvironment + ?Sized>(
-    ty: wasmparser::Type,
-    environ: &PE,
-) -> WasmResult<Option<ir::Type>> {
-    match ty {
-        wasmparser::Type::I32 => Ok(Some(ir::types::I32)),
-        wasmparser::Type::I64 => Ok(Some(ir::types::I64)),
-        wasmparser::Type::F32 => Ok(Some(ir::types::F32)),
-        wasmparser::Type::F64 => Ok(Some(ir::types::F64)),
-        wasmparser::Type::V128 => Ok(Some(ir::types::I8X16)),
-        wasmparser::Type::ExternRef => Ok(Some(environ.reference_type(ty.try_into()?))),
-        wasmparser::Type::FuncRef => Ok(None),
-        ty => Err(wasm_unsupported!(
-            "tabletype_to_type: table wasm type {:?}",
-            ty
-        )),
-    }
-}
-
 /// Get the parameter and result types for the given Wasm blocktype.
 pub fn blocktype_params_results<'a, T>(
     validator: &'a FuncValidator<T>,
-    ty_or_ft: wasmparser::TypeOrFuncType,
+    ty: wasmparser::BlockType,
 ) -> WasmResult<(
-    impl ExactSizeIterator<Item = wasmparser::Type> + Clone + 'a,
-    impl ExactSizeIterator<Item = wasmparser::Type> + Clone + 'a,
+    impl ExactSizeIterator<Item = wasmparser::ValType> + Clone + 'a,
+    impl ExactSizeIterator<Item = wasmparser::ValType> + Clone + 'a,
 )>
 where
     T: WasmModuleResources,
 {
-    return Ok(match ty_or_ft {
-        wasmparser::TypeOrFuncType::Type(ty) => {
-            let (params, results): (&'static [wasmparser::Type], &'static [wasmparser::Type]) =
-                match ty {
-                    wasmparser::Type::I32 => (&[], &[wasmparser::Type::I32]),
-                    wasmparser::Type::I64 => (&[], &[wasmparser::Type::I64]),
-                    wasmparser::Type::F32 => (&[], &[wasmparser::Type::F32]),
-                    wasmparser::Type::F64 => (&[], &[wasmparser::Type::F64]),
-                    wasmparser::Type::V128 => (&[], &[wasmparser::Type::V128]),
-                    wasmparser::Type::ExternRef => (&[], &[wasmparser::Type::ExternRef]),
-                    wasmparser::Type::FuncRef => (&[], &[wasmparser::Type::FuncRef]),
-                    wasmparser::Type::EmptyBlockType => (&[], &[]),
-                    ty => return Err(wasm_unsupported!("blocktype_params_results: type {:?}", ty)),
-                };
+    return Ok(match ty {
+        wasmparser::BlockType::Empty => {
+            let params: &'static [wasmparser::ValType] = &[];
+            // If we care about not allocating, surely we can type munge more.
+            // But, it is midnight
+            let results: std::vec::Vec<wasmparser::ValType> = vec![];
             (
                 itertools::Either::Left(params.iter().copied()),
-                itertools::Either::Left(results.iter().copied()),
+                itertools::Either::Left(results.into_iter()),
             )
         }
-        wasmparser::TypeOrFuncType::FuncType(ty_index) => {
+        wasmparser::BlockType::Type(ty) => {
+            let params: &'static [wasmparser::ValType] = &[];
+            let results: std::vec::Vec<wasmparser::ValType> = vec![ty.clone()];
+            (
+                itertools::Either::Left(params.iter().copied()),
+                itertools::Either::Left(results.into_iter()),
+            )
+        }
+        wasmparser::BlockType::FuncType(ty_index) => {
             let ty = validator
                 .resources()
                 .func_type_at(ty_index)
@@ -105,35 +54,29 @@ where
 /// Create a `Block` with the given Wasm parameters.
 pub fn block_with_params<PE: TargetEnvironment + ?Sized>(
     builder: &mut FunctionBuilder,
-    params: impl IntoIterator<Item = wasmparser::Type>,
+    params: impl IntoIterator<Item = wasmparser::ValType>,
     environ: &PE,
 ) -> WasmResult<ir::Block> {
     let block = builder.create_block();
     for ty in params {
         match ty {
-            wasmparser::Type::I32 => {
+            wasmparser::ValType::I32 => {
                 builder.append_block_param(block, ir::types::I32);
             }
-            wasmparser::Type::I64 => {
+            wasmparser::ValType::I64 => {
                 builder.append_block_param(block, ir::types::I64);
             }
-            wasmparser::Type::F32 => {
+            wasmparser::ValType::F32 => {
                 builder.append_block_param(block, ir::types::F32);
             }
-            wasmparser::Type::F64 => {
+            wasmparser::ValType::F64 => {
                 builder.append_block_param(block, ir::types::F64);
             }
-            wasmparser::Type::ExternRef | wasmparser::Type::FuncRef => {
-                builder.append_block_param(block, environ.reference_type(ty.try_into()?));
+            wasmparser::ValType::Ref(rt) => {
+                builder.append_block_param(block, environ.reference_type(rt.heap_type.into()));
             }
-            wasmparser::Type::V128 => {
+            wasmparser::ValType::V128 => {
                 builder.append_block_param(block, ir::types::I8X16);
-            }
-            ty => {
-                return Err(wasm_unsupported!(
-                    "block_with_params: type {:?} in multi-value block's signature",
-                    ty
-                ))
             }
         }
     }

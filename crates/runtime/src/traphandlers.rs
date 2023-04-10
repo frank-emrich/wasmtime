@@ -1,17 +1,17 @@
 //! WebAssembly trap handling, which is built on top of the lower-level
 //! signalhandling mechanisms.
 
-use crate::{VMContext, VMInterrupts};
+mod backtrace;
+
+use crate::{VMContext, VMRuntimeLimits};
 use anyhow::Error;
-use backtrace::Backtrace;
 use std::any::Any;
 use std::cell::{Cell, UnsafeCell};
 use std::mem::MaybeUninit;
 use std::ptr;
-use std::sync::atomic::Ordering::SeqCst;
 use std::sync::Once;
-use wasmtime_environ::TrapCode;
 
+pub use self::backtrace::Backtrace;
 pub use self::tls::{tls_eager_initialize, TlsRestore};
 
 #[link(name = "wasmtime-helpers")]
@@ -69,6 +69,20 @@ pub fn init_traps(is_wasm_pc: fn(usize) -> bool) {
     });
 }
 
+/// Raises a trap immediately.
+///
+/// This function performs as-if a wasm trap was just executed. This trap
+/// payload is then returned from `catch_traps` below.
+///
+/// # Safety
+///
+/// Only safe to call when wasm code is on the stack, aka `catch_traps` must
+/// have been previously called. Additionally no Rust destructors can be on the
+/// stack. They will be skipped and not executed.
+pub unsafe fn raise_trap(reason: TrapReason) -> ! {
+    tls::with(|info| info.unwrap().unwind_with(UnwindReason::Trap(reason)))
+}
+
 /// Raises a user-defined trap immediately.
 ///
 /// This function performs as-if a wasm trap was just executed, only the trap
@@ -80,8 +94,11 @@ pub fn init_traps(is_wasm_pc: fn(usize) -> bool) {
 /// Only safe to call when wasm code is on the stack, aka `catch_traps` must
 /// have been previously called. Additionally no Rust destructors can be on the
 /// stack. They will be skipped and not executed.
-pub unsafe fn raise_user_trap(data: Error) -> ! {
-    tls::with(|info| info.unwrap().unwind_with(UnwindReason::UserTrap(data)))
+pub unsafe fn raise_user_trap(error: Error, needs_backtrace: bool) -> ! {
+    raise_trap(TrapReason::User {
+        error,
+        needs_backtrace,
+    })
 }
 
 /// Raises a trap from inside library code immediately.
@@ -94,8 +111,8 @@ pub unsafe fn raise_user_trap(data: Error) -> ! {
 /// Only safe to call when wasm code is on the stack, aka `catch_traps` must
 /// have been previously called. Additionally no Rust destructors can be on the
 /// stack. They will be skipped and not executed.
-pub unsafe fn raise_lib_trap(trap: Trap) -> ! {
-    tls::with(|info| info.unwrap().unwind_with(UnwindReason::LibTrap(trap)))
+pub unsafe fn raise_lib_trap(trap: wasmtime_environ::Trap) -> ! {
+    raise_trap(TrapReason::Wasm(trap))
 }
 
 /// Carries a Rust panic across wasm code and resumes the panic on the other
@@ -112,55 +129,80 @@ pub unsafe fn resume_panic(payload: Box<dyn Any + Send>) -> ! {
 
 /// Stores trace message with backtrace.
 #[derive(Debug)]
-pub enum Trap {
-    /// A user-raised trap through `raise_user_trap`.
-    User(Error),
+pub struct Trap {
+    /// Original reason from where this trap originated.
+    pub reason: TrapReason,
+    /// Wasm backtrace of the trap, if any.
+    pub backtrace: Option<Backtrace>,
+}
 
-    /// A trap raised from jit code
+/// Enumeration of different methods of raising a trap.
+#[derive(Debug)]
+pub enum TrapReason {
+    /// A user-raised trap through `raise_user_trap`.
+    User {
+        /// The actual user trap error.
+        error: Error,
+        /// Whether we need to capture a backtrace for this error or not.
+        needs_backtrace: bool,
+    },
+
+    /// A trap raised from Cranelift-generated code.
     Jit {
-        /// The program counter in JIT code where this trap happened.
+        /// The program counter where this trap originated.
+        ///
+        /// This is later used with side tables from compilation to translate
+        /// the trapping address to a trap code.
         pc: usize,
-        /// Native stack backtrace at the time the trap occurred
-        backtrace: Backtrace,
-        /// An indicator for whether this may have been a trap generated from an
-        /// interrupt, used for switching what would otherwise be a stack
-        /// overflow trap to be an interrupt trap.
-        maybe_interrupted: bool,
+
+        /// If the trap was a memory-related trap such as SIGSEGV then this
+        /// field will contain the address of the inaccessible data.
+        ///
+        /// Note that wasm loads/stores are not guaranteed to fill in this
+        /// information. Dynamically-bounds-checked memories, for example, will
+        /// not access an invalid address but may instead load from NULL or may
+        /// explicitly jump to a `ud2` instruction. This is only available for
+        /// fault-based traps which are one of the main ways, but not the only
+        /// way, to run wasm.
+        faulting_addr: Option<usize>,
     },
 
     /// A trap raised from a wasm libcall
-    Wasm {
-        /// Code of the trap.
-        trap_code: TrapCode,
-        /// Native stack backtrace at the time the trap occurred
-        backtrace: Backtrace,
-    },
-
-    /// A trap indicating that the runtime was unable to allocate sufficient memory.
-    OOM {
-        /// Native stack backtrace at the time the OOM occurred
-        backtrace: Backtrace,
-    },
+    Wasm(wasmtime_environ::Trap),
 }
 
-impl Trap {
-    /// Construct a new Wasm trap with the given source location and trap code.
-    ///
-    /// Internally saves a backtrace when constructed.
-    pub fn wasm(trap_code: TrapCode) -> Self {
-        let backtrace = Backtrace::new_unresolved();
-        Trap::Wasm {
-            trap_code,
-            backtrace,
+impl TrapReason {
+    /// Create a new `TrapReason::User` that does not have a backtrace yet.
+    pub fn user_without_backtrace(error: Error) -> Self {
+        TrapReason::User {
+            error,
+            needs_backtrace: true,
         }
     }
 
-    /// Construct a new OOM trap with the given source location and trap code.
-    ///
-    /// Internally saves a backtrace when constructed.
-    pub fn oom() -> Self {
-        let backtrace = Backtrace::new_unresolved();
-        Trap::OOM { backtrace }
+    /// Create a new `TrapReason::User` that already has a backtrace.
+    pub fn user_with_backtrace(error: Error) -> Self {
+        TrapReason::User {
+            error,
+            needs_backtrace: false,
+        }
+    }
+
+    /// Is this a JIT trap?
+    pub fn is_jit(&self) -> bool {
+        matches!(self, TrapReason::Jit { .. })
+    }
+}
+
+impl From<Error> for TrapReason {
+    fn from(err: Error) -> Self {
+        TrapReason::user_without_backtrace(err)
+    }
+}
+
+impl From<wasmtime_environ::Trap> for TrapReason {
+    fn from(code: wasmtime_environ::Trap) -> Self {
+        TrapReason::Wasm(code)
     }
 }
 
@@ -169,94 +211,232 @@ impl Trap {
 ///
 /// Highly unsafe since `closure` won't have any dtors run.
 pub unsafe fn catch_traps<'a, F>(
-    vminterrupts: *mut VMInterrupts,
     signal_handler: Option<*const SignalHandler<'static>>,
-    callee: *mut VMContext,
+    capture_backtrace: bool,
+    caller: *mut VMContext,
     mut closure: F,
 ) -> Result<(), Box<Trap>>
 where
     F: FnMut(*mut VMContext),
 {
-    return CallThreadState::new(signal_handler).with(vminterrupts, |cx| {
+    let limits = (*caller).instance().runtime_limits();
+
+    let result = CallThreadState::new(signal_handler, capture_backtrace, *limits).with(|cx| {
         wasmtime_setjmp(
             cx.jmp_buf.as_ptr(),
             call_closure::<F>,
             &mut closure as *mut F as *mut u8,
-            callee,
+            caller,
         )
     });
 
-    extern "C" fn call_closure<F>(payload: *mut u8, callee: *mut VMContext)
+    return match result {
+        Ok(x) => Ok(x),
+        Err((UnwindReason::Trap(reason), backtrace)) => Err(Box::new(Trap { reason, backtrace })),
+        Err((UnwindReason::Panic(panic), _)) => std::panic::resume_unwind(panic),
+    };
+
+    extern "C" fn call_closure<F>(payload: *mut u8, caller: *mut VMContext)
     where
         F: FnMut(*mut VMContext),
     {
-        unsafe { (*(payload as *mut F))(callee) }
+        unsafe { (*(payload as *mut F))(caller) }
     }
 }
 
-/// Temporary state stored on the stack which is registered in the `tls` module
-/// below for calls into wasm.
-pub struct CallThreadState {
-    unwind: UnsafeCell<MaybeUninit<UnwindReason>>,
-    jmp_buf: Cell<*const u8>,
-    handling_trap: Cell<bool>,
-    signal_handler: Option<*const SignalHandler<'static>>,
-    prev: Cell<tls::Ptr>,
+// Module to hide visibility of the `CallThreadState::prev` field and force
+// usage of its accessor methods.
+mod call_thread_state {
+    use super::*;
+    use std::mem;
+
+    /// Temporary state stored on the stack which is registered in the `tls` module
+    /// below for calls into wasm.
+    pub struct CallThreadState {
+        pub(super) unwind: UnsafeCell<MaybeUninit<(UnwindReason, Option<Backtrace>)>>,
+        pub(super) jmp_buf: Cell<*const u8>,
+        pub(super) signal_handler: Option<*const SignalHandler<'static>>,
+        pub(super) capture_backtrace: bool,
+
+        pub(crate) limits: *const VMRuntimeLimits,
+
+        prev: Cell<tls::Ptr>,
+
+        // The values of `VMRuntimeLimits::last_wasm_{exit_{pc,fp},entry_sp}` for
+        // the *previous* `CallThreadState`. Our *current* last wasm PC/FP/SP are
+        // saved in `self.limits`. We save a copy of the old registers here because
+        // the `VMRuntimeLimits` typically doesn't change across nested calls into
+        // Wasm (i.e. they are typically calls back into the same store and
+        // `self.limits == self.prev.limits`) and we must to maintain the list of
+        // contiguous-Wasm-frames stack regions for backtracing purposes.
+        old_last_wasm_exit_fp: Cell<usize>,
+        old_last_wasm_exit_pc: Cell<usize>,
+        old_last_wasm_entry_sp: Cell<usize>,
+    }
+
+    impl CallThreadState {
+        #[inline]
+        pub(super) fn new(
+            signal_handler: Option<*const SignalHandler<'static>>,
+            capture_backtrace: bool,
+            limits: *const VMRuntimeLimits,
+        ) -> CallThreadState {
+            CallThreadState {
+                unwind: UnsafeCell::new(MaybeUninit::uninit()),
+                jmp_buf: Cell::new(ptr::null()),
+                signal_handler,
+                capture_backtrace,
+                limits,
+                prev: Cell::new(ptr::null()),
+                old_last_wasm_exit_fp: Cell::new(0),
+                old_last_wasm_exit_pc: Cell::new(0),
+                old_last_wasm_entry_sp: Cell::new(0),
+            }
+        }
+
+        /// Get the saved FP upon exit from Wasm for the previous `CallThreadState`.
+        pub fn old_last_wasm_exit_fp(&self) -> usize {
+            self.old_last_wasm_exit_fp.get()
+        }
+
+        /// Get the saved PC upon exit from Wasm for the previous `CallThreadState`.
+        pub fn old_last_wasm_exit_pc(&self) -> usize {
+            self.old_last_wasm_exit_pc.get()
+        }
+
+        /// Get the saved SP upon entry into Wasm for the previous `CallThreadState`.
+        pub fn old_last_wasm_entry_sp(&self) -> usize {
+            self.old_last_wasm_entry_sp.get()
+        }
+
+        /// Get the previous `CallThreadState`.
+        pub fn prev(&self) -> tls::Ptr {
+            self.prev.get()
+        }
+
+        /// Connect the link to the previous `CallThreadState`.
+        ///
+        /// Synchronizes the last wasm FP, PC, and SP on `self` and the old
+        /// `self.prev` for the given new `prev`, and returns the old
+        /// `self.prev`.
+        pub unsafe fn set_prev(&self, prev: tls::Ptr) -> tls::Ptr {
+            let old_prev = self.prev.get();
+
+            // Restore the old `prev`'s saved registers in its
+            // `VMRuntimeLimits`. This is necessary for when we are async
+            // suspending the top `CallThreadState` and doing `set_prev(null)`
+            // on it, and so any stack walking we do subsequently will start at
+            // the old `prev` and look at its `VMRuntimeLimits` to get the
+            // initial saved registers.
+            if let Some(old_prev) = old_prev.as_ref() {
+                *(*old_prev.limits).last_wasm_exit_fp.get() = self.old_last_wasm_exit_fp();
+                *(*old_prev.limits).last_wasm_exit_pc.get() = self.old_last_wasm_exit_pc();
+                *(*old_prev.limits).last_wasm_entry_sp.get() = self.old_last_wasm_entry_sp();
+            }
+
+            self.prev.set(prev);
+
+            let mut old_last_wasm_exit_fp = 0;
+            let mut old_last_wasm_exit_pc = 0;
+            let mut old_last_wasm_entry_sp = 0;
+            if let Some(prev) = prev.as_ref() {
+                // We are entering a new `CallThreadState` or resuming a
+                // previously suspended one. This means we will push new Wasm
+                // frames that save the new Wasm FP/SP/PC registers into
+                // `VMRuntimeLimits`, we need to first save the old Wasm
+                // FP/SP/PC registers into this new `CallThreadState` to
+                // maintain our list of contiguous Wasm frame regions that we
+                // use when capturing stack traces.
+                //
+                // NB: the Wasm<--->host trampolines saved the Wasm FP/SP/PC
+                // registers in the active-at-that-time store's
+                // `VMRuntimeLimits`. For the most recent FP/PC/SP that is the
+                // `state.prev.limits` (since we haven't entered this
+                // `CallThreadState` yet). And that can be a different
+                // `VMRuntimeLimits` instance from the currently active
+                // `state.limits`, which will be used by the upcoming call into
+                // Wasm! Consider the case where we have multiple, nested calls
+                // across stores (with host code in between, by necessity, since
+                // only things in the same store can be linked directly
+                // together):
+                //
+                //     | ...             |
+                //     | Host            |  |
+                //     +-----------------+  | stack
+                //     | Wasm in store A |  | grows
+                //     +-----------------+  | down
+                //     | Host            |  |
+                //     +-----------------+  |
+                //     | Wasm in store B |  V
+                //     +-----------------+
+                //
+                // In this scenario `state.limits != state.prev.limits`,
+                // i.e. `B.limits != A.limits`! Therefore we must take care to
+                // read the old FP/SP/PC from `state.prev.limits`, rather than
+                // `state.limits`, and store those saved registers into the
+                // current `state`.
+                //
+                // See also the comment above the
+                // `CallThreadState::old_last_wasm_*` fields.
+                old_last_wasm_exit_fp =
+                    mem::replace(&mut *(*prev.limits).last_wasm_exit_fp.get(), 0);
+                old_last_wasm_exit_pc =
+                    mem::replace(&mut *(*prev.limits).last_wasm_exit_pc.get(), 0);
+                old_last_wasm_entry_sp =
+                    mem::replace(&mut *(*prev.limits).last_wasm_entry_sp.get(), 0);
+            }
+
+            self.old_last_wasm_exit_fp.set(old_last_wasm_exit_fp);
+            self.old_last_wasm_exit_pc.set(old_last_wasm_exit_pc);
+            self.old_last_wasm_entry_sp.set(old_last_wasm_entry_sp);
+
+            old_prev
+        }
+    }
 }
+pub use call_thread_state::*;
 
 enum UnwindReason {
     Panic(Box<dyn Any + Send>),
-    UserTrap(Error),
-    LibTrap(Trap),
-    JitTrap { backtrace: Backtrace, pc: usize },
+    Trap(TrapReason),
 }
 
 impl CallThreadState {
-    #[inline]
-    fn new(signal_handler: Option<*const SignalHandler<'static>>) -> CallThreadState {
-        CallThreadState {
-            unwind: UnsafeCell::new(MaybeUninit::uninit()),
-            jmp_buf: Cell::new(ptr::null()),
-            handling_trap: Cell::new(false),
-            signal_handler,
-            prev: Cell::new(ptr::null()),
-        }
-    }
-
     fn with(
-        self,
-        interrupts: *mut VMInterrupts,
+        mut self,
         closure: impl FnOnce(&CallThreadState) -> i32,
-    ) -> Result<(), Box<Trap>> {
-        let ret = tls::set(&self, || closure(&self))?;
+    ) -> Result<(), (UnwindReason, Option<Backtrace>)> {
+        let ret = tls::set(&mut self, |me| closure(me));
         if ret != 0 {
             Ok(())
         } else {
-            Err(unsafe { self.read_trap(interrupts) })
+            Err(unsafe { self.read_unwind() })
         }
     }
 
     #[cold]
-    unsafe fn read_trap(&self, interrupts: *mut VMInterrupts) -> Box<Trap> {
-        Box::new(match (*self.unwind.get()).as_ptr().read() {
-            UnwindReason::UserTrap(data) => Trap::User(data),
-            UnwindReason::LibTrap(trap) => trap,
-            UnwindReason::JitTrap { backtrace, pc } => {
-                let maybe_interrupted =
-                    (*interrupts).stack_limit.load(SeqCst) == wasmtime_environ::INTERRUPTED;
-                Trap::Jit {
-                    pc,
-                    backtrace,
-                    maybe_interrupted,
-                }
-            }
-            UnwindReason::Panic(panic) => std::panic::resume_unwind(panic),
-        })
+    unsafe fn read_unwind(&self) -> (UnwindReason, Option<Backtrace>) {
+        (*self.unwind.get()).as_ptr().read()
     }
 
     fn unwind_with(&self, reason: UnwindReason) -> ! {
+        let backtrace = match reason {
+            // Panics don't need backtraces. There is nowhere to attach the
+            // hypothetical backtrace to and it doesn't really make sense to try
+            // in the first place since this is a Rust problem rather than a
+            // Wasm problem.
+            UnwindReason::Panic(_)
+            // And if we are just propagating an existing trap that already has
+            // a backtrace attached to it, then there is no need to capture a
+            // new backtrace either.
+            | UnwindReason::Trap(TrapReason::User {
+                needs_backtrace: false,
+                ..
+            }) => None,
+            UnwindReason::Trap(_) => self.capture_backtrace(None),
+        };
         unsafe {
-            (*self.unwind.get()).as_mut_ptr().write(reason);
+            (*self.unwind.get()).as_mut_ptr().write((reason, backtrace));
             wasmtime_longjmp(self.jmp_buf.get());
         }
     }
@@ -277,21 +457,11 @@ impl CallThreadState {
     /// * a different pointer - a jmp_buf buffer to longjmp to, meaning that
     ///   the wasm trap was succesfully handled.
     #[cfg_attr(target_os = "macos", allow(dead_code))] // macOS is more raw and doesn't use this
-    fn jmp_buf_if_trap(
+    fn take_jmp_buf_if_trap(
         &self,
         pc: *const u8,
         call_handler: impl Fn(&SignalHandler) -> bool,
     ) -> *const u8 {
-        // If we hit a fault while handling a previous trap, that's quite bad,
-        // so bail out and let the system handle this recursive segfault.
-        //
-        // Otherwise flag ourselves as handling a trap, do the trap handling,
-        // and reset our trap handling flag.
-        if self.handling_trap.replace(true) {
-            return ptr::null();
-        }
-        let _reset = ResetCell(&self.handling_trap, false);
-
         // If we haven't even started to handle traps yet, bail out.
         if self.jmp_buf.get().is_null() {
             return ptr::null();
@@ -313,19 +483,37 @@ impl CallThreadState {
 
         // If all that passed then this is indeed a wasm trap, so return the
         // `jmp_buf` passed to `wasmtime_longjmp` to resume.
-        self.jmp_buf.get()
+        self.jmp_buf.replace(ptr::null())
     }
 
-    fn capture_backtrace(&self, pc: *const u8) {
-        let backtrace = Backtrace::new_unresolved();
+    fn set_jit_trap(&self, pc: *const u8, fp: usize, faulting_addr: Option<usize>) {
+        let backtrace = self.capture_backtrace(Some((pc as usize, fp)));
         unsafe {
-            (*self.unwind.get())
-                .as_mut_ptr()
-                .write(UnwindReason::JitTrap {
-                    backtrace,
+            (*self.unwind.get()).as_mut_ptr().write((
+                UnwindReason::Trap(TrapReason::Jit {
                     pc: pc as usize,
-                });
+                    faulting_addr,
+                }),
+                backtrace,
+            ));
         }
+    }
+
+    fn capture_backtrace(&self, pc_and_fp: Option<(usize, usize)>) -> Option<Backtrace> {
+        if !self.capture_backtrace {
+            return None;
+        }
+
+        Some(unsafe { Backtrace::new_with_trap_state(self, pc_and_fp) })
+    }
+
+    pub(crate) fn iter<'a>(&'a self) -> impl Iterator<Item = &Self> + 'a {
+        let mut state = Some(self);
+        std::iter::from_fn(move || {
+            let this = state?;
+            state = unsafe { this.prev().as_ref() };
+            Some(this)
+        })
     }
 }
 
@@ -345,7 +533,6 @@ impl<T: Copy> Drop for ResetCell<'_, T> {
 // the caller to the trap site.
 mod tls {
     use super::CallThreadState;
-    use crate::Trap;
     use std::ptr;
 
     pub use raw::Ptr;
@@ -354,16 +541,18 @@ mod tls {
     // thread local variable and has functions to access the variable.
     //
     // Note that this is specially done to fully encapsulate that the accessors
-    // for tls must not be inlined. Wasmtime's async support employs stack
+    // for tls may or may not be inlined. Wasmtime's async support employs stack
     // switching which can resume execution on different OS threads. This means
     // that borrows of our TLS pointer must never live across accesses because
     // otherwise the access may be split across two threads and cause unsafety.
     //
     // This also means that extra care is taken by the runtime to save/restore
     // these TLS values when the runtime may have crossed threads.
+    //
+    // Note, though, that if async support is disabled at compile time then
+    // these functions are free to be inlined.
     mod raw {
         use super::CallThreadState;
-        use crate::Trap;
         use std::cell::Cell;
         use std::ptr;
 
@@ -374,39 +563,41 @@ mod tls {
         // allows the runtime to perform per-thread initialization if necessary
         // for handling traps (e.g. setting up ports on macOS and sigaltstack on
         // Unix).
-        thread_local!(static PTR: Cell<(Ptr, bool)> = Cell::new((ptr::null(), false)));
+        thread_local!(static PTR: Cell<(Ptr, bool)> = const { Cell::new((ptr::null(), false)) });
 
-        #[inline(never)] // see module docs for why this is here
-        pub fn replace(val: Ptr) -> Result<Ptr, Box<Trap>> {
+        #[cfg_attr(feature = "async", inline(never))] // see module docs
+        #[cfg_attr(not(feature = "async"), inline)]
+        pub fn replace(val: Ptr) -> Ptr {
             PTR.with(|p| {
                 // When a new value is configured that means that we may be
                 // entering WebAssembly so check to see if this thread has
                 // performed per-thread initialization for traps.
                 let (prev, initialized) = p.get();
                 if !initialized {
-                    super::super::sys::lazy_per_thread_init()?;
+                    super::super::sys::lazy_per_thread_init();
                 }
                 p.set((val, true));
-                Ok(prev)
+                prev
             })
         }
 
-        #[inline(never)]
         /// Eagerly initialize thread-local runtime functionality. This will be performed
         /// lazily by the runtime if users do not perform it eagerly.
-        pub fn initialize() -> Result<(), Box<Trap>> {
+        #[cfg_attr(feature = "async", inline(never))] // see module docs
+        #[cfg_attr(not(feature = "async"), inline)]
+        pub fn initialize() {
             PTR.with(|p| {
                 let (state, initialized) = p.get();
                 if initialized {
-                    return Ok(());
+                    return;
                 }
-                super::super::sys::lazy_per_thread_init()?;
+                super::super::sys::lazy_per_thread_init();
                 p.set((state, true));
-                Ok(())
             })
         }
 
-        #[inline(never)] // see module docs for why this is here
+        #[cfg_attr(feature = "async", inline(never))] // see module docs
+        #[cfg_attr(not(feature = "async"), inline)]
         pub fn get() -> Ptr {
             PTR.with(|p| p.get().0)
         }
@@ -416,7 +607,9 @@ mod tls {
 
     /// Opaque state used to help control TLS state across stack switches for
     /// async support.
-    pub struct TlsRestore(raw::Ptr);
+    pub struct TlsRestore {
+        state: raw::Ptr,
+    }
 
     impl TlsRestore {
         /// Takes the TLS state that is currently configured and returns a
@@ -424,65 +617,75 @@ mod tls {
         ///
         /// This is not a safe operation since it's intended to only be used
         /// with stack switching found with fibers and async wasmtime.
-        pub unsafe fn take() -> Result<TlsRestore, Box<Trap>> {
+        pub unsafe fn take() -> TlsRestore {
             // Our tls pointer must be set at this time, and it must not be
             // null. We need to restore the previous pointer since we're
             // removing ourselves from the call-stack, and in the process we
             // null out our own previous field for safety in case it's
             // accidentally used later.
-            let raw = raw::get();
-            if !raw.is_null() {
-                let prev = (*raw).prev.replace(ptr::null());
-                raw::replace(prev)?;
+            let state = raw::get();
+            if let Some(state) = state.as_ref() {
+                let prev_state = state.set_prev(ptr::null());
+                raw::replace(prev_state);
+            } else {
+                // Null case: we aren't in a wasm context, so theres no tls to
+                // save for restoration.
             }
-            // Null case: we aren't in a wasm context, so theres no tls
-            // to save for restoration.
-            Ok(TlsRestore(raw))
+
+            TlsRestore { state }
         }
 
         /// Restores a previous tls state back into this thread's TLS.
         ///
         /// This is unsafe because it's intended to only be used within the
         /// context of stack switching within wasmtime.
-        pub unsafe fn replace(self) -> Result<(), Box<super::Trap>> {
+        pub unsafe fn replace(self) {
             // Null case: we aren't in a wasm context, so theres no tls
             // to restore.
-            if self.0.is_null() {
-                return Ok(());
+            if self.state.is_null() {
+                return;
             }
+
             // We need to configure our previous TLS pointer to whatever is in
             // TLS at this time, and then we set the current state to ourselves.
             let prev = raw::get();
-            assert!((*self.0).prev.get().is_null());
-            (*self.0).prev.set(prev);
-            raw::replace(self.0)?;
-            Ok(())
+            assert!((*self.state).prev().is_null());
+            (*self.state).set_prev(prev);
+            raw::replace(self.state);
         }
     }
 
     /// Configures thread local state such that for the duration of the
-    /// execution of `closure` any call to `with` will yield `ptr`, unless this
-    /// is recursively called again.
+    /// execution of `closure` any call to `with` will yield `state`, unless
+    /// this is recursively called again.
     #[inline]
-    pub fn set<R>(state: &CallThreadState, closure: impl FnOnce() -> R) -> Result<R, Box<Trap>> {
-        struct Reset<'a>(&'a CallThreadState);
+    pub fn set<R>(state: &mut CallThreadState, closure: impl FnOnce(&CallThreadState) -> R) -> R {
+        struct Reset<'a> {
+            state: &'a CallThreadState,
+        }
 
         impl Drop for Reset<'_> {
             #[inline]
             fn drop(&mut self) {
-                raw::replace(self.0.prev.replace(ptr::null()))
-                    .expect("tls should be previously initialized");
+                unsafe {
+                    let prev = self.state.set_prev(ptr::null());
+                    let old_state = raw::replace(prev);
+                    debug_assert!(std::ptr::eq(old_state, self.state));
+                }
             }
         }
 
-        let prev = raw::replace(state)?;
-        state.prev.set(prev);
-        let _reset = Reset(state);
-        Ok(closure())
+        let prev = raw::replace(state);
+
+        unsafe {
+            state.set_prev(prev);
+
+            let reset = Reset { state };
+            closure(reset.state)
+        }
     }
 
-    /// Returns the last pointer configured with `set` above. Panics if `set`
-    /// has not been previously called.
+    /// Returns the last pointer configured with `set` above, if any.
     pub fn with<R>(closure: impl FnOnce(Option<&CallThreadState>) -> R) -> R {
         let p = raw::get();
         unsafe { closure(if p.is_null() { None } else { Some(&*p) }) }

@@ -58,7 +58,6 @@ impl Block {
 /// - [`iconst`](super::InstBuilder::iconst) for integer constants
 /// - [`f32const`](super::InstBuilder::f32const) for 32-bit float constants
 /// - [`f64const`](super::InstBuilder::f64const) for 64-bit float constants
-/// - [`bconst`](super::InstBuilder::bconst) for boolean constants
 /// - [`vconst`](super::InstBuilder::vconst) for vector constants
 /// - [`null`](super::InstBuilder::null) for null reference constants
 ///
@@ -88,12 +87,10 @@ impl Value {
 ///
 /// Most usage of `Inst` is internal. `Inst`ructions are returned by
 /// [`InstBuilder`](super::InstBuilder) instructions that do not return a
-/// [`Value`], such as control flow and trap instructions.
-///
-/// If you look around the API, you can find many inventive uses for `Inst`,
-/// such as [annotating specific instructions with a comment][inst_comment]
-/// or [performing reflection at compile time](super::DataFlowGraph::analyze_branch)
-/// on the type of instruction.
+/// [`Value`], such as control flow and trap instructions, as well as instructions that return a
+/// variable (potentially zero!) number of values, like call or call-indirect instructions. To get
+/// the `Value` of such instructions, use [`inst_results`](super::DataFlowGraph::inst_results) or
+/// its analogue in `cranelift_frontend::FuncBuilder`.
 ///
 /// [inst_comment]: https://github.com/bjorn3/rustc_codegen_cranelift/blob/0f8814fd6da3d436a90549d4bb19b94034f2b19c/src/pretty_clif.rs
 ///
@@ -109,7 +106,9 @@ entity_impl!(Inst, "inst");
 /// [call stack](https://en.wikipedia.org/wiki/Call_stack).
 ///
 /// `StackSlot`s can be created with
-/// [`FunctionBuilder::create_stackslot`](https://docs.rs/cranelift-frontend/*/cranelift_frontend/struct.FunctionBuilder.html#method.create_stack_slot).
+/// [`FunctionBuilder::create_sized_stack_slot`](https://docs.rs/cranelift-frontend/*/cranelift_frontend/struct.FunctionBuilder.html#method.create_sized_stack_slot)
+/// or
+/// [`FunctionBuilder::create_dynamic_stack_slot`](https://docs.rs/cranelift-frontend/*/cranelift_frontend/struct.FunctionBuilder.html#method.create_dynamic_stack_slot).
 ///
 /// `StackSlot`s are most often used with
 /// [`stack_addr`](super::InstBuilder::stack_addr),
@@ -124,6 +123,44 @@ entity_impl!(StackSlot, "ss");
 
 impl StackSlot {
     /// Create a new stack slot reference from its number.
+    ///
+    /// This method is for use by the parser.
+    pub fn with_number(n: u32) -> Option<Self> {
+        if n < u32::MAX {
+            Some(Self(n))
+        } else {
+            None
+        }
+    }
+}
+
+/// An opaque reference to a dynamic stack slot.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
+pub struct DynamicStackSlot(u32);
+entity_impl!(DynamicStackSlot, "dss");
+
+impl DynamicStackSlot {
+    /// Create a new stack slot reference from its number.
+    ///
+    /// This method is for use by the parser.
+    pub fn with_number(n: u32) -> Option<Self> {
+        if n < u32::MAX {
+            Some(Self(n))
+        } else {
+            None
+        }
+    }
+}
+
+/// An opaque reference to a dynamic type.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
+pub struct DynamicType(u32);
+entity_impl!(DynamicType, "dt");
+
+impl DynamicType {
+    /// Create a new dynamic type reference from its number.
     ///
     /// This method is for use by the parser.
     pub fn with_number(n: u32) -> Option<Self> {
@@ -290,6 +327,12 @@ impl FuncRef {
     }
 }
 
+/// A reference to an `UserExternalName`, declared with `Function::declare_imported_user_function`.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
+pub struct UserExternalNameRef(u32);
+entity_impl!(UserExternalNameRef, "userextname");
+
 /// An opaque reference to a function [`Signature`](super::Signature).
 ///
 /// `SigRef`s are used to declare a function with
@@ -311,32 +354,6 @@ entity_impl!(SigRef, "sig");
 
 impl SigRef {
     /// Create a new function signature reference from its number.
-    ///
-    /// This method is for use by the parser.
-    pub fn with_number(n: u32) -> Option<Self> {
-        if n < u32::MAX {
-            Some(Self(n))
-        } else {
-            None
-        }
-    }
-}
-
-/// An opaque reference to a [heap](https://en.wikipedia.org/wiki/Memory_management#DYNAMIC).
-///
-/// Heaps are used to access dynamically allocated memory through
-/// [`heap_addr`](super::InstBuilder::heap_addr).
-///
-/// To create a heap, use [`FunctionBuilder::create_heap`](https://docs.rs/cranelift-frontend/*/cranelift_frontend/struct.FunctionBuilder.html#method.create_heap).
-///
-/// While the order is stable, it is arbitrary.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "enable-serde", derive(Serialize, Deserialize))]
-pub struct Heap(u32);
-entity_impl!(Heap, "heap");
-
-impl Heap {
-    /// Create a new heap reference from its number.
     ///
     /// This method is for use by the parser.
     pub fn with_number(n: u32) -> Option<Self> {
@@ -389,6 +406,10 @@ pub enum AnyEntity {
     Value(Value),
     /// A stack slot.
     StackSlot(StackSlot),
+    /// A dynamic stack slot.
+    DynamicStackSlot(DynamicStackSlot),
+    /// A dynamic type
+    DynamicType(DynamicType),
     /// A Global value.
     GlobalValue(GlobalValue),
     /// A jump table.
@@ -399,8 +420,6 @@ pub enum AnyEntity {
     FuncRef(FuncRef),
     /// A function call signature.
     SigRef(SigRef),
-    /// A heap.
-    Heap(Heap),
     /// A table.
     Table(Table),
     /// A function's stack limit
@@ -415,12 +434,13 @@ impl fmt::Display for AnyEntity {
             Self::Inst(r) => r.fmt(f),
             Self::Value(r) => r.fmt(f),
             Self::StackSlot(r) => r.fmt(f),
+            Self::DynamicStackSlot(r) => r.fmt(f),
+            Self::DynamicType(r) => r.fmt(f),
             Self::GlobalValue(r) => r.fmt(f),
             Self::JumpTable(r) => r.fmt(f),
             Self::Constant(r) => r.fmt(f),
             Self::FuncRef(r) => r.fmt(f),
             Self::SigRef(r) => r.fmt(f),
-            Self::Heap(r) => r.fmt(f),
             Self::Table(r) => r.fmt(f),
             Self::StackLimit => write!(f, "stack_limit"),
         }
@@ -457,6 +477,18 @@ impl From<StackSlot> for AnyEntity {
     }
 }
 
+impl From<DynamicStackSlot> for AnyEntity {
+    fn from(r: DynamicStackSlot) -> Self {
+        Self::DynamicStackSlot(r)
+    }
+}
+
+impl From<DynamicType> for AnyEntity {
+    fn from(r: DynamicType) -> Self {
+        Self::DynamicType(r)
+    }
+}
+
 impl From<GlobalValue> for AnyEntity {
     fn from(r: GlobalValue) -> Self {
         Self::GlobalValue(r)
@@ -484,12 +516,6 @@ impl From<FuncRef> for AnyEntity {
 impl From<SigRef> for AnyEntity {
     fn from(r: SigRef) -> Self {
         Self::SigRef(r)
-    }
-}
-
-impl From<Heap> for AnyEntity {
-    fn from(r: Heap) -> Self {
-        Self::Heap(r)
     }
 }
 

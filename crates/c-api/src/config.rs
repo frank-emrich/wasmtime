@@ -35,6 +35,8 @@ pub enum wasmtime_opt_level_t {
 pub enum wasmtime_profiling_strategy_t {
     WASMTIME_PROFILING_STRATEGY_NONE,
     WASMTIME_PROFILING_STRATEGY_JITDUMP,
+    WASMTIME_PROFILING_STRATEGY_VTUNE,
+    WASMTIME_PROFILING_STRATEGY_PERFMAP,
 }
 
 #[no_mangle]
@@ -50,18 +52,18 @@ pub extern "C" fn wasmtime_config_debug_info_set(c: &mut wasm_config_t, enable: 
 }
 
 #[no_mangle]
-pub extern "C" fn wasmtime_config_interruptable_set(c: &mut wasm_config_t, enable: bool) {
-    c.config.interruptable(enable);
-}
-
-#[no_mangle]
 pub extern "C" fn wasmtime_config_consume_fuel_set(c: &mut wasm_config_t, enable: bool) {
     c.config.consume_fuel(enable);
 }
 
 #[no_mangle]
-pub extern "C" fn wasmtime_config_max_wasm_stack_set(c: &mut wasm_config_t, size: usize) -> bool {
-    c.config.max_wasm_stack(size).is_ok()
+pub extern "C" fn wasmtime_config_epoch_interruption_set(c: &mut wasm_config_t, enable: bool) {
+    c.config.epoch_interruption(enable);
+}
+
+#[no_mangle]
+pub extern "C" fn wasmtime_config_max_wasm_stack_set(c: &mut wasm_config_t, size: usize) {
+    c.config.max_wasm_stack(size);
 }
 
 #[no_mangle]
@@ -95,11 +97,6 @@ pub extern "C" fn wasmtime_config_wasm_multi_memory_set(c: &mut wasm_config_t, e
 }
 
 #[no_mangle]
-pub extern "C" fn wasmtime_config_wasm_module_linking_set(c: &mut wasm_config_t, enable: bool) {
-    c.config.wasm_module_linking(enable);
-}
-
-#[no_mangle]
 pub extern "C" fn wasmtime_config_wasm_memory64_set(c: &mut wasm_config_t, enable: bool) {
     c.config.wasm_memory64(enable);
 }
@@ -108,13 +105,18 @@ pub extern "C" fn wasmtime_config_wasm_memory64_set(c: &mut wasm_config_t, enabl
 pub extern "C" fn wasmtime_config_strategy_set(
     c: &mut wasm_config_t,
     strategy: wasmtime_strategy_t,
-) -> Option<Box<wasmtime_error_t>> {
+) {
     use wasmtime_strategy_t::*;
-    let result = c.config.strategy(match strategy {
+    c.config.strategy(match strategy {
         WASMTIME_STRATEGY_AUTO => Strategy::Auto,
         WASMTIME_STRATEGY_CRANELIFT => Strategy::Cranelift,
     });
-    handle_result(result, |_cfg| {})
+}
+
+#[no_mangle]
+#[cfg(feature = "parallel-compilation")]
+pub extern "C" fn wasmtime_config_parallel_compilation_set(c: &mut wasm_config_t, enable: bool) {
+    c.config.parallel_compilation(enable);
 }
 
 #[no_mangle]
@@ -123,6 +125,14 @@ pub extern "C" fn wasmtime_config_cranelift_debug_verifier_set(
     enable: bool,
 ) {
     c.config.cranelift_debug_verifier(enable);
+}
+
+#[no_mangle]
+pub extern "C" fn wasmtime_config_cranelift_nan_canonicalization_set(
+    c: &mut wasm_config_t,
+    enable: bool,
+) {
+    c.config.cranelift_nan_canonicalization(enable);
 }
 
 #[no_mangle]
@@ -142,13 +152,14 @@ pub extern "C" fn wasmtime_config_cranelift_opt_level_set(
 pub extern "C" fn wasmtime_config_profiler_set(
     c: &mut wasm_config_t,
     strategy: wasmtime_profiling_strategy_t,
-) -> Option<Box<wasmtime_error_t>> {
+) {
     use wasmtime_profiling_strategy_t::*;
-    let result = c.config.profiler(match strategy {
+    c.config.profiler(match strategy {
         WASMTIME_PROFILING_STRATEGY_NONE => ProfilingStrategy::None,
         WASMTIME_PROFILING_STRATEGY_JITDUMP => ProfilingStrategy::JitDump,
+        WASMTIME_PROFILING_STRATEGY_VTUNE => ProfilingStrategy::VTune,
+        WASMTIME_PROFILING_STRATEGY_PERFMAP => ProfilingStrategy::PerfMap,
     });
-    handle_result(result, |_cfg| {})
 }
 
 #[no_mangle]

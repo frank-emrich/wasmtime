@@ -8,15 +8,15 @@
 //! operand ("G" in Intelese), the order is always G first, then E. The term "enc" in the following
 //! means "hardware register encoding number".
 
+use crate::machinst::{Reg, RegClass};
 use crate::{
     ir::TrapCode,
     isa::x64::inst::{
         args::{Amode, OperandSize},
-        regs, EmitInfo, EmitState, Inst, LabelUse,
+        regs, Inst, LabelUse,
     },
     machinst::MachBuffer,
 };
-use regalloc::{Reg, RegClass};
 
 pub(crate) fn low8_will_sign_extend_to_64(x: u32) -> bool {
     let xs = (x as i32) as i64;
@@ -50,8 +50,8 @@ pub(crate) fn encode_sib(shift: u8, enc_index: u8, enc_base: u8) -> u8 {
 pub(crate) fn int_reg_enc(reg: impl Into<Reg>) -> u8 {
     let reg = reg.into();
     debug_assert!(reg.is_real());
-    debug_assert_eq!(reg.get_class(), RegClass::I64);
-    reg.get_hw_encoding()
+    debug_assert_eq!(reg.class(), RegClass::Int);
+    reg.to_real_reg().unwrap().hw_enc()
 }
 
 /// Get the encoding number of any register.
@@ -59,7 +59,7 @@ pub(crate) fn int_reg_enc(reg: impl Into<Reg>) -> u8 {
 pub(crate) fn reg_enc(reg: impl Into<Reg>) -> u8 {
     let reg = reg.into();
     debug_assert!(reg.is_real());
-    reg.get_hw_encoding()
+    reg.to_real_reg().unwrap().hw_enc()
 }
 
 /// A small bit field to record a REX prefix specification:
@@ -103,6 +103,21 @@ impl RexFlags {
     #[inline(always)]
     pub(crate) fn must_always_emit(&self) -> bool {
         (self.0 & 2) != 0
+    }
+
+    #[inline(always)]
+    pub(crate) fn emit_one_op(&self, sink: &mut MachBuffer<Inst>, enc_e: u8) {
+        // Register Operand coded in Opcode Byte
+        // REX.R and REX.X unused
+        // REX.B == 1 accesses r8-r15
+        let w = if self.must_clear_w() { 0 } else { 1 };
+        let r = 0;
+        let x = 0;
+        let b = (enc_e >> 3) & 1;
+        let rex = 0x40 | (w << 3) | (r << 2) | (x << 1) | b;
+        if rex != 0x40 || self.must_always_emit() {
+            sink.put1(rex);
+        }
     }
 
     #[inline(always)]
@@ -159,6 +174,7 @@ impl From<(OperandSize, Reg)> for RexFlags {
 /// Allows using the same opcode byte in different "opcode maps" to allow for more instruction
 /// encodings. See appendix A in the Intel Software Developer's Manual, volume 2A, for more details.
 #[allow(missing_docs)]
+#[derive(PartialEq)]
 pub enum OpcodeMap {
     None,
     _0F,
@@ -168,7 +184,7 @@ pub enum OpcodeMap {
 
 impl OpcodeMap {
     /// Normally the opcode map is specified as bytes in the instruction, but some x64 encoding
-    /// formats pack this information as bits in a prefix (e.g. EVEX).
+    /// formats pack this information as bits in a prefix (e.g. VEX / EVEX).
     pub(crate) fn bits(&self) -> u8 {
         match self {
             OpcodeMap::None => 0b00,
@@ -187,6 +203,7 @@ impl Default for OpcodeMap {
 
 /// We may need to include one or more legacy prefix bytes before the REX prefix.  This enum
 /// covers only the small set of possibilities that we actually need.
+#[derive(PartialEq)]
 pub enum LegacyPrefixes {
     /// No prefix bytes.
     None,
@@ -276,49 +293,73 @@ impl Default for LegacyPrefixes {
 /// indicate a 64-bit operation.
 pub(crate) fn emit_std_enc_mem(
     sink: &mut MachBuffer<Inst>,
-    state: &EmitState,
-    info: &EmitInfo,
     prefixes: LegacyPrefixes,
     opcodes: u32,
     mut num_opcodes: usize,
     enc_g: u8,
     mem_e: &Amode,
     rex: RexFlags,
+    bytes_at_end: u8,
 ) {
     // General comment for this function: the registers in `mem_e` must be
     // 64-bit integer registers, because they are part of an address
     // expression.  But `enc_g` can be derived from a register of any class.
 
-    let srcloc = state.cur_srcloc();
     let can_trap = mem_e.can_trap();
     if can_trap {
-        sink.add_trap(srcloc, TrapCode::HeapOutOfBounds);
+        sink.add_trap(TrapCode::HeapOutOfBounds);
     }
 
     prefixes.emit(sink);
 
-    match mem_e {
-        Amode::ImmReg { simm32, base, .. } => {
-            // If this is an access based off of RSP, it may trap with a stack overflow if it's the
-            // first touch of a new stack page.
-            if *base == regs::rsp() && !can_trap && info.flags.enable_probestack() {
-                sink.add_trap(srcloc, TrapCode::StackOverflow);
-            }
-
-            // First, the REX byte.
-            let enc_e = int_reg_enc(*base);
+    // After prefixes, first emit the REX byte depending on the kind of
+    // addressing mode that's being used.
+    match *mem_e {
+        Amode::ImmReg { base, .. } => {
+            let enc_e = int_reg_enc(base);
             rex.emit_two_op(sink, enc_g, enc_e);
+        }
 
-            // Now the opcode(s).  These include any other prefixes the caller
-            // hands to us.
-            while num_opcodes > 0 {
-                num_opcodes -= 1;
-                sink.put1(((opcodes >> (num_opcodes << 3)) & 0xFF) as u8);
-            }
+        Amode::ImmRegRegShift {
+            base: reg_base,
+            index: reg_index,
+            ..
+        } => {
+            let enc_base = int_reg_enc(*reg_base);
+            let enc_index = int_reg_enc(*reg_index);
+            rex.emit_three_op(sink, enc_g, enc_index, enc_base);
+        }
+
+        Amode::RipRelative { .. } => {
+            // note REX.B = 0.
+            rex.emit_two_op(sink, enc_g, 0);
+        }
+    }
+
+    // Now the opcode(s).  These include any other prefixes the caller
+    // hands to us.
+    while num_opcodes > 0 {
+        num_opcodes -= 1;
+        sink.put1(((opcodes >> (num_opcodes << 3)) & 0xFF) as u8);
+    }
+
+    // And finally encode the mod/rm bytes and all further information.
+    emit_modrm_sib_disp(sink, enc_g, mem_e, bytes_at_end)
+}
+
+pub(crate) fn emit_modrm_sib_disp(
+    sink: &mut MachBuffer<Inst>,
+    enc_g: u8,
+    mem_e: &Amode,
+    bytes_at_end: u8,
+) {
+    match *mem_e {
+        Amode::ImmReg { simm32, base, .. } => {
+            let enc_e = int_reg_enc(base);
 
             // Now the mod/rm and associated immediates.  This is
             // significantly complicated due to the multiple special cases.
-            if *simm32 == 0
+            if simm32 == 0
                 && enc_e != regs::ENC_RSP
                 && enc_e != regs::ENC_RBP
                 && enc_e != regs::ENC_R12
@@ -328,10 +369,10 @@ pub(crate) fn emit_std_enc_mem(
                 // replaced by a single mask-and-compare check.  We should do
                 // that because this routine is likely to be hot.
                 sink.put1(encode_modrm(0, enc_g & 7, enc_e & 7));
-            } else if *simm32 == 0 && (enc_e == regs::ENC_RSP || enc_e == regs::ENC_R12) {
+            } else if simm32 == 0 && (enc_e == regs::ENC_RSP || enc_e == regs::ENC_R12) {
                 sink.put1(encode_modrm(0, enc_g & 7, 4));
                 sink.put1(0x24);
-            } else if low8_will_sign_extend_to_32(*simm32)
+            } else if low8_will_sign_extend_to_32(simm32)
                 && enc_e != regs::ENC_RSP
                 && enc_e != regs::ENC_R12
             {
@@ -339,9 +380,9 @@ pub(crate) fn emit_std_enc_mem(
                 sink.put1((simm32 & 0xFF) as u8);
             } else if enc_e != regs::ENC_RSP && enc_e != regs::ENC_R12 {
                 sink.put1(encode_modrm(2, enc_g & 7, enc_e & 7));
-                sink.put4(*simm32);
+                sink.put4(simm32);
             } else if (enc_e == regs::ENC_RSP || enc_e == regs::ENC_R12)
-                && low8_will_sign_extend_to_32(*simm32)
+                && low8_will_sign_extend_to_32(simm32)
             {
                 // REX.B distinguishes RSP from R12
                 sink.put1(encode_modrm(1, enc_g & 7, 4));
@@ -352,7 +393,7 @@ pub(crate) fn emit_std_enc_mem(
                 // REX.B distinguishes RSP from R12
                 sink.put1(encode_modrm(2, enc_g & 7, 4));
                 sink.put1(0x24);
-                sink.put4(*simm32);
+                sink.put4(simm32);
             } else {
                 unreachable!("ImmReg");
             }
@@ -365,55 +406,37 @@ pub(crate) fn emit_std_enc_mem(
             shift,
             ..
         } => {
-            // If this is an access based off of RSP, it may trap with a stack overflow if it's the
-            // first touch of a new stack page.
-            if *reg_base == regs::rsp() && !can_trap && info.flags.enable_probestack() {
-                sink.add_trap(srcloc, TrapCode::StackOverflow);
-            }
-
             let enc_base = int_reg_enc(*reg_base);
             let enc_index = int_reg_enc(*reg_index);
 
-            // The rex byte.
-            rex.emit_three_op(sink, enc_g, enc_index, enc_base);
-
-            // All other prefixes and opcodes.
-            while num_opcodes > 0 {
-                num_opcodes -= 1;
-                sink.put1(((opcodes >> (num_opcodes << 3)) & 0xFF) as u8);
-            }
-
             // modrm, SIB, immediates.
-            if low8_will_sign_extend_to_32(*simm32) && enc_index != regs::ENC_RSP {
+            if low8_will_sign_extend_to_32(simm32) && enc_index != regs::ENC_RSP {
                 sink.put1(encode_modrm(1, enc_g & 7, 4));
-                sink.put1(encode_sib(*shift, enc_index & 7, enc_base & 7));
-                sink.put1(*simm32 as u8);
+                sink.put1(encode_sib(shift, enc_index & 7, enc_base & 7));
+                sink.put1(simm32 as u8);
             } else if enc_index != regs::ENC_RSP {
                 sink.put1(encode_modrm(2, enc_g & 7, 4));
-                sink.put1(encode_sib(*shift, enc_index & 7, enc_base & 7));
-                sink.put4(*simm32);
+                sink.put1(encode_sib(shift, enc_index & 7, enc_base & 7));
+                sink.put4(simm32);
             } else {
                 panic!("ImmRegRegShift");
             }
         }
 
         Amode::RipRelative { ref target } => {
-            // First, the REX byte, with REX.B = 0.
-            rex.emit_two_op(sink, enc_g, 0);
-
-            // Now the opcode(s).  These include any other prefixes the caller
-            // hands to us.
-            while num_opcodes > 0 {
-                num_opcodes -= 1;
-                sink.put1(((opcodes >> (num_opcodes << 3)) & 0xFF) as u8);
-            }
-
             // RIP-relative is mod=00, rm=101.
             sink.put1(encode_modrm(0, enc_g & 7, 0b101));
 
             let offset = sink.cur_offset();
             sink.use_label_at_offset(offset, *target, LabelUse::JmpRel32);
-            sink.put4(0);
+            // N.B.: some instructions (XmmRmRImm format for example)
+            // have bytes *after* the RIP-relative offset. The
+            // addressed location is relative to the end of the
+            // instruction, but the relocation is nominally relative
+            // to the end of the u32 field. So, to compensate for
+            // this, we emit a negative extra offset in the u32 field
+            // initially, and the relocation will add to it.
+            sink.put4(-(bytes_at_end as i32) as u32);
         }
     }
 }
@@ -458,26 +481,24 @@ pub(crate) fn emit_std_enc_enc(
 
 pub(crate) fn emit_std_reg_mem(
     sink: &mut MachBuffer<Inst>,
-    state: &EmitState,
-    info: &EmitInfo,
     prefixes: LegacyPrefixes,
     opcodes: u32,
     num_opcodes: usize,
     reg_g: Reg,
     mem_e: &Amode,
     rex: RexFlags,
+    bytes_at_end: u8,
 ) {
     let enc_g = reg_enc(reg_g);
     emit_std_enc_mem(
         sink,
-        state,
-        info,
         prefixes,
         opcodes,
         num_opcodes,
         enc_g,
         mem_e,
         rex,
+        bytes_at_end,
     );
 }
 

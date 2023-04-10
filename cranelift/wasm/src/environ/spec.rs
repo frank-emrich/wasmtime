@@ -8,19 +8,19 @@
 
 use crate::state::FuncTranslationState;
 use crate::{
-    DataIndex, ElemIndex, EntityIndex, EntityType, FuncIndex, Global, GlobalIndex, InstanceIndex,
-    InstanceTypeIndex, Memory, MemoryIndex, ModuleIndex, ModuleTypeIndex, SignatureIndex, Table,
-    TableIndex, Tag, TagIndex, TypeIndex, WasmError, WasmFuncType, WasmResult, WasmType,
+    DataIndex, ElemIndex, FuncIndex, Global, GlobalIndex, Heap, HeapData, Memory, MemoryIndex,
+    SignatureIndex, Table, TableIndex, Tag, TagIndex, TypeIndex, WasmError, WasmFuncType,
+    WasmHeapType, WasmResult,
 };
 use core::convert::From;
 use cranelift_codegen::cursor::FuncCursor;
 use cranelift_codegen::ir::immediates::Offset32;
 use cranelift_codegen::ir::{self, InstBuilder};
 use cranelift_codegen::isa::TargetFrontendConfig;
+use cranelift_entity::PrimaryMap;
 use cranelift_frontend::FunctionBuilder;
 use std::boxed::Box;
 use std::string::ToString;
-use std::vec::Vec;
 use wasmparser::{FuncValidator, FunctionBody, Operator, ValidatorResources, WasmFeatures};
 
 /// The value of a WebAssembly global variable.
@@ -43,52 +43,13 @@ pub enum GlobalVariable {
     Custom,
 }
 
-/// How to return from functions.
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum ReturnMode {
-    /// Use normal return instructions as needed.
-    NormalReturns,
-    /// Use a single fallthrough return at the end of the function.
-    FallthroughReturn,
-}
-
-/// An entry in the alias section of a wasm module (from the module linking
-/// proposal)
-pub enum Alias<'a> {
-    /// An outer module's module is being aliased into our own index space.
-    OuterModule {
-        /// The number of modules above us that we're referencing.
-        relative_depth: u32,
-        /// The module index in the outer module's index space we're referencing.
-        index: ModuleIndex,
-    },
-
-    /// An outer module's type is being aliased into our own index space
-    ///
-    /// Note that the index here is in the outer module's index space, not our
-    /// own.
-    OuterType {
-        /// The number of modules above us that we're referencing.
-        relative_depth: u32,
-        /// The type index in the outer module's index space we're referencing.
-        index: TypeIndex,
-    },
-
-    /// A previously created instance is having one of its exports aliased into
-    /// our index space.
-    InstanceExport {
-        /// The index we're aliasing.
-        instance: InstanceIndex,
-        /// The nth export that we're inserting into our own index space
-        /// locally.
-        export: &'a str,
-    },
-}
-
 /// Environment affecting the translation of a WebAssembly.
 pub trait TargetEnvironment {
     /// Get the information needed to produce Cranelift IR for the given target.
     fn target_config(&self) -> TargetFrontendConfig;
+
+    /// Whether to enable Spectre mitigations for heap accesses.
+    fn heap_access_spectre_mitigation(&self) -> bool;
 
     /// Get the Cranelift integer type to use for native pointers.
     ///
@@ -109,7 +70,7 @@ pub trait TargetEnvironment {
     /// 32-bit architectures. If you override this, then you should also
     /// override `FuncEnvironment::{translate_ref_null, translate_ref_is_null}`
     /// as well.
-    fn reference_type(&self, ty: WasmType) -> ir::Type {
+    fn reference_type(&self, ty: WasmHeapType) -> ir::Type {
         let _ = ty;
         match self.pointer_type() {
             ir::types::I32 => ir::types::R32,
@@ -137,13 +98,6 @@ pub trait FuncEnvironment: TargetEnvironment {
         signature.returns[index].purpose == ir::ArgumentPurpose::Normal
     }
 
-    /// Should the code be structured to use a single `fallthrough_return` instruction at the end
-    /// of the function body, rather than `return` instructions as needed? This is used by VMs
-    /// to append custom epilogues.
-    fn return_mode(&self) -> ReturnMode {
-        ReturnMode::NormalReturns
-    }
-
     /// Called after the locals for a function have been parsed, and the number
     /// of variables defined by this function is provided.
     fn after_locals(&mut self, num_locals_defined: usize) {
@@ -163,11 +117,20 @@ pub trait FuncEnvironment: TargetEnvironment {
         index: GlobalIndex,
     ) -> WasmResult<GlobalVariable>;
 
+    /// Get the heaps for this function environment.
+    ///
+    /// The returned map should provide heap format details (encoded in
+    /// `HeapData`) for each `Heap` that was previously returned by
+    /// `make_heap()`. The translator will first call make_heap for each Wasm
+    /// memory, and then later when translating code, will invoke `heaps()` to
+    /// learn how to access the environment's implementation of each memory.
+    fn heaps(&self) -> &PrimaryMap<Heap, HeapData>;
+
     /// Set up the necessary preamble definitions in `func` to access the linear memory identified
     /// by `index`.
     ///
     /// The index space covers both imported and locally declared memories.
-    fn make_heap(&mut self, func: &mut ir::Function, index: MemoryIndex) -> WasmResult<ir::Heap>;
+    fn make_heap(&mut self, func: &mut ir::Function, index: MemoryIndex) -> WasmResult<Heap>;
 
     /// Set up the necessary preamble definitions in `func` to access the table identified
     /// by `index`.
@@ -216,7 +179,7 @@ pub trait FuncEnvironment: TargetEnvironment {
     /// The signature `sig_ref` was previously created by `make_indirect_sig()`.
     ///
     /// Return the call instruction whose results are the WebAssembly return values.
-    #[cfg_attr(feature = "cargo-clippy", allow(clippy::too_many_arguments))]
+    #[allow(clippy::too_many_arguments)]
     fn translate_call_indirect(
         &mut self,
         builder: &mut FunctionBuilder,
@@ -245,6 +208,22 @@ pub trait FuncEnvironment: TargetEnvironment {
         Ok(pos.ins().call(callee, call_args))
     }
 
+    /// Translate a `call_ref` WebAssembly instruction at `pos`.
+    ///
+    /// Insert instructions at `pos` for an indirect call to the
+    /// function `callee`. The `callee` value will have type `Ref`.
+    ///
+    /// The signature `sig_ref` was previously created by `make_indirect_sig()`.
+    ///
+    /// Return the call instruction whose results are the WebAssembly return values.
+    fn translate_call_ref(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        sig_ref: ir::SigRef,
+        callee: ir::Value,
+        call_args: &[ir::Value],
+    ) -> WasmResult<ir::Inst>;
+
     /// Translate a `memory.grow` WebAssembly instruction.
     ///
     /// The `index` provided identifies the linear memory to grow, and `heap` is the heap reference
@@ -257,7 +236,7 @@ pub trait FuncEnvironment: TargetEnvironment {
         &mut self,
         pos: FuncCursor,
         index: MemoryIndex,
-        heap: ir::Heap,
+        heap: Heap,
         val: ir::Value,
     ) -> WasmResult<ir::Value>;
 
@@ -271,7 +250,7 @@ pub trait FuncEnvironment: TargetEnvironment {
         &mut self,
         pos: FuncCursor,
         index: MemoryIndex,
-        heap: ir::Heap,
+        heap: Heap,
     ) -> WasmResult<ir::Value>;
 
     /// Translate a `memory.copy` WebAssembly instruction.
@@ -282,9 +261,9 @@ pub trait FuncEnvironment: TargetEnvironment {
         &mut self,
         pos: FuncCursor,
         src_index: MemoryIndex,
-        src_heap: ir::Heap,
+        src_heap: Heap,
         dst_index: MemoryIndex,
-        dst_heap: ir::Heap,
+        dst_heap: Heap,
         dst: ir::Value,
         src: ir::Value,
         len: ir::Value,
@@ -298,7 +277,7 @@ pub trait FuncEnvironment: TargetEnvironment {
         &mut self,
         pos: FuncCursor,
         index: MemoryIndex,
-        heap: ir::Heap,
+        heap: Heap,
         dst: ir::Value,
         val: ir::Value,
         len: ir::Value,
@@ -314,7 +293,7 @@ pub trait FuncEnvironment: TargetEnvironment {
         &mut self,
         pos: FuncCursor,
         index: MemoryIndex,
-        heap: ir::Heap,
+        heap: Heap,
         seg_index: u32,
         dst: ir::Value,
         src: ir::Value,
@@ -410,7 +389,11 @@ pub trait FuncEnvironment: TargetEnvironment {
     /// null sentinel is not a null reference type pointer for your type. If you
     /// override this method, then you should also override
     /// `translate_ref_is_null` as well.
-    fn translate_ref_null(&mut self, mut pos: FuncCursor, ty: WasmType) -> WasmResult<ir::Value> {
+    fn translate_ref_null(
+        &mut self,
+        mut pos: FuncCursor,
+        ty: WasmHeapType,
+    ) -> WasmResult<ir::Value> {
         let _ = ty;
         Ok(pos.ins().null(self.reference_type(ty)))
     }
@@ -429,7 +412,7 @@ pub trait FuncEnvironment: TargetEnvironment {
         value: ir::Value,
     ) -> WasmResult<ir::Value> {
         let is_null = pos.ins().is_null(value);
-        Ok(pos.ins().bint(ir::types::I32, is_null))
+        Ok(pos.ins().uextend(ir::types::I32, is_null))
     }
 
     /// Translate a `ref.func` WebAssembly instruction.
@@ -471,7 +454,7 @@ pub trait FuncEnvironment: TargetEnvironment {
         &mut self,
         pos: FuncCursor,
         index: MemoryIndex,
-        heap: ir::Heap,
+        heap: Heap,
         addr: ir::Value,
         expected: ir::Value,
         timeout: ir::Value,
@@ -491,7 +474,7 @@ pub trait FuncEnvironment: TargetEnvironment {
         &mut self,
         pos: FuncCursor,
         index: MemoryIndex,
-        heap: ir::Heap,
+        heap: Heap,
         addr: ir::Value,
         count: ir::Value,
     ) -> WasmResult<ir::Value>;
@@ -527,6 +510,18 @@ pub trait FuncEnvironment: TargetEnvironment {
         Ok(())
     }
 
+    /// Optional callback for the `FuncEnvironment` performing this translation
+    /// to maintain, prepare, or finalize custom, internal state when we
+    /// statically determine that a Wasm memory access will unconditionally
+    /// trap, rendering the rest of the block unreachable. Called just before
+    /// the unconditional trap is emitted.
+    fn before_unconditionally_trapping_memory_access(
+        &mut self,
+        _builder: &mut FunctionBuilder,
+    ) -> WasmResult<()> {
+        Ok(())
+    }
+
     /// Optional callback for the `FunctionEnvironment` performing this translation to perform work
     /// before the function body is translated.
     fn before_translate_function(
@@ -550,6 +545,39 @@ pub trait FuncEnvironment: TargetEnvironment {
     /// Returns the target ISA's condition to check for unsigned addition
     /// overflowing.
     fn unsigned_add_overflow_condition(&self) -> ir::condcodes::IntCC;
+
+    /// Whether or not to force relaxed simd instructions to have deterministic
+    /// lowerings meaning they will produce the same results across all hosts,
+    /// regardless of the cost to performance.
+    fn relaxed_simd_deterministic(&self) -> bool {
+        true
+    }
+
+    /// Whether or not the target being translated for has a native fma
+    /// instruction. If it does not then when relaxed simd isn't deterministic
+    /// the translation of the `f32x4.relaxed_fma` instruction, for example,
+    /// will do a multiplication and then an add instead of the fused version.
+    fn has_native_fma(&self) -> bool {
+        false
+    }
+
+    /// Returns whether this is an x86 target, which may alter lowerings of
+    /// relaxed simd instructions.
+    fn is_x86(&self) -> bool {
+        false
+    }
+
+    /// TODO(dhil): write documentation.
+    fn translate_cont_new(&mut self, pos: FuncCursor, func: ir::Value) -> WasmResult<ir::Value>;
+
+    /// TODO(dhil): write documentation.
+    fn translate_resume(&mut self, pos: FuncCursor, cont: ir::Value, call_args: &[ir::Value]) -> WasmResult<ir::Value>;
+
+    /// TODO(dhil): write documentation.
+    fn translate_resume_throw(&mut self, pos: FuncCursor, tag_index: u32, cont: ir::Value) -> WasmResult<ir::Value>;
+
+    /// TODO(dhil): write documentation.
+    fn translate_suspend(&mut self, pos: FuncCursor, tag_index: u32);
 }
 
 /// An object satisfying the `ModuleEnvironment` trait can be passed as argument to the
@@ -565,39 +593,9 @@ pub trait ModuleEnvironment<'data> {
     /// Declares a function signature to the environment.
     fn declare_type_func(&mut self, wasm_func_type: WasmFuncType) -> WasmResult<()>;
 
-    /// Declares a module type signature to the environment.
-    fn declare_type_module(
-        &mut self,
-        imports: &[(&'data str, Option<&'data str>, EntityType)],
-        exports: &[(&'data str, EntityType)],
-    ) -> WasmResult<()> {
-        drop((imports, exports));
-        Err(WasmError::Unsupported("module linking".to_string()))
-    }
-
-    /// Declares an instance type signature to the environment.
-    fn declare_type_instance(&mut self, exports: &[(&'data str, EntityType)]) -> WasmResult<()> {
-        drop(exports);
-        Err(WasmError::Unsupported("module linking".to_string()))
-    }
-
     /// Translates a type index to its signature index, only called for type
     /// indices which point to functions.
     fn type_to_signature(&self, index: TypeIndex) -> WasmResult<SignatureIndex> {
-        drop(index);
-        Err(WasmError::Unsupported("module linking".to_string()))
-    }
-
-    /// Translates a type index to its module type index, only called for type
-    /// indices which point to modules.
-    fn type_to_module_type(&self, index: TypeIndex) -> WasmResult<ModuleTypeIndex> {
-        drop(index);
-        Err(WasmError::Unsupported("module linking".to_string()))
-    }
-
-    /// Translates a type index to its instance type index, only called for type
-    /// indices which point to instances.
-    fn type_to_instance_type(&self, index: TypeIndex) -> WasmResult<InstanceTypeIndex> {
         drop(index);
         Err(WasmError::Unsupported("module linking".to_string()))
     }
@@ -613,7 +611,7 @@ pub trait ModuleEnvironment<'data> {
         &mut self,
         index: TypeIndex,
         module: &'data str,
-        field: Option<&'data str>,
+        field: &'data str,
     ) -> WasmResult<()>;
 
     /// Declares a table import to the environment.
@@ -621,7 +619,7 @@ pub trait ModuleEnvironment<'data> {
         &mut self,
         table: Table,
         module: &'data str,
-        field: Option<&'data str>,
+        field: &'data str,
     ) -> WasmResult<()>;
 
     /// Declares a memory import to the environment.
@@ -629,7 +627,7 @@ pub trait ModuleEnvironment<'data> {
         &mut self,
         memory: Memory,
         module: &'data str,
-        field: Option<&'data str>,
+        field: &'data str,
     ) -> WasmResult<()>;
 
     /// Declares an tag import to the environment.
@@ -637,7 +635,7 @@ pub trait ModuleEnvironment<'data> {
         &mut self,
         tag: Tag,
         module: &'data str,
-        field: Option<&'data str>,
+        field: &'data str,
     ) -> WasmResult<()> {
         drop((tag, module, field));
         Err(WasmError::Unsupported("wasm tags".to_string()))
@@ -648,30 +646,8 @@ pub trait ModuleEnvironment<'data> {
         &mut self,
         global: Global,
         module: &'data str,
-        field: Option<&'data str>,
+        field: &'data str,
     ) -> WasmResult<()>;
-
-    /// Declares a module import to the environment.
-    fn declare_module_import(
-        &mut self,
-        ty_index: TypeIndex,
-        module: &'data str,
-        field: Option<&'data str>,
-    ) -> WasmResult<()> {
-        drop((ty_index, module, field));
-        Err(WasmError::Unsupported("module linking".to_string()))
-    }
-
-    /// Declares an instance import to the environment.
-    fn declare_instance_import(
-        &mut self,
-        ty_index: TypeIndex,
-        module: &'data str,
-        field: Option<&'data str>,
-    ) -> WasmResult<()> {
-        drop((ty_index, module, field));
-        Err(WasmError::Unsupported("module linking".to_string()))
-    }
 
     /// Notifies the implementation that all imports have been declared.
     fn finish_imports(&mut self) -> WasmResult<()> {
@@ -758,22 +734,6 @@ pub trait ModuleEnvironment<'data> {
         global_index: GlobalIndex,
         name: &'data str,
     ) -> WasmResult<()>;
-
-    /// Declares an instance export to the environment.
-    fn declare_instance_export(
-        &mut self,
-        index: InstanceIndex,
-        name: &'data str,
-    ) -> WasmResult<()> {
-        drop((index, name));
-        Err(WasmError::Unsupported("module linking".to_string()))
-    }
-
-    /// Declares an instance export to the environment.
-    fn declare_module_export(&mut self, index: ModuleIndex, name: &'data str) -> WasmResult<()> {
-        drop((index, name));
-        Err(WasmError::Unsupported("module linking".to_string()))
-    }
 
     /// Notifies the implementation that all exports have been declared.
     fn finish_exports(&mut self) -> WasmResult<()> {
@@ -879,49 +839,5 @@ pub trait ModuleEnvironment<'data> {
     /// Returns the list of enabled wasm features this translation will be using.
     fn wasm_features(&self) -> WasmFeatures {
         WasmFeatures::default()
-    }
-
-    /// Indicates that this module will have `amount` submodules.
-    ///
-    /// Note that this is just child modules of this module, and each child
-    /// module may have yet more submodules.
-    fn reserve_modules(&mut self, amount: u32) {
-        drop(amount);
-    }
-
-    /// Called at the beginning of translating a module.
-    ///
-    /// Note that for nested modules this may be called multiple times.
-    fn module_start(&mut self) {}
-
-    /// Called at the end of translating a module.
-    ///
-    /// Note that for nested modules this may be called multiple times.
-    fn module_end(&mut self) {}
-
-    /// Indicates that this module will have `amount` instances.
-    fn reserve_instances(&mut self, amount: u32) {
-        drop(amount);
-    }
-
-    /// Declares a new instance which this module will instantiate before it's
-    /// instantiated.
-    fn declare_instance(
-        &mut self,
-        module: ModuleIndex,
-        args: Vec<(&'data str, EntityIndex)>,
-    ) -> WasmResult<()> {
-        drop((module, args));
-        Err(WasmError::Unsupported("wasm instance".to_string()))
-    }
-
-    /// Declares a new alias being added to this module.
-    ///
-    /// The alias comes from the `instance` specified (or the parent if `None`
-    /// is supplied) and the index is either in the module's own index spaces
-    /// for the parent or an index into the exports for nested instances.
-    fn declare_alias(&mut self, alias: Alias<'data>) -> WasmResult<()> {
-        drop(alias);
-        Err(WasmError::Unsupported("wasm alias".to_string()))
     }
 }

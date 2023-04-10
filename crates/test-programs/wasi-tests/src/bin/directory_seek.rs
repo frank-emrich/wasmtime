@@ -1,4 +1,3 @@
-use more_asserts::assert_gt;
 use std::{env, process};
 use wasi_tests::{assert_errno, open_scratch_directory};
 
@@ -17,17 +16,14 @@ unsafe fn test_directory_seek(dir_fd: wasi::Fd) {
         0,
     )
     .expect("failed to open file");
-    assert_gt!(
-        fd,
-        libc::STDERR_FILENO as wasi::Fd,
+    assert!(
+        fd > libc::STDERR_FILENO as wasi::Fd,
         "file descriptor range check",
     );
 
     // Attempt to seek.
     assert_errno!(
-        wasi::fd_seek(fd, 0, wasi::WHENCE_CUR)
-            .expect_err("seek on a directory")
-            .raw_error(),
+        wasi::fd_seek(fd, 0, wasi::WHENCE_CUR).expect_err("seek on a directory"),
         wasi::ERRNO_BADF
     );
 

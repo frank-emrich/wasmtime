@@ -3,15 +3,55 @@
 // TODO: Should `ir::Function` really have a `name`?
 
 // TODO: Factor out `ir::Function`'s `ext_funcs` and `global_values` into a struct
-// shared with `DataContext`?
+// shared with `DataDescription`?
 
 use super::HashMap;
-use crate::data_context::DataContext;
+use crate::data_context::DataDescription;
+use core::fmt::Display;
+use cranelift_codegen::binemit::{CodeOffset, Reloc};
 use cranelift_codegen::entity::{entity_impl, PrimaryMap};
+use cranelift_codegen::ir::Function;
+use cranelift_codegen::settings::SetError;
 use cranelift_codegen::{binemit, MachReloc};
-use cranelift_codegen::{ir, isa, CodegenError, Context};
+use cranelift_codegen::{ir, isa, CodegenError, CompileError, Context};
+use cranelift_control::ControlPlane;
 use std::borrow::ToOwned;
 use std::string::String;
+
+/// A module relocation.
+#[derive(Clone)]
+pub struct ModuleReloc {
+    /// The offset at which the relocation applies, *relative to the
+    /// containing section*.
+    pub offset: CodeOffset,
+    /// The kind of relocation.
+    pub kind: Reloc,
+    /// The external symbol / name to which this relocation refers.
+    pub name: ModuleExtName,
+    /// The addend to add to the symbol value.
+    pub addend: i64,
+}
+
+impl ModuleReloc {
+    /// Converts a `MachReloc` produced from a `Function` into a `ModuleReloc`.
+    pub fn from_mach_reloc(mach_reloc: &MachReloc, func: &Function) -> Self {
+        let name = match mach_reloc.name {
+            ir::ExternalName::User(reff) => {
+                let name = &func.params.user_named_funcs()[reff];
+                ModuleExtName::user(name.namespace, name.index)
+            }
+            ir::ExternalName::TestCase(_) => unimplemented!(),
+            ir::ExternalName::LibCall(libcall) => ModuleExtName::LibCall(libcall),
+            ir::ExternalName::KnownSymbol(ks) => ModuleExtName::KnownSymbol(ks),
+        };
+        Self {
+            offset: mach_reloc.offset,
+            kind: mach_reloc.kind,
+            name,
+            addend: mach_reloc.addend,
+        }
+    }
+}
 
 /// A function identifier for use in the `Module` interface.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -19,7 +59,7 @@ pub struct FuncId(u32);
 entity_impl!(FuncId, "funcid");
 
 /// Function identifiers are namespace 0 in `ir::ExternalName`
-impl From<FuncId> for ir::ExternalName {
+impl From<FuncId> for ModuleExtName {
     fn from(id: FuncId) -> Self {
         Self::User {
             namespace: 0,
@@ -30,12 +70,12 @@ impl From<FuncId> for ir::ExternalName {
 
 impl FuncId {
     /// Get the `FuncId` for the function named by `name`.
-    pub fn from_name(name: &ir::ExternalName) -> FuncId {
-        if let ir::ExternalName::User { namespace, index } = *name {
-            debug_assert_eq!(namespace, 0);
-            FuncId::from_u32(index)
+    pub fn from_name(name: &ModuleExtName) -> FuncId {
+        if let ModuleExtName::User { namespace, index } = name {
+            debug_assert_eq!(*namespace, 0);
+            FuncId::from_u32(*index)
         } else {
-            panic!("unexpected ExternalName kind {}", name)
+            panic!("unexpected name in DataId::from_name")
         }
     }
 }
@@ -46,7 +86,7 @@ pub struct DataId(u32);
 entity_impl!(DataId, "dataid");
 
 /// Data identifiers are namespace 1 in `ir::ExternalName`
-impl From<DataId> for ir::ExternalName {
+impl From<DataId> for ModuleExtName {
     fn from(id: DataId) -> Self {
         Self::User {
             namespace: 1,
@@ -57,12 +97,12 @@ impl From<DataId> for ir::ExternalName {
 
 impl DataId {
     /// Get the `DataId` for the data object named by `name`.
-    pub fn from_name(name: &ir::ExternalName) -> DataId {
-        if let ir::ExternalName::User { namespace, index } = *name {
-            debug_assert_eq!(namespace, 1);
-            DataId::from_u32(index)
+    pub fn from_name(name: &ModuleExtName) -> DataId {
+        if let ModuleExtName::User { namespace, index } = name {
+            debug_assert_eq!(*namespace, 1);
+            DataId::from_u32(*index)
         } else {
-            panic!("unexpected ExternalName kind {}", name)
+            panic!("unexpected name in DataId::from_name")
         }
     }
 }
@@ -134,8 +174,8 @@ pub enum FuncOrDataId {
     Data(DataId),
 }
 
-/// Mapping to `ir::ExternalName` is trivial based on the `FuncId` and `DataId` mapping.
-impl From<FuncOrDataId> for ir::ExternalName {
+/// Mapping to `ModuleExtName` is trivial based on the `FuncId` and `DataId` mapping.
+impl From<FuncOrDataId> for ModuleExtName {
     fn from(id: FuncOrDataId) -> Self {
         match id {
             FuncOrDataId::Func(funcid) => Self::from(funcid),
@@ -147,8 +187,11 @@ impl From<FuncOrDataId> for ir::ExternalName {
 /// Information about a function which can be called.
 #[derive(Debug)]
 pub struct FunctionDeclaration {
+    #[allow(missing_docs)]
     pub name: String,
+    #[allow(missing_docs)]
     pub linkage: Linkage,
+    #[allow(missing_docs)]
     pub signature: ir::Signature,
 }
 
@@ -188,8 +231,25 @@ pub enum ModuleError {
     /// Wraps a `cranelift-codegen` error
     Compilation(CodegenError),
 
+    /// Memory allocation failure from a backend
+    Allocation {
+        /// Tell where the allocation came from
+        message: &'static str,
+        /// Io error the allocation failed with
+        err: std::io::Error,
+    },
+
     /// Wraps a generic error from a backend
     Backend(anyhow::Error),
+
+    /// Wraps an error from a flag definition.
+    Flag(SetError),
+}
+
+impl<'a> From<CompileError<'a>> for ModuleError {
+    fn from(err: CompileError<'a>) -> Self {
+        Self::Compilation(err.inner)
+    }
 }
 
 // This is manually implementing Error and Display instead of using thiserror to reduce the amount
@@ -203,7 +263,9 @@ impl std::error::Error for ModuleError {
             | Self::DuplicateDefinition { .. }
             | Self::InvalidImportDefinition { .. } => None,
             Self::Compilation(source) => Some(source),
+            Self::Allocation { err: source, .. } => Some(source),
             Self::Backend(source) => Some(&**source),
+            Self::Flag(source) => Some(source),
         }
     }
 }
@@ -237,7 +299,11 @@ impl std::fmt::Display for ModuleError {
             Self::Compilation(err) => {
                 write!(f, "Compilation error: {}", err)
             }
+            Self::Allocation { message, err } => {
+                write!(f, "Allocation error: {}: {}", message, err)
+            }
             Self::Backend(err) => write!(f, "Backend error: {}", err),
+            Self::Flag(err) => write!(f, "Flag error: {}", err),
         }
     }
 }
@@ -248,15 +314,25 @@ impl std::convert::From<CodegenError> for ModuleError {
     }
 }
 
+impl std::convert::From<SetError> for ModuleError {
+    fn from(source: SetError) -> Self {
+        Self::Flag { 0: source }
+    }
+}
+
 /// A convenient alias for a `Result` that uses `ModuleError` as the error type.
 pub type ModuleResult<T> = Result<T, ModuleError>;
 
 /// Information about a data object which can be accessed.
 #[derive(Debug)]
 pub struct DataDeclaration {
+    #[allow(missing_docs)]
     pub name: String,
+    #[allow(missing_docs)]
     pub linkage: Linkage,
+    #[allow(missing_docs)]
     pub writable: bool,
+    #[allow(missing_docs)]
     pub tls: bool,
 }
 
@@ -268,6 +344,39 @@ impl DataDeclaration {
             self.tls, tls,
             "Can't change TLS data object to normal or in the opposite way",
         );
+    }
+}
+
+/// A translated `ExternalName` into something global we can handle.
+#[derive(Clone, Debug)]
+pub enum ModuleExtName {
+    /// User defined function, converted from `ExternalName::User`.
+    User {
+        /// Arbitrary.
+        namespace: u32,
+        /// Arbitrary.
+        index: u32,
+    },
+    /// Call into a library function.
+    LibCall(ir::LibCall),
+    /// Symbols known to the linker.
+    KnownSymbol(ir::KnownSymbol),
+}
+
+impl ModuleExtName {
+    /// Creates a user-defined external name.
+    pub fn user(namespace: u32, index: u32) -> Self {
+        Self::User { namespace, index }
+    }
+}
+
+impl Display for ModuleExtName {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::User { namespace, index } => write!(f, "u{}:{}", namespace, index),
+            Self::LibCall(lc) => write!(f, "%{}", lc),
+            Self::KnownSymbol(ks) => write!(f, "{}", ks),
+        }
     }
 }
 
@@ -293,11 +402,12 @@ impl ModuleDeclarations {
     }
 
     /// Return whether `name` names a function, rather than a data object.
-    pub fn is_function(name: &ir::ExternalName) -> bool {
-        if let ir::ExternalName::User { namespace, .. } = *name {
-            namespace == 0
-        } else {
-            panic!("unexpected ExternalName kind {}", name)
+    pub fn is_function(name: &ModuleExtName) -> bool {
+        match name {
+            ModuleExtName::User { namespace, .. } => *namespace == 0,
+            ModuleExtName::LibCall(_) | ModuleExtName::KnownSymbol(_) => {
+                panic!("unexpected module ext name")
+            }
         }
     }
 
@@ -497,12 +607,16 @@ pub trait Module {
     ///
     /// TODO: Coalesce redundant decls and signatures.
     /// TODO: Look into ways to reduce the risk of using a FuncRef in the wrong function.
-    fn declare_func_in_func(&self, func: FuncId, in_func: &mut ir::Function) -> ir::FuncRef {
-        let decl = &self.declarations().functions[func];
-        let signature = in_func.import_signature(decl.signature.clone());
+    fn declare_func_in_func(&mut self, func_id: FuncId, func: &mut ir::Function) -> ir::FuncRef {
+        let decl = &self.declarations().functions[func_id];
+        let signature = func.import_signature(decl.signature.clone());
+        let user_name_ref = func.declare_imported_user_function(ir::UserExternalName {
+            namespace: 0,
+            index: func_id.as_u32(),
+        });
         let colocated = decl.linkage.is_final();
-        in_func.import_function(ir::ExtFuncData {
-            name: ir::ExternalName::user(0, func.as_u32()),
+        func.import_function(ir::ExtFuncData {
+            name: ir::ExternalName::user(user_name_ref),
             signature,
             colocated,
         })
@@ -514,8 +628,12 @@ pub trait Module {
     fn declare_data_in_func(&self, data: DataId, func: &mut ir::Function) -> ir::GlobalValue {
         let decl = &self.declarations().data_objects[data];
         let colocated = decl.linkage.is_final();
+        let user_name_ref = func.declare_imported_user_function(ir::UserExternalName {
+            namespace: 1,
+            index: data.as_u32(),
+        });
         func.create_global_value(ir::GlobalValueData::Symbol {
-            name: ir::ExternalName::user(1, data.as_u32()),
+            name: ir::ExternalName::user(user_name_ref),
             offset: ir::immediates::Imm64::new(0),
             colocated,
             tls: decl.tls,
@@ -523,13 +641,31 @@ pub trait Module {
     }
 
     /// TODO: Same as above.
-    fn declare_func_in_data(&self, func: FuncId, ctx: &mut DataContext) -> ir::FuncRef {
-        ctx.import_function(ir::ExternalName::user(0, func.as_u32()))
+    fn declare_func_in_data(&self, func_id: FuncId, data: &mut DataDescription) -> ir::FuncRef {
+        data.import_function(ModuleExtName::user(0, func_id.as_u32()))
     }
 
     /// TODO: Same as above.
-    fn declare_data_in_data(&self, data: DataId, ctx: &mut DataContext) -> ir::GlobalValue {
-        ctx.import_global_value(ir::ExternalName::user(1, data.as_u32()))
+    fn declare_data_in_data(&self, data_id: DataId, data: &mut DataDescription) -> ir::GlobalValue {
+        data.import_global_value(ModuleExtName::user(1, data_id.as_u32()))
+    }
+
+    /// Define a function, producing the function body from the given `Context`.
+    ///
+    /// Returns the size of the function's code and constant data.
+    ///
+    /// Unlike [`define_function_with_control_plane`] this uses a default [`ControlPlane`] for
+    /// convenience.
+    ///
+    /// Note: After calling this function the given `Context` will contain the compiled function.
+    ///
+    /// [`define_function_with_control_plane`]: Self::define_function_with_control_plane
+    fn define_function(
+        &mut self,
+        func: FuncId,
+        ctx: &mut Context,
+    ) -> ModuleResult<ModuleCompiledFunction> {
+        self.define_function_with_control_plane(func, ctx, &mut ControlPlane::default())
     }
 
     /// Define a function, producing the function body from the given `Context`.
@@ -537,10 +673,11 @@ pub trait Module {
     /// Returns the size of the function's code and constant data.
     ///
     /// Note: After calling this function the given `Context` will contain the compiled function.
-    fn define_function(
+    fn define_function_with_control_plane(
         &mut self,
         func: FuncId,
         ctx: &mut Context,
+        ctrl_plane: &mut ControlPlane,
     ) -> ModuleResult<ModuleCompiledFunction>;
 
     /// Define a function, taking the function body from the given `bytes`.
@@ -552,13 +689,15 @@ pub trait Module {
     /// Returns the size of the function's code.
     fn define_function_bytes(
         &mut self,
-        func: FuncId,
+        func_id: FuncId,
+        func: &ir::Function,
+        alignment: u64,
         bytes: &[u8],
         relocs: &[MachReloc],
     ) -> ModuleResult<ModuleCompiledFunction>;
 
     /// Define a data object, producing the data contents from the given `DataContext`.
-    fn define_data(&mut self, data: DataId, data_ctx: &DataContext) -> ModuleResult<()>;
+    fn define_data(&mut self, data_id: DataId, data: &DataDescription) -> ModuleResult<()>;
 }
 
 impl<M: Module> Module for &mut M {
@@ -621,7 +760,7 @@ impl<M: Module> Module for &mut M {
         (**self).declare_anonymous_data(writable, tls)
     }
 
-    fn declare_func_in_func(&self, func: FuncId, in_func: &mut ir::Function) -> ir::FuncRef {
+    fn declare_func_in_func(&mut self, func: FuncId, in_func: &mut ir::Function) -> ir::FuncRef {
         (**self).declare_func_in_func(func, in_func)
     }
 
@@ -629,12 +768,12 @@ impl<M: Module> Module for &mut M {
         (**self).declare_data_in_func(data, func)
     }
 
-    fn declare_func_in_data(&self, func: FuncId, ctx: &mut DataContext) -> ir::FuncRef {
-        (**self).declare_func_in_data(func, ctx)
+    fn declare_func_in_data(&self, func_id: FuncId, data: &mut DataDescription) -> ir::FuncRef {
+        (**self).declare_func_in_data(func_id, data)
     }
 
-    fn declare_data_in_data(&self, data: DataId, ctx: &mut DataContext) -> ir::GlobalValue {
-        (**self).declare_data_in_data(data, ctx)
+    fn declare_data_in_data(&self, data_id: DataId, data: &mut DataDescription) -> ir::GlobalValue {
+        (**self).declare_data_in_data(data_id, data)
     }
 
     fn define_function(
@@ -645,16 +784,27 @@ impl<M: Module> Module for &mut M {
         (**self).define_function(func, ctx)
     }
 
-    fn define_function_bytes(
+    fn define_function_with_control_plane(
         &mut self,
         func: FuncId,
+        ctx: &mut Context,
+        ctrl_plane: &mut ControlPlane,
+    ) -> ModuleResult<ModuleCompiledFunction> {
+        (**self).define_function_with_control_plane(func, ctx, ctrl_plane)
+    }
+
+    fn define_function_bytes(
+        &mut self,
+        func_id: FuncId,
+        func: &ir::Function,
+        alignment: u64,
         bytes: &[u8],
         relocs: &[MachReloc],
     ) -> ModuleResult<ModuleCompiledFunction> {
-        (**self).define_function_bytes(func, bytes, relocs)
+        (**self).define_function_bytes(func_id, func, alignment, bytes, relocs)
     }
 
-    fn define_data(&mut self, data: DataId, data_ctx: &DataContext) -> ModuleResult<()> {
-        (**self).define_data(data, data_ctx)
+    fn define_data(&mut self, data_id: DataId, data: &DataDescription) -> ModuleResult<()> {
+        (**self).define_data(data_id, data)
     }
 }

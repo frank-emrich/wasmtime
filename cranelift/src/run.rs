@@ -2,32 +2,27 @@
 
 use crate::utils::{iterate_files, read_to_string};
 use anyhow::Result;
-use cranelift_codegen::isa::{CallConv, TargetIsa};
-use cranelift_filetests::SingleFunctionCompiler;
+use clap::Parser;
+use cranelift_codegen::isa::{CallConv, OwnedTargetIsa};
+use cranelift_filetests::TestFileCompiler;
 use cranelift_native::builder as host_isa_builder;
 use cranelift_reader::{parse_run_command, parse_test, Details, IsaSpec, ParseOptions};
 use std::path::{Path, PathBuf};
-use structopt::StructOpt;
 use target_lexicon::Triple;
 
 /// Execute clif code and verify with test expressions
-#[derive(StructOpt)]
+#[derive(Parser)]
 pub struct Options {
     /// Specify an input file to be used. Use '-' for stdin.
-    #[structopt(required(true), parse(from_os_str))]
+    #[clap(required = true)]
     files: Vec<PathBuf>,
 
-    /// Enable debug output on stderr/stdout
-    #[structopt(short = "d")]
-    debug: bool,
-
     /// Be more verbose
-    #[structopt(short = "v", long = "verbose")]
+    #[clap(short, long)]
     verbose: bool,
 }
 
 pub fn run(options: &Options) -> Result<()> {
-    crate::handle_debug_flag(options.debug);
     let stdin_exist = options
         .files
         .iter()
@@ -91,13 +86,17 @@ fn run_file_contents(file_contents: String) -> Result<()> {
     };
     let test_file = parse_test(&file_contents, options)?;
     let isa = create_target_isa(&test_file.isa_spec)?;
-    let mut compiler = SingleFunctionCompiler::new(isa);
+    let mut tfc = TestFileCompiler::new(isa);
+    tfc.add_testfile(&test_file)?;
+    let compiled = tfc.compile()?;
+
     for (func, Details { comments, .. }) in test_file.functions {
         for comment in comments {
             if let Some(command) = parse_run_command(comment.text, &func.signature)? {
-                let compiled_fn = compiler.compile(func.clone())?;
+                let trampoline = compiled.get_trampoline(&func).unwrap();
+
                 command
-                    .run(|_, args| Ok(compiled_fn.call(args)))
+                    .run(|_, args| Ok(trampoline.call(args)))
                     .map_err(|s| anyhow::anyhow!("{}", s))?;
             }
         }
@@ -106,7 +105,7 @@ fn run_file_contents(file_contents: String) -> Result<()> {
 }
 
 /// Build an ISA based on the current machine running this code (the host)
-fn create_target_isa(isa_spec: &IsaSpec) -> Result<Box<dyn TargetIsa>> {
+fn create_target_isa(isa_spec: &IsaSpec) -> Result<OwnedTargetIsa> {
     if let IsaSpec::None(flags) = isa_spec {
         // build an ISA for the current machine
         let builder = host_isa_builder().map_err(|s| anyhow::anyhow!("{}", s))?;
@@ -127,10 +126,10 @@ mod test {
     fn nop() {
         let code = String::from(
             "
-            function %test() -> b8 {
+            function %test() -> i8 {
             block0:
                 nop
-                v1 = bconst.b8 true
+                v1 = iconst.i8 -1
                 return v1
             }
             ; run

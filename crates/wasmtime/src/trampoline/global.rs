@@ -2,7 +2,9 @@ use crate::store::{InstanceId, StoreOpaque};
 use crate::trampoline::create_handle;
 use crate::{GlobalType, Mutability, Val};
 use anyhow::Result;
-use wasmtime_environ::{EntityIndex, Global, GlobalInit, Module, ModuleType, SignatureIndex};
+use wasmtime_environ::{
+    AnyfuncIndex, EntityIndex, Global, GlobalInit, Module, ModuleType, SignatureIndex,
+};
 use wasmtime_runtime::VMFunctionImport;
 
 pub fn create_global(store: &mut StoreOpaque, gt: &GlobalType, val: Val) -> Result<InstanceId> {
@@ -37,16 +39,17 @@ pub fn create_global(store: &mut StoreOpaque, gt: &GlobalType, val: Val) -> Resu
                 // our global with a `ref.func` to grab that imported function.
                 let f = f.caller_checked_anyfunc(store);
                 let f = unsafe { f.as_ref() };
-                let sig_id = SignatureIndex::from_u32(u32::max_value() - 1);
-                one_signature = Some((sig_id, f.type_index));
+                let sig_id = SignatureIndex::from_u32(0);
+                one_signature = Some(f.type_index);
                 module.types.push(ModuleType::Function(sig_id));
-                let func_index = module.functions.push(sig_id);
+                let func_index = module.push_escaped_function(sig_id, AnyfuncIndex::from_u32(0));
                 module.num_imported_funcs = 1;
+                module.num_escaped_funcs = 1;
                 module
                     .initializers
                     .push(wasmtime_environ::Initializer::Import {
                         name: "".into(),
-                        field: None,
+                        field: "".into(),
                         index: EntityIndex::Function(func_index),
                     });
 
@@ -68,11 +71,9 @@ pub fn create_global(store: &mut StoreOpaque, gt: &GlobalType, val: Val) -> Resu
 
     if let Some(x) = externref_init {
         let instance = store.instance_mut(id);
-        match instance.lookup_by_declaration(&EntityIndex::Global(global_id)) {
-            wasmtime_runtime::Export::Global(g) => unsafe {
-                *(*g.definition).as_externref_mut() = Some(x.inner);
-            },
-            _ => unreachable!(),
+        let g = instance.get_exported_global(global_id);
+        unsafe {
+            *(*g.definition).as_externref_mut() = Some(x.inner);
         }
     }
 

@@ -24,14 +24,6 @@ pub struct Tunables {
     /// Whether or not to retain DWARF sections in compiled modules.
     pub parse_wasm_debuginfo: bool,
 
-    /// Whether or not to enable the ability to interrupt wasm code dynamically.
-    ///
-    /// More info can be found about the implementation in
-    /// crates/environ/src/cranelift.rs. Note that you can't interrupt host
-    /// calls and interrupts are implemented through the `VMInterrupts`
-    /// structure, or `InterruptHandle` in the `wasmtime` crate.
-    pub interruptable: bool,
-
     /// Whether or not fuel is enabled for generated code, meaning that fuel
     /// will be consumed every time a wasm instruction is executed.
     pub consume_fuel: bool,
@@ -49,6 +41,14 @@ pub struct Tunables {
     /// Indicates whether an address map from compiled native code back to wasm
     /// offsets in the original file is generated.
     pub generate_address_map: bool,
+
+    /// Flag for the component module whether adapter modules have debug
+    /// assertions baked into them.
+    pub debug_adapter_modules: bool,
+
+    /// Whether or not lowerings for relaxed simd instructions are forced to
+    /// be deterministic.
+    pub relaxed_simd_deterministic: bool,
 }
 
 impl Default for Tunables {
@@ -89,12 +89,13 @@ impl Default for Tunables {
 
             generate_native_debuginfo: false,
             parse_wasm_debuginfo: true,
-            interruptable: false,
             consume_fuel: false,
             epoch_interruption: false,
             static_memory_bound_is_maximum: false,
             guard_before_linear_memory: true,
             generate_address_map: true,
+            debug_adapter_modules: false,
+            relaxed_simd_deterministic: false,
         }
     }
 }

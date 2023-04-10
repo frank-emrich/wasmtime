@@ -33,29 +33,6 @@ fn initializes_linear_memory() -> Result<()> {
 }
 
 #[test]
-fn initializes_linear_memory_paged() -> Result<()> {
-    let wat = r#"
-        (module
-            (memory (export "memory") 2)
-            (data (i32.const 0) "Hello World!")
-        )"#;
-
-    let mut config = Config::new();
-    config.paged_memory_initialization(true);
-
-    let module = Module::new(&Engine::new(&config)?, wat)?;
-
-    let mut store = Store::new(module.engine(), ());
-    let instance = Instance::new(&mut store, &module, &[])?;
-    let memory = instance.get_memory(&mut store, "memory").unwrap();
-
-    let mut bytes = [0; 12];
-    memory.read(&store, 0, &mut bytes)?;
-    assert_eq!(bytes, "Hello World!".as_bytes());
-    Ok(())
-}
-
-#[test]
 fn linear_memory_limits() -> Result<()> {
     // this test will allocate 4GB of virtual memory space, and may not work in
     // situations like CI QEMU emulation where it triggers SIGKILL.
@@ -63,15 +40,10 @@ fn linear_memory_limits() -> Result<()> {
         return Ok(());
     }
     test(&Engine::default())?;
+    let mut pool = PoolingAllocationConfig::default();
+    pool.instance_memory_pages(65536);
     test(&Engine::new(Config::new().allocation_strategy(
-        InstanceAllocationStrategy::Pooling {
-            strategy: PoolingAllocationStrategy::NextAvailable,
-            module_limits: ModuleLimits {
-                memory_pages: 65536,
-                ..ModuleLimits::default()
-            },
-            instance_limits: InstanceLimits::default(),
-        },
+        InstanceAllocationStrategy::Pooling(pool),
     ))?)?;
     return Ok(());
 
@@ -91,8 +63,8 @@ fn linear_memory_limits() -> Result<()> {
 
         let mut store = Store::new(engine, ());
         let instance = Instance::new(&mut store, &module, &[])?;
-        let size = instance.get_typed_func::<(), i32, _>(&mut store, "size")?;
-        let grow = instance.get_typed_func::<(), i32, _>(&mut store, "grow")?;
+        let size = instance.get_typed_func::<(), i32>(&mut store, "size")?;
+        let grow = instance.get_typed_func::<(), i32>(&mut store, "grow")?;
 
         assert_eq!(size.call(&mut store, ())?, 65534);
         assert_eq!(grow.call(&mut store, ())?, 65534);

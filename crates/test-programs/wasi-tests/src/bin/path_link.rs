@@ -1,4 +1,3 @@
-use more_asserts::assert_gt;
 use std::{env, process};
 use wasi_tests::{assert_errno, create_file, open_scratch_directory, TESTCONFIG};
 
@@ -12,9 +11,8 @@ const TEST_RIGHTS: wasi::Rights = wasi::RIGHTS_FD_READ
 unsafe fn create_or_open(dir_fd: wasi::Fd, name: &str, flags: wasi::Oflags) -> wasi::Fd {
     let file_fd = wasi::path_open(dir_fd, 0, name, flags, TEST_RIGHTS, TEST_RIGHTS, 0)
         .unwrap_or_else(|_| panic!("opening '{}'", name));
-    assert_gt!(
-        file_fd,
-        libc::STDERR_FILENO as wasi::Fd,
+    assert!(
+        file_fd > libc::STDERR_FILENO as wasi::Fd,
         "file descriptor range check",
     );
     file_fd
@@ -23,9 +21,8 @@ unsafe fn create_or_open(dir_fd: wasi::Fd, name: &str, flags: wasi::Oflags) -> w
 unsafe fn open_link(dir_fd: wasi::Fd, name: &str) -> wasi::Fd {
     let file_fd = wasi::path_open(dir_fd, 0, name, 0, TEST_RIGHTS, TEST_RIGHTS, 0)
         .unwrap_or_else(|_| panic!("opening a link '{}'", name));
-    assert_gt!(
-        file_fd,
-        libc::STDERR_FILENO as wasi::Fd,
+    assert!(
+        file_fd > libc::STDERR_FILENO as wasi::Fd,
         "file descriptor range check",
     );
     file_fd
@@ -104,8 +101,7 @@ unsafe fn test_path_link(dir_fd: wasi::Fd) {
 
     assert_errno!(
         wasi::path_link(dir_fd, 0, "file", dir_fd, "link")
-            .expect_err("creating a link to existing path should fail")
-            .raw_error(),
+            .expect_err("creating a link to existing path should fail"),
         wasi::ERRNO_EXIST
     );
     wasi::path_unlink_file(dir_fd, "link").expect("removing a file");
@@ -113,8 +109,7 @@ unsafe fn test_path_link(dir_fd: wasi::Fd) {
     // Create a link to itself
     assert_errno!(
         wasi::path_link(dir_fd, 0, "file", dir_fd, "file")
-            .expect_err("creating a link to itself should fail")
-            .raw_error(),
+            .expect_err("creating a link to itself should fail"),
         wasi::ERRNO_EXIST
     );
 
@@ -123,8 +118,7 @@ unsafe fn test_path_link(dir_fd: wasi::Fd) {
 
     assert_errno!(
         wasi::path_link(dir_fd, 0, "file", dir_fd, "link")
-            .expect_err("creating a link where target is a directory should fail")
-            .raw_error(),
+            .expect_err("creating a link where target is a directory should fail"),
         wasi::ERRNO_EXIST
     );
     wasi::path_remove_directory(dir_fd, "link").expect("removing a dir");
@@ -135,8 +129,7 @@ unsafe fn test_path_link(dir_fd: wasi::Fd) {
 
     assert_errno!(
         wasi::path_link(dir_fd, 0, "subdir", dir_fd, "link")
-            .expect_err("creating a link to a directory should fail")
-            .raw_error(),
+            .expect_err("creating a link to a directory should fail"),
         wasi::ERRNO_PERM,
         wasi::ERRNO_ACCES
     );
@@ -146,8 +139,7 @@ unsafe fn test_path_link(dir_fd: wasi::Fd) {
     // Create a link to a file with trailing slash
     assert_errno!(
         wasi::path_link(dir_fd, 0, "file", dir_fd, "link/")
-            .expect_err("creating a link to a file with trailing slash should fail")
-            .raw_error(),
+            .expect_err("creating a link to a file with trailing slash should fail"),
         wasi::ERRNO_NOENT
     );
 
@@ -174,8 +166,7 @@ unsafe fn test_path_link(dir_fd: wasi::Fd) {
 
         assert_errno!(
             wasi::path_link(dir_fd, 0, "file", dir_fd, "symlink")
-                .expect_err("creating a link where target is a dangling symlink")
-                .raw_error(),
+                .expect_err("creating a link where target is a dangling symlink"),
             wasi::ERRNO_EXIST
         );
         wasi::path_unlink_file(dir_fd, "symlink").expect("removing a symlink");
@@ -192,8 +183,7 @@ unsafe fn test_path_link(dir_fd: wasi::Fd) {
                 dir_fd,
                 "link",
             )
-            .expect_err("calling path_link with LOOKUPFLAGS_SYMLINK_FOLLOW should fail")
-            .raw_error(),
+            .expect_err("calling path_link with LOOKUPFLAGS_SYMLINK_FOLLOW should fail"),
             wasi::ERRNO_INVAL
         );
 

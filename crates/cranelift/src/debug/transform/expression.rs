@@ -6,7 +6,6 @@ use cranelift_codegen::isa::TargetIsa;
 use cranelift_codegen::ValueLabelsRanges;
 use cranelift_wasm::get_vmctx_value_label;
 use gimli::{self, write, Expression, Operation, Reader, ReaderOffset, X86_64};
-use more_asserts::{assert_le, assert_lt};
 use std::cmp::PartialEq;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -17,7 +16,7 @@ use wasmtime_environ::{DefinedFuncIndex, EntityRef};
 pub struct FunctionFrameInfo<'a> {
     pub value_ranges: &'a ValueLabelsRanges,
     pub memory_offset: ModuleMemoryOffset,
-    pub stack_slots: &'a StackSlots,
+    pub sized_stack_slots: &'a StackSlots,
 }
 
 impl<'a> FunctionFrameInfo<'a> {
@@ -687,7 +686,7 @@ impl<'a, 'b> ValueLabelRangesBuilder<'a, 'b> {
             if range_start == range_end {
                 continue;
             }
-            assert_lt!(range_start, range_end);
+            assert!(range_start < range_end);
 
             // Find acceptable scope of ranges to intersect with.
             let i = match ranges.binary_search_by(|s| s.start.cmp(&range_start)) {
@@ -716,7 +715,7 @@ impl<'a, 'b> ValueLabelRangesBuilder<'a, 'b> {
                     tail.start = range_end;
                     ranges.insert(i + 1, tail);
                 }
-                assert_le!(ranges[i].end, range_end);
+                assert!(ranges[i].end <= range_end);
                 if range_start <= ranges[i].start {
                     ranges[i].label_location.insert(label, loc);
                     continue;
@@ -1119,7 +1118,7 @@ mod tests {
         use wasmtime_environ::WasmFileInfo;
         let mut module_map = PrimaryMap::new();
         let code_section_offset: u32 = 100;
-        module_map.push(CompiledFunction {
+        let func = CompiledFunction {
             address_map: FunctionAddressMap {
                 instructions: vec![
                     InstructionAddressMap {
@@ -1146,7 +1145,8 @@ mod tests {
                 body_len: 30,
             },
             ..Default::default()
-        });
+        };
+        module_map.push(&func);
         let fi = WasmFileInfo {
             code_section_offset: code_section_offset.into(),
             funcs: Vec::new(),
@@ -1207,11 +1207,11 @@ mod tests {
         use wasmtime_environ::{DefinedFuncIndex, EntityRef};
 
         let addr_tr = create_mock_address_transform();
-        let stack_slots = StackSlots::new();
+        let sized_stack_slots = StackSlots::new();
         let (value_ranges, value_labels) = create_mock_value_ranges();
         let fi = FunctionFrameInfo {
             memory_offset: ModuleMemoryOffset::None,
-            stack_slots: &stack_slots,
+            sized_stack_slots: &sized_stack_slots,
             value_ranges: &value_ranges,
         };
 

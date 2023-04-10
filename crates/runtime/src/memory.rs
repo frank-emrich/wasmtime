@@ -3,16 +3,17 @@
 //! `RuntimeLinearMemory` is to WebAssembly linear memories what `Table` is to WebAssembly tables.
 
 use crate::mmap::Mmap;
+use crate::parking_spot::ParkingSpot;
 use crate::vmcontext::VMMemoryDefinition;
-use crate::MemFdSlot;
-use crate::MemoryMemFd;
-use crate::Store;
+use crate::{MemoryImage, MemoryImageSlot, Store, WaitResult};
 use anyhow::Error;
 use anyhow::{bail, format_err, Result};
-use more_asserts::{assert_ge, assert_le};
 use std::convert::TryFrom;
-use std::sync::Arc;
-use wasmtime_environ::{MemoryPlan, MemoryStyle, WASM32_MAX_PAGES, WASM64_MAX_PAGES};
+use std::ops::Range;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
+use std::time::Instant;
+use wasmtime_environ::{MemoryPlan, MemoryStyle, Trap, WASM32_MAX_PAGES, WASM64_MAX_PAGES};
 
 const WASM_PAGE_SIZE: usize = wasmtime_environ::WASM_PAGE_SIZE as usize;
 const WASM_PAGE_SIZE_U64: u64 = wasmtime_environ::WASM_PAGE_SIZE as u64;
@@ -25,8 +26,8 @@ pub trait RuntimeMemoryCreator: Send + Sync {
         plan: &MemoryPlan,
         minimum: usize,
         maximum: Option<usize>,
-        // Optionally, a memfd image for CoW backing.
-        memfd_image: Option<&Arc<MemoryMemFd>>,
+        // Optionally, a memory image for CoW backing.
+        memory_image: Option<&Arc<MemoryImage>>,
     ) -> Result<Box<dyn RuntimeLinearMemory>>;
 }
 
@@ -40,13 +41,13 @@ impl RuntimeMemoryCreator for DefaultMemoryCreator {
         plan: &MemoryPlan,
         minimum: usize,
         maximum: Option<usize>,
-        memfd_image: Option<&Arc<MemoryMemFd>>,
+        memory_image: Option<&Arc<MemoryImage>>,
     ) -> Result<Box<dyn RuntimeLinearMemory>> {
         Ok(Box::new(MmapMemory::new(
             plan,
             minimum,
             maximum,
-            memfd_image,
+            memory_image,
         )?))
     }
 }
@@ -60,6 +61,81 @@ pub trait RuntimeLinearMemory: Send + Sync {
     /// Returns `None` if the memory is unbounded.
     fn maximum_byte_size(&self) -> Option<usize>;
 
+    /// Grows a memory by `delta_pages`.
+    ///
+    /// This performs the necessary checks on the growth before delegating to
+    /// the underlying `grow_to` implementation. A default implementation of
+    /// this memory is provided here since this is assumed to be the same for
+    /// most kinds of memory; one exception is shared memory, which must perform
+    /// all the steps of the default implementation *plus* the required locking.
+    ///
+    /// The `store` is used only for error reporting.
+    fn grow(
+        &mut self,
+        delta_pages: u64,
+        mut store: Option<&mut dyn Store>,
+    ) -> Result<Option<(usize, usize)>, Error> {
+        let old_byte_size = self.byte_size();
+
+        // Wasm spec: when growing by 0 pages, always return the current size.
+        if delta_pages == 0 {
+            return Ok(Some((old_byte_size, old_byte_size)));
+        }
+
+        // The largest wasm-page-aligned region of memory is possible to
+        // represent in a `usize`. This will be impossible for the system to
+        // actually allocate.
+        let absolute_max = 0usize.wrapping_sub(WASM_PAGE_SIZE);
+
+        // Calculate the byte size of the new allocation. Let it overflow up to
+        // `usize::MAX`, then clamp it down to `absolute_max`.
+        let new_byte_size = usize::try_from(delta_pages)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(WASM_PAGE_SIZE)
+            .saturating_add(old_byte_size);
+        let new_byte_size = if new_byte_size > absolute_max {
+            absolute_max
+        } else {
+            new_byte_size
+        };
+
+        let maximum = self.maximum_byte_size();
+        // Store limiter gets first chance to reject memory_growing.
+        if let Some(store) = &mut store {
+            if !store.memory_growing(old_byte_size, new_byte_size, maximum)? {
+                return Ok(None);
+            }
+        }
+
+        // Never exceed maximum, even if limiter permitted it.
+        if let Some(max) = maximum {
+            if new_byte_size > max {
+                if let Some(store) = store {
+                    // FIXME: shared memories may not have an associated store
+                    // to report the growth failure to but the error should not
+                    // be dropped
+                    // (https://github.com/bytecodealliance/wasmtime/issues/4240).
+                    store.memory_grow_failed(&format_err!("Memory maximum size exceeded"));
+                }
+                return Ok(None);
+            }
+        }
+
+        match self.grow_to(new_byte_size) {
+            Ok(_) => Ok(Some((old_byte_size, new_byte_size))),
+            Err(e) => {
+                // FIXME: shared memories may not have an associated store to
+                // report the growth failure to but the error should not be
+                // dropped
+                // (https://github.com/bytecodealliance/wasmtime/issues/4240).
+                if let Some(store) = store {
+                    store.memory_grow_failed(&e);
+                }
+                Ok(None)
+            }
+        }
+    }
+
     /// Grow memory to the specified amount of bytes.
     ///
     /// Returns an error if memory can't be grown by the specified amount
@@ -68,12 +144,21 @@ pub trait RuntimeLinearMemory: Send + Sync {
 
     /// Return a `VMMemoryDefinition` for exposing the memory to compiled wasm
     /// code.
-    fn vmmemory(&self) -> VMMemoryDefinition;
+    fn vmmemory(&mut self) -> VMMemoryDefinition;
 
     /// Does this memory need initialization? It may not if it already
-    /// has initial contents courtesy of the `MemoryMemFd` passed to
+    /// has initial contents courtesy of the `MemoryImage` passed to
     /// `RuntimeMemoryCreator::new_memory()`.
     fn needs_init(&self) -> bool;
+
+    /// Used for optional dynamic downcasting.
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+
+    /// Returns the range of addresses that may be reached by WebAssembly.
+    ///
+    /// This starts at the base of linear memory and ends at the end of the
+    /// guard pages, if any.
+    fn wasm_accessible(&self) -> Range<usize>;
 }
 
 /// A linear memory instance.
@@ -103,22 +188,19 @@ pub struct MmapMemory {
     pre_guard_size: usize,
     offset_guard_size: usize,
 
-    // A MemFd CoW mapping that provides the initial content of this
+    // An optional CoW mapping that provides the initial content of this
     // MmapMemory, if mapped.
-    //
-    // N.B.: this comes after the `mmap` field above because it must
-    // be destructed first. It puts a placeholder mapping in place on
-    // drop, then the `mmap` above completely unmaps the region.
-    memfd: Option<MemFdSlot>,
+    memory_image: Option<MemoryImageSlot>,
 }
 
 impl MmapMemory {
-    /// Create a new linear memory instance with specified minimum and maximum number of wasm pages.
+    /// Create a new linear memory instance with specified minimum and maximum
+    /// number of wasm pages.
     pub fn new(
         plan: &MemoryPlan,
         minimum: usize,
         mut maximum: Option<usize>,
-        memfd_image: Option<&Arc<MemoryMemFd>>,
+        memory_image: Option<&Arc<MemoryImage>>,
     ) -> Result<Self> {
         // It's a programmer error for these two configuration values to exceed
         // the host available address space, so panic if such a configuration is
@@ -137,40 +219,41 @@ impl MmapMemory {
             // of the two is, the `maximum` given or the `bound` specified for
             // this memory.
             MemoryStyle::Static { bound } => {
-                assert_ge!(bound, plan.memory.minimum);
+                assert!(bound >= plan.memory.minimum);
                 let bound_bytes =
                     usize::try_from(bound.checked_mul(WASM_PAGE_SIZE_U64).unwrap()).unwrap();
                 maximum = Some(bound_bytes.min(maximum.unwrap_or(usize::MAX)));
                 (bound_bytes, 0)
             }
         };
+
         let request_bytes = pre_guard_bytes
             .checked_add(alloc_bytes)
             .and_then(|i| i.checked_add(extra_to_reserve_on_growth))
             .and_then(|i| i.checked_add(offset_guard_bytes))
             .ok_or_else(|| format_err!("cannot allocate {} with guard regions", minimum))?;
-
         let mut mmap = Mmap::accessible_reserved(0, request_bytes)?;
+
         if minimum > 0 {
             mmap.make_accessible(pre_guard_bytes, minimum)?;
         }
 
-        // If a memfd image was specified, try to create the MemFdSlot on top of our mmap.
-        let memfd = match memfd_image {
+        // If a memory image was specified, try to create the MemoryImageSlot on
+        // top of our mmap.
+        let memory_image = match memory_image {
             Some(image) => {
                 let base = unsafe { mmap.as_mut_ptr().add(pre_guard_bytes) };
-                let mut memfd_slot = MemFdSlot::create(
+                let mut slot = MemoryImageSlot::create(
                     base.cast(),
                     minimum,
                     alloc_bytes + extra_to_reserve_on_growth,
                 );
-                memfd_slot.instantiate(minimum, Some(image))?;
-                // On drop, we will unmap our mmap'd range that this
-                // memfd_slot was mapped on top of, so there is no
-                // need for the memfd_slot to wipe it with an
-                // anonymous mapping first.
-                memfd_slot.no_clear_on_drop();
-                Some(memfd_slot)
+                slot.instantiate(minimum, Some(image), &plan)?;
+                // On drop, we will unmap our mmap'd range that this slot was
+                // mapped on top of, so there is no need for the slot to wipe
+                // it with an anonymous mapping first.
+                slot.no_clear_on_drop();
+                Some(slot)
             }
             None => None,
         };
@@ -182,7 +265,7 @@ impl MmapMemory {
             pre_guard_size: pre_guard_bytes,
             offset_guard_size: offset_guard_bytes,
             extra_to_reserve_on_growth,
-            memfd,
+            memory_image,
         })
     }
 }
@@ -215,19 +298,18 @@ impl RuntimeLinearMemory for MmapMemory {
             new_mmap.as_mut_slice()[self.pre_guard_size..][..self.accessible]
                 .copy_from_slice(&self.mmap.as_slice()[self.pre_guard_size..][..self.accessible]);
 
-            // Now drop the MemFdSlot, if any. We've lost the CoW
+            // Now drop the MemoryImageSlot, if any. We've lost the CoW
             // advantages by explicitly copying all data, but we have
             // preserved all of its content; so we no longer need the
-            // memfd mapping. We need to do this before we
-            // (implicitly) drop the `mmap` field by overwriting it
-            // below.
-            let _ = self.memfd.take();
+            // mapping. We need to do this before we (implicitly) drop the
+            // `mmap` field by overwriting it below.
+            drop(self.memory_image.take());
 
             self.mmap = new_mmap;
-        } else if let Some(memfd) = self.memfd.as_mut() {
-            // MemFdSlot has its own growth mechanisms; defer to its
+        } else if let Some(image) = self.memory_image.as_mut() {
+            // MemoryImageSlot has its own growth mechanisms; defer to its
             // implementation.
-            memfd.set_heap_limit(new_size)?;
+            image.set_heap_limit(new_size)?;
         } else {
             // If the new size of this heap fits within the existing allocation
             // then all we need to do is to make the new pages accessible. This
@@ -247,51 +329,330 @@ impl RuntimeLinearMemory for MmapMemory {
         Ok(())
     }
 
-    fn vmmemory(&self) -> VMMemoryDefinition {
+    fn vmmemory(&mut self) -> VMMemoryDefinition {
         VMMemoryDefinition {
             base: unsafe { self.mmap.as_mut_ptr().add(self.pre_guard_size) },
-            current_length: self.accessible,
+            current_length: self.accessible.into(),
         }
     }
 
     fn needs_init(&self) -> bool {
-        // If we're using a memfd CoW mapping, then no initialization
+        // If we're using a CoW mapping, then no initialization
         // is needed.
-        self.memfd.is_none()
+        self.memory_image.is_none()
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn wasm_accessible(&self) -> Range<usize> {
+        let base = self.mmap.as_mut_ptr() as usize + self.pre_guard_size;
+        let end = base + (self.mmap.len() - self.pre_guard_size);
+        base..end
+    }
+}
+
+/// A "static" memory where the lifetime of the backing memory is managed
+/// elsewhere. Currently used with the pooling allocator.
+struct StaticMemory {
+    /// The memory in the host for this wasm memory. The length of this
+    /// slice is the maximum size of the memory that can be grown to.
+    base: &'static mut [u8],
+
+    /// The current size, in bytes, of this memory.
+    size: usize,
+
+    /// The size, in bytes, of the virtual address allocation starting at `base`
+    /// and going to the end of the guard pages at the end of the linear memory.
+    memory_and_guard_size: usize,
+
+    /// The image management, if any, for this memory. Owned here and
+    /// returned to the pooling allocator when termination occurs.
+    memory_image: MemoryImageSlot,
+}
+
+impl StaticMemory {
+    fn new(
+        base: &'static mut [u8],
+        initial_size: usize,
+        maximum_size: Option<usize>,
+        memory_image: MemoryImageSlot,
+        memory_and_guard_size: usize,
+    ) -> Result<Self> {
+        if base.len() < initial_size {
+            bail!(
+                "initial memory size of {} exceeds the pooling allocator's \
+                 configured maximum memory size of {} bytes",
+                initial_size,
+                base.len(),
+            );
+        }
+
+        // Only use the part of the slice that is necessary.
+        let base = match maximum_size {
+            Some(max) if max < base.len() => &mut base[..max],
+            _ => base,
+        };
+
+        Ok(Self {
+            base,
+            size: initial_size,
+            memory_image,
+            memory_and_guard_size,
+        })
+    }
+}
+
+impl RuntimeLinearMemory for StaticMemory {
+    fn byte_size(&self) -> usize {
+        self.size
+    }
+
+    fn maximum_byte_size(&self) -> Option<usize> {
+        Some(self.base.len())
+    }
+
+    fn grow_to(&mut self, new_byte_size: usize) -> Result<()> {
+        // Never exceed the static memory size; this check should have been made
+        // prior to arriving here.
+        assert!(new_byte_size <= self.base.len());
+
+        self.memory_image.set_heap_limit(new_byte_size)?;
+
+        // Update our accounting of the available size.
+        self.size = new_byte_size;
+        Ok(())
+    }
+
+    fn vmmemory(&mut self) -> VMMemoryDefinition {
+        VMMemoryDefinition {
+            base: self.base.as_mut_ptr().cast(),
+            current_length: self.size.into(),
+        }
+    }
+
+    fn needs_init(&self) -> bool {
+        !self.memory_image.has_image()
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn wasm_accessible(&self) -> Range<usize> {
+        let base = self.base.as_ptr() as usize;
+        let end = base + self.memory_and_guard_size;
+        base..end
+    }
+}
+
+/// For shared memory (and only for shared memory), this lock-version restricts
+/// access when growing the memory or checking its size. This is to conform with
+/// the [thread proposal]: "When `IsSharedArrayBuffer(...)` is true, the return
+/// value should be the result of an atomic read-modify-write of the new size to
+/// the internal `length` slot."
+///
+/// [thread proposal]:
+///     https://github.com/WebAssembly/threads/blob/master/proposals/threads/Overview.md#webassemblymemoryprototypegrow
+#[derive(Clone)]
+pub struct SharedMemory(Arc<SharedMemoryInner>);
+
+struct SharedMemoryInner {
+    memory: RwLock<Box<dyn RuntimeLinearMemory>>,
+    spot: ParkingSpot,
+    ty: wasmtime_environ::Memory,
+    def: LongTermVMMemoryDefinition,
+}
+
+impl SharedMemory {
+    /// Construct a new [`SharedMemory`].
+    pub fn new(plan: MemoryPlan) -> Result<Self> {
+        let (minimum_bytes, maximum_bytes) = Memory::limit_new(&plan, None)?;
+        let mmap_memory = MmapMemory::new(&plan, minimum_bytes, maximum_bytes, None)?;
+        Self::wrap(&plan, Box::new(mmap_memory), plan.memory)
+    }
+
+    /// Wrap an existing [Memory] with the locking provided by a [SharedMemory].
+    pub fn wrap(
+        plan: &MemoryPlan,
+        mut memory: Box<dyn RuntimeLinearMemory>,
+        ty: wasmtime_environ::Memory,
+    ) -> Result<Self> {
+        if !ty.shared {
+            bail!("shared memory must have a `shared` memory type");
+        }
+        if !matches!(plan.style, MemoryStyle::Static { .. }) {
+            bail!("shared memory can only be built from a static memory allocation")
+        }
+        assert!(
+            memory.as_any_mut().type_id() != std::any::TypeId::of::<SharedMemory>(),
+            "cannot re-wrap a shared memory"
+        );
+        Ok(Self(Arc::new(SharedMemoryInner {
+            ty,
+            spot: ParkingSpot::default(),
+            def: LongTermVMMemoryDefinition(memory.vmmemory()),
+            memory: RwLock::new(memory),
+        })))
+    }
+
+    /// Return the memory type for this [`SharedMemory`].
+    pub fn ty(&self) -> wasmtime_environ::Memory {
+        self.0.ty
+    }
+
+    /// Convert this shared memory into a [`Memory`].
+    pub fn as_memory(self) -> Memory {
+        Memory(Box::new(self))
+    }
+
+    /// Return a pointer to the shared memory's [VMMemoryDefinition].
+    pub fn vmmemory_ptr(&self) -> *const VMMemoryDefinition {
+        &self.0.def.0
+    }
+
+    /// Same as `RuntimeLinearMemory::grow`, except with `&self`.
+    pub fn grow(
+        &self,
+        delta_pages: u64,
+        store: Option<&mut dyn Store>,
+    ) -> Result<Option<(usize, usize)>, Error> {
+        let mut memory = self.0.memory.write().unwrap();
+        let result = memory.grow(delta_pages, store)?;
+        if let Some((_old_size_in_bytes, new_size_in_bytes)) = result {
+            // Store the new size to the `VMMemoryDefinition` for JIT-generated
+            // code (and runtime functions) to access. No other code can be
+            // growing this memory due to the write lock, but code in other
+            // threads could have access to this shared memory and we want them
+            // to see the most consistent version of the `current_length`; a
+            // weaker consistency is possible if we accept them seeing an older,
+            // smaller memory size (assumption: memory only grows) but presently
+            // we are aiming for accuracy.
+            //
+            // Note that it could be possible to access a memory address that is
+            // now-valid due to changes to the page flags in `grow` above but
+            // beyond the `memory.size` that we are about to assign to. In these
+            // and similar cases, discussion in the thread proposal concluded
+            // that: "multiple accesses in one thread racing with another
+            // thread's `memory.grow` that are in-bounds only after the grow
+            // commits may independently succeed or trap" (see
+            // https://github.com/WebAssembly/threads/issues/26#issuecomment-433930711).
+            // In other words, some non-determinism is acceptable when using
+            // `memory.size` on work being done by `memory.grow`.
+            self.0
+                .def
+                .0
+                .current_length
+                .store(new_size_in_bytes, Ordering::SeqCst);
+        }
+        Ok(result)
+    }
+
+    /// Implementation of `memory.atomic.notify` for this shared memory.
+    pub fn atomic_notify(&self, addr_index: u64, count: u32) -> Result<u32, Trap> {
+        validate_atomic_addr(&self.0.def.0, addr_index, 4, 4)?;
+        Ok(self.0.spot.unpark(addr_index, count))
+    }
+
+    /// Implementation of `memory.atomic.wait32` for this shared memory.
+    pub fn atomic_wait32(
+        &self,
+        addr_index: u64,
+        expected: u32,
+        timeout: Option<Instant>,
+    ) -> Result<WaitResult, Trap> {
+        let addr = validate_atomic_addr(&self.0.def.0, addr_index, 4, 4)?;
+        // SAFETY: `addr_index` was validated by `validate_atomic_addr` above.
+        assert!(std::mem::size_of::<AtomicU32>() == 4);
+        assert!(std::mem::align_of::<AtomicU32>() <= 4);
+        let atomic = unsafe { &*(addr as *const AtomicU32) };
+
+        // We want the sequential consistency of `SeqCst` to ensure that the `load` sees the value that the `notify` will/would see.
+        // All WASM atomic operations are also `SeqCst`.
+        let validate = || atomic.load(Ordering::SeqCst) == expected;
+
+        Ok(self.0.spot.park(addr_index, validate, timeout))
+    }
+
+    /// Implementation of `memory.atomic.wait64` for this shared memory.
+    pub fn atomic_wait64(
+        &self,
+        addr_index: u64,
+        expected: u64,
+        timeout: Option<Instant>,
+    ) -> Result<WaitResult, Trap> {
+        let addr = validate_atomic_addr(&self.0.def.0, addr_index, 8, 8)?;
+        // SAFETY: `addr_index` was validated by `validate_atomic_addr` above.
+        assert!(std::mem::size_of::<AtomicU64>() == 8);
+        assert!(std::mem::align_of::<AtomicU64>() <= 8);
+        let atomic = unsafe { &*(addr as *const AtomicU64) };
+
+        // We want the sequential consistency of `SeqCst` to ensure that the `load` sees the value that the `notify` will/would see.
+        // All WASM atomic operations are also `SeqCst`.
+        let validate = || atomic.load(Ordering::SeqCst) == expected;
+
+        Ok(self.0.spot.park(addr_index, validate, timeout))
+    }
+}
+
+/// Shared memory needs some representation of a `VMMemoryDefinition` for
+/// JIT-generated code to access. This structure owns the base pointer and
+/// length to the actual memory and we share this definition across threads by:
+/// - never changing the base pointer; according to the specification, shared
+///   memory must be created with a known maximum size so it can be allocated
+///   once and never moved
+/// - carefully changing the length, using atomic accesses in both the runtime
+///   and JIT-generated code.
+struct LongTermVMMemoryDefinition(VMMemoryDefinition);
+unsafe impl Send for LongTermVMMemoryDefinition {}
+unsafe impl Sync for LongTermVMMemoryDefinition {}
+
+/// Proxy all calls through the [`RwLock`].
+impl RuntimeLinearMemory for SharedMemory {
+    fn byte_size(&self) -> usize {
+        self.0.memory.read().unwrap().byte_size()
+    }
+
+    fn maximum_byte_size(&self) -> Option<usize> {
+        self.0.memory.read().unwrap().maximum_byte_size()
+    }
+
+    fn grow(
+        &mut self,
+        delta_pages: u64,
+        store: Option<&mut dyn Store>,
+    ) -> Result<Option<(usize, usize)>, Error> {
+        SharedMemory::grow(self, delta_pages, store)
+    }
+
+    fn grow_to(&mut self, size: usize) -> Result<()> {
+        self.0.memory.write().unwrap().grow_to(size)
+    }
+
+    fn vmmemory(&mut self) -> VMMemoryDefinition {
+        // `vmmemory()` is used for writing the `VMMemoryDefinition` of a memory
+        // into its `VMContext`; this should never be possible for a shared
+        // memory because the only `VMMemoryDefinition` for it should be stored
+        // in its own `def` field.
+        unreachable!()
+    }
+
+    fn needs_init(&self) -> bool {
+        self.0.memory.read().unwrap().needs_init()
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn wasm_accessible(&self) -> Range<usize> {
+        self.0.memory.read().unwrap().wasm_accessible()
     }
 }
 
 /// Representation of a runtime wasm linear memory.
-pub enum Memory {
-    /// A "static" memory where the lifetime of the backing memory is managed
-    /// elsewhere. Currently used with the pooling allocator.
-    Static {
-        /// The memory in the host for this wasm memory. The length of this
-        /// slice is the maximum size of the memory that can be grown to.
-        base: &'static mut [u8],
-
-        /// The current size, in bytes, of this memory.
-        size: usize,
-
-        /// A callback which makes portions of `base` accessible for when memory
-        /// is grown. Otherwise it's expected that accesses to `base` will
-        /// fault.
-        make_accessible: Option<fn(*mut u8, usize) -> Result<()>>,
-
-        /// The MemFdSlot, if any, for this memory. Owned here and
-        /// returned to the pooling allocator when termination occurs.
-        memfd_slot: Option<MemFdSlot>,
-
-        /// Stores the pages in the linear memory that have faulted as guard pages when using the `uffd` feature.
-        /// These pages need their protection level reset before the memory can grow.
-        #[cfg(all(feature = "uffd", target_os = "linux"))]
-        guard_page_faults: Vec<(usize, usize, fn(*mut u8, usize) -> Result<()>)>,
-    },
-
-    /// A "dynamic" memory whose data is managed at runtime and lifetime is tied
-    /// to this instance.
-    Dynamic(Box<dyn RuntimeLinearMemory>),
-}
+pub struct Memory(Box<dyn RuntimeLinearMemory>);
 
 impl Memory {
     /// Create a new dynamic (movable) memory instance for the specified plan.
@@ -299,60 +660,57 @@ impl Memory {
         plan: &MemoryPlan,
         creator: &dyn RuntimeMemoryCreator,
         store: &mut dyn Store,
-        memfd_image: Option<&Arc<MemoryMemFd>>,
+        memory_image: Option<&Arc<MemoryImage>>,
     ) -> Result<Self> {
-        let (minimum, maximum) = Self::limit_new(plan, store)?;
-        Ok(Memory::Dynamic(creator.new_memory(
-            plan,
-            minimum,
-            maximum,
-            memfd_image,
-        )?))
+        let (minimum, maximum) = Self::limit_new(plan, Some(store))?;
+        let allocation = creator.new_memory(plan, minimum, maximum, memory_image)?;
+        let allocation = if plan.memory.shared {
+            Box::new(SharedMemory::wrap(plan, allocation, plan.memory)?)
+        } else {
+            allocation
+        };
+        Ok(Memory(allocation))
     }
 
     /// Create a new static (immovable) memory instance for the specified plan.
     pub fn new_static(
         plan: &MemoryPlan,
         base: &'static mut [u8],
-        make_accessible: Option<fn(*mut u8, usize) -> Result<()>>,
-        memfd_slot: Option<MemFdSlot>,
+        memory_image: MemoryImageSlot,
+        memory_and_guard_size: usize,
         store: &mut dyn Store,
     ) -> Result<Self> {
-        let (minimum, maximum) = Self::limit_new(plan, store)?;
-
-        let base = match maximum {
-            Some(max) if max < base.len() => &mut base[..max],
-            _ => base,
+        let (minimum, maximum) = Self::limit_new(plan, Some(store))?;
+        let pooled_memory =
+            StaticMemory::new(base, minimum, maximum, memory_image, memory_and_guard_size)?;
+        let allocation = Box::new(pooled_memory);
+        let allocation: Box<dyn RuntimeLinearMemory> = if plan.memory.shared {
+            // FIXME: since the pooling allocator owns the memory allocation
+            // (which is torn down with the instance), the current shared memory
+            // implementation will cause problems; see
+            // https://github.com/bytecodealliance/wasmtime/issues/4244.
+            todo!("using shared memory with the pooling allocator is a work in progress");
+        } else {
+            allocation
         };
-
-        if let Some(make_accessible) = make_accessible {
-            if minimum > 0 {
-                make_accessible(base.as_mut_ptr(), minimum)?;
-            }
-        }
-
-        Ok(Memory::Static {
-            base,
-            size: minimum,
-            make_accessible,
-            memfd_slot,
-            #[cfg(all(feature = "uffd", target_os = "linux"))]
-            guard_page_faults: Vec::new(),
-        })
+        Ok(Memory(allocation))
     }
 
     /// Calls the `store`'s limiter to optionally prevent a memory from being allocated.
     ///
     /// Returns the minimum size and optional maximum size of the memory, in
     /// bytes.
-    fn limit_new(plan: &MemoryPlan, store: &mut dyn Store) -> Result<(usize, Option<usize>)> {
+    fn limit_new(
+        plan: &MemoryPlan,
+        store: Option<&mut dyn Store>,
+    ) -> Result<(usize, Option<usize>)> {
         // Sanity-check what should already be true from wasm module validation.
         let absolute_max = if plan.memory.memory64 {
             WASM64_MAX_PAGES
         } else {
             WASM32_MAX_PAGES
         };
-        assert_le!(plan.memory.minimum, absolute_max);
+        assert!(plan.memory.minimum <= absolute_max);
         assert!(plan.memory.maximum.is_none() || plan.memory.maximum.unwrap() <= absolute_max);
 
         // This is the absolute possible maximum that the module can try to
@@ -400,17 +758,24 @@ impl Memory {
             maximum = usize::try_from(1u64 << 32).ok();
         }
 
-        // Inform the store's limiter what's about to happen. This will let the limiter
-        // reject anything if necessary, and this also guarantees that we should
-        // call the limiter for all requested memories, even if our `minimum`
-        // calculation overflowed. This means that the `minimum` we're informing
-        // the limiter is lossy and may not be 100% accurate, but for now the
-        // expected uses of limiter means that's ok.
-        if !store.memory_growing(0, minimum.unwrap_or(absolute_max), maximum)? {
-            bail!(
-                "memory minimum size of {} pages exceeds memory limits",
-                plan.memory.minimum
-            );
+        // Inform the store's limiter what's about to happen. This will let the
+        // limiter reject anything if necessary, and this also guarantees that
+        // we should call the limiter for all requested memories, even if our
+        // `minimum` calculation overflowed. This means that the `minimum` we're
+        // informing the limiter is lossy and may not be 100% accurate, but for
+        // now the expected uses of limiter means that's ok.
+        if let Some(store) = store {
+            // We ignore the store limits for shared memories since they are
+            // technically not created within a store (though, trickily, they
+            // may be associated with one in order to get a `vmctx`).
+            if !plan.memory.shared {
+                if !store.memory_growing(0, minimum.unwrap_or(absolute_max), maximum)? {
+                    bail!(
+                        "memory minimum size of {} pages exceeds memory limits",
+                        plan.memory.minimum
+                    );
+                }
+            }
         }
 
         // At this point we need to actually handle overflows, so bail out with
@@ -426,10 +791,7 @@ impl Memory {
 
     /// Returns the number of allocated wasm pages.
     pub fn byte_size(&self) -> usize {
-        match self {
-            Memory::Static { size, .. } => *size,
-            Memory::Dynamic(mem) => mem.byte_size(),
-        }
+        self.0.byte_size()
     }
 
     /// Returns the maximum number of pages the memory can grow to at runtime.
@@ -439,34 +801,14 @@ impl Memory {
     /// The runtime maximum may not be equal to the maximum from the linear memory's
     /// Wasm type when it is being constrained by an instance allocator.
     pub fn maximum_byte_size(&self) -> Option<usize> {
-        match self {
-            Memory::Static { base, .. } => Some(base.len()),
-            Memory::Dynamic(mem) => mem.maximum_byte_size(),
-        }
-    }
-
-    /// Returns whether or not the underlying storage of the memory is "static".
-    #[cfg(feature = "pooling-allocator")]
-    pub(crate) fn is_static(&self) -> bool {
-        if let Memory::Static { .. } = self {
-            true
-        } else {
-            false
-        }
+        self.0.maximum_byte_size()
     }
 
     /// Returns whether or not this memory needs initialization. It
     /// may not if it already has initial content thanks to a CoW
-    /// mechanism like memfd.
+    /// mechanism.
     pub(crate) fn needs_init(&self) -> bool {
-        match self {
-            Memory::Static {
-                memfd_slot: Some(ref slot),
-                ..
-            } => !slot.has_image(),
-            Memory::Dynamic(mem) => mem.needs_init(),
-            _ => true,
-        }
+        self.0.needs_init()
     }
 
     /// Grow memory by the specified amount of wasm pages.
@@ -489,178 +831,108 @@ impl Memory {
     pub unsafe fn grow(
         &mut self,
         delta_pages: u64,
-        store: &mut dyn Store,
+        store: Option<&mut dyn Store>,
     ) -> Result<Option<usize>, Error> {
-        let old_byte_size = self.byte_size();
-        // Wasm spec: when growing by 0 pages, always return the current size.
-        if delta_pages == 0 {
-            return Ok(Some(old_byte_size));
-        }
-
-        // largest wasm-page-aligned region of memory it is possible to
-        // represent in a usize. This will be impossible for the system to
-        // actually allocate.
-        let absolute_max = 0usize.wrapping_sub(WASM_PAGE_SIZE);
-        // calculate byte size of the new allocation. Let it overflow up to
-        // usize::MAX, then clamp it down to absolute_max.
-        let new_byte_size = usize::try_from(delta_pages)
-            .unwrap_or(usize::MAX)
-            .saturating_mul(WASM_PAGE_SIZE)
-            .saturating_add(old_byte_size);
-        let new_byte_size = if new_byte_size > absolute_max {
-            absolute_max
-        } else {
-            new_byte_size
-        };
-
-        let maximum = self.maximum_byte_size();
-        // Store limiter gets first chance to reject memory_growing.
-        if !store.memory_growing(old_byte_size, new_byte_size, maximum)? {
-            return Ok(None);
-        }
-
-        // Never exceed maximum, even if limiter permitted it.
-        if let Some(max) = maximum {
-            if new_byte_size > max {
-                store.memory_grow_failed(&format_err!("Memory maximum size exceeded"));
-                return Ok(None);
-            }
-        }
-
-        #[cfg(all(feature = "uffd", target_os = "linux"))]
-        {
-            if self.is_static() {
-                // Reset any faulted guard pages before growing the memory.
-                if let Err(e) = self.reset_guard_pages() {
-                    store.memory_grow_failed(&e);
-                    return Ok(None);
-                }
-            }
-        }
-
-        match self {
-            Memory::Static {
-                base,
-                size,
-                memfd_slot: Some(ref mut memfd_slot),
-                ..
-            } => {
-                // Never exceed static memory size
-                if new_byte_size > base.len() {
-                    store.memory_grow_failed(&format_err!("static memory size exceeded"));
-                    return Ok(None);
-                }
-
-                if let Err(e) = memfd_slot.set_heap_limit(new_byte_size) {
-                    store.memory_grow_failed(&e);
-                    return Ok(None);
-                }
-                *size = new_byte_size;
-            }
-            Memory::Static {
-                base,
-                size,
-                make_accessible,
-                ..
-            } => {
-                let make_accessible = make_accessible
-                    .expect("make_accessible must be Some if this is not a MemFD memory");
-
-                // Never exceed static memory size
-                if new_byte_size > base.len() {
-                    store.memory_grow_failed(&format_err!("static memory size exceeded"));
-                    return Ok(None);
-                }
-
-                // Operating system can fail to make memory accessible
-                if let Err(e) = make_accessible(
-                    base.as_mut_ptr().add(old_byte_size),
-                    new_byte_size - old_byte_size,
-                ) {
-                    store.memory_grow_failed(&e);
-                    return Ok(None);
-                }
-                *size = new_byte_size;
-            }
-            Memory::Dynamic(mem) => {
-                if let Err(e) = mem.grow_to(new_byte_size) {
-                    store.memory_grow_failed(&e);
-                    return Ok(None);
-                }
-            }
-        }
-        Ok(Some(old_byte_size))
+        self.0
+            .grow(delta_pages, store)
+            .map(|opt| opt.map(|(old, _new)| old))
     }
 
     /// Return a `VMMemoryDefinition` for exposing the memory to compiled wasm code.
     pub fn vmmemory(&mut self) -> VMMemoryDefinition {
-        match self {
-            Memory::Static { base, size, .. } => VMMemoryDefinition {
-                base: base.as_mut_ptr().cast(),
-                current_length: *size,
-            },
-            Memory::Dynamic(mem) => mem.vmmemory(),
+        self.0.vmmemory()
+    }
+
+    /// Consume the memory, returning its [`MemoryImageSlot`] if any is present.
+    /// The image should only be present for a subset of memories created with
+    /// [`Memory::new_static()`].
+    #[cfg(feature = "pooling-allocator")]
+    pub fn unwrap_static_image(mut self) -> MemoryImageSlot {
+        let mem = self.0.as_any_mut().downcast_mut::<StaticMemory>().unwrap();
+        std::mem::replace(&mut mem.memory_image, MemoryImageSlot::dummy())
+    }
+
+    /// If the [Memory] is a [SharedMemory], unwrap it and return a clone to
+    /// that shared memory.
+    pub fn as_shared_memory(&mut self) -> Option<&mut SharedMemory> {
+        let as_any = self.0.as_any_mut();
+        if let Some(m) = as_any.downcast_mut::<SharedMemory>() {
+            Some(m)
+        } else {
+            None
         }
     }
 
-    /// Records a faulted guard page in a static memory.
-    ///
-    /// This is used to track faulted guard pages that need to be reset for the uffd feature.
-    ///
-    /// This function will panic if called on a dynamic memory.
-    #[cfg(all(feature = "uffd", target_os = "linux"))]
-    pub(crate) fn record_guard_page_fault(
+    /// Implementation of `memory.atomic.notify` for all memories.
+    pub fn atomic_notify(&mut self, addr: u64, count: u32) -> Result<u32, Trap> {
+        match self.0.as_any_mut().downcast_mut::<SharedMemory>() {
+            Some(m) => m.atomic_notify(addr, count),
+            None => {
+                validate_atomic_addr(&self.vmmemory(), addr, 4, 4)?;
+                Ok(0)
+            }
+        }
+    }
+
+    /// Implementation of `memory.atomic.wait32` for all memories.
+    pub fn atomic_wait32(
         &mut self,
-        page_addr: *mut u8,
-        size: usize,
-        reset: fn(*mut u8, usize) -> Result<()>,
-    ) {
-        match self {
-            Memory::Static {
-                guard_page_faults, ..
-            } => {
-                guard_page_faults.push((page_addr as usize, size, reset));
-            }
-            Memory::Dynamic(_) => {
-                unreachable!("dynamic memories should not have guard page faults")
+        addr: u64,
+        expected: u32,
+        deadline: Option<Instant>,
+    ) -> Result<WaitResult, Trap> {
+        match self.0.as_any_mut().downcast_mut::<SharedMemory>() {
+            Some(m) => m.atomic_wait32(addr, expected, deadline),
+            None => {
+                validate_atomic_addr(&self.vmmemory(), addr, 4, 4)?;
+                Err(Trap::AtomicWaitNonSharedMemory)
             }
         }
     }
 
-    /// Resets the previously faulted guard pages of a static memory.
-    ///
-    /// This is used to reset the protection of any guard pages that were previously faulted.
-    ///
-    /// This function will panic if called on a dynamic memory.
-    #[cfg(all(feature = "uffd", target_os = "linux"))]
-    pub(crate) fn reset_guard_pages(&mut self) -> Result<()> {
-        match self {
-            Memory::Static {
-                guard_page_faults, ..
-            } => {
-                for (addr, len, reset) in guard_page_faults.drain(..) {
-                    reset(addr as *mut u8, len)?;
-                }
-            }
-            Memory::Dynamic(_) => {
-                unreachable!("dynamic memories should not have guard page faults")
+    /// Implementation of `memory.atomic.wait64` for all memories.
+    pub fn atomic_wait64(
+        &mut self,
+        addr: u64,
+        expected: u64,
+        deadline: Option<Instant>,
+    ) -> Result<WaitResult, Trap> {
+        match self.0.as_any_mut().downcast_mut::<SharedMemory>() {
+            Some(m) => m.atomic_wait64(addr, expected, deadline),
+            None => {
+                validate_atomic_addr(&self.vmmemory(), addr, 8, 8)?;
+                Err(Trap::AtomicWaitNonSharedMemory)
             }
         }
+    }
 
-        Ok(())
+    /// Returns the range of bytes that WebAssembly should be able to address in
+    /// this linear memory. Note that this includes guard pages which wasm can
+    /// hit.
+    pub fn wasm_accessible(&self) -> Range<usize> {
+        self.0.wasm_accessible()
     }
 }
 
-// The default memory representation is an empty memory that cannot grow.
-impl Default for Memory {
-    fn default() -> Self {
-        Memory::Static {
-            base: &mut [],
-            size: 0,
-            make_accessible: Some(|_, _| unreachable!()),
-            memfd_slot: None,
-            #[cfg(all(feature = "uffd", target_os = "linux"))]
-            guard_page_faults: Vec::new(),
-        }
+/// In the configurations where bounds checks were elided in JIT code (because
+/// we are using static memories with virtual memory guard pages) this manual
+/// check is here so we don't segfault from Rust. For other configurations,
+/// these checks are required anyways.
+fn validate_atomic_addr(
+    def: &VMMemoryDefinition,
+    addr: u64,
+    access_size: u64,
+    access_alignment: u64,
+) -> Result<*mut u8, Trap> {
+    debug_assert!(access_alignment.is_power_of_two());
+    if !(addr % access_alignment == 0) {
+        return Err(Trap::HeapMisaligned);
     }
+
+    let length = u64::try_from(def.current_length()).unwrap();
+    if !(addr.saturating_add(access_size) < length) {
+        return Err(Trap::MemoryOutOfBounds);
+    }
+
+    Ok(def.base.wrapping_add(addr as usize))
 }

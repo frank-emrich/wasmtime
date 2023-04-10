@@ -1,6 +1,5 @@
 use anyhow::{bail, Result};
-use winapi::um::memoryapi::{VirtualAlloc, VirtualFree};
-use winapi::um::winnt::{MEM_COMMIT, MEM_DECOMMIT, PAGE_READWRITE};
+use windows_sys::Win32::System::Memory::*;
 
 pub fn commit(addr: *mut u8, len: usize) -> Result<()> {
     if len == 0 {
@@ -28,14 +27,6 @@ pub fn decommit(addr: *mut u8, len: usize) -> Result<()> {
     }
 
     Ok(())
-}
-
-pub fn commit_memory_pages(addr: *mut u8, len: usize) -> Result<()> {
-    commit(addr, len)
-}
-
-pub fn decommit_memory_pages(addr: *mut u8, len: usize) -> Result<()> {
-    decommit(addr, len)
 }
 
 pub fn commit_table_pages(addr: *mut u8, len: usize) -> Result<()> {

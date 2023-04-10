@@ -43,7 +43,7 @@ fn define_simple_function(module: &mut ObjectModule) -> FuncId {
         .unwrap();
 
     let mut ctx = Context::new();
-    ctx.func = Function::with_name_signature(ExternalName::user(0, func_id.as_u32()), sig);
+    ctx.func = Function::with_name_signature(UserFuncName::user(0, func_id.as_u32()), sig);
     let mut func_ctx = FunctionBuilderContext::new();
     {
         let mut bcx: FunctionBuilder = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
@@ -82,8 +82,7 @@ fn switch_error() {
         call_conv: CallConv::SystemV,
     };
 
-    let mut func = Function::with_name_signature(ExternalName::user(0, 0), sig);
-
+    let mut func = Function::with_name_signature(UserFuncName::default(), sig);
     let mut func_ctx = FunctionBuilderContext::new();
     {
         let mut bcx: FunctionBuilder = FunctionBuilder::new(&mut func, &mut func_ctx);
@@ -166,7 +165,7 @@ fn libcall_function() {
         .unwrap();
 
     let mut ctx = Context::new();
-    ctx.func = Function::with_name_signature(ExternalName::user(0, func_id.as_u32()), sig);
+    ctx.func = Function::with_name_signature(UserFuncName::user(0, func_id.as_u32()), sig);
     let mut func_ctx = FunctionBuilderContext::new();
     {
         let mut bcx: FunctionBuilder = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
@@ -199,9 +198,7 @@ fn libcall_function() {
 }
 
 #[test]
-#[should_panic(
-    expected = "Result::unwrap()` on an `Err` value: Backend(Symbol \"function\\u{0}with\\u{0}nul\\u{0}bytes\" has a null byte, which is disallowed"
-)]
+#[should_panic(expected = "has a null byte, which is disallowed")]
 fn reject_nul_byte_symbol_for_func() {
     let flag_builder = settings::builder();
     let isa_builder = cranelift_codegen::isa::lookup_by_name("x86_64-unknown-linux-gnu").unwrap();
@@ -223,9 +220,7 @@ fn reject_nul_byte_symbol_for_func() {
 }
 
 #[test]
-#[should_panic(
-    expected = "Result::unwrap()` on an `Err` value: Backend(Symbol \"data\\u{0}with\\u{0}nul\\u{0}bytes\" has a null byte, which is disallowed"
-)]
+#[should_panic(expected = "has a null byte, which is disallowed")]
 fn reject_nul_byte_symbol_for_data() {
     let flag_builder = settings::builder();
     let isa_builder = cranelift_codegen::isa::lookup_by_name("x86_64-unknown-linux-gnu").unwrap();

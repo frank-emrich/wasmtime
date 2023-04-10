@@ -80,6 +80,10 @@ enum wasmtime_profiling_strategy_enum { // ProfilingStrategy
   ///
   /// Note that this isn't always enabled at build time.
   WASMTIME_PROFILING_STRATEGY_VTUNE,
+  /// Linux's simple "perfmap" support in `perf` is enabled and when Wasmtime is
+  /// run under `perf` necessary calls will be made to profile generated JIT
+  /// code.
+  WASMTIME_PROFILING_STRATEGY_PERFMAP,
 };
 
 #define WASMTIME_CONFIG_PROP(ret, name, ty) \
@@ -97,15 +101,6 @@ enum wasmtime_profiling_strategy_enum { // ProfilingStrategy
 WASMTIME_CONFIG_PROP(void, debug_info, bool)
 
 /**
- * \brief Enables WebAssembly code to be interrupted.
- *
- * This setting is `false` by default. When enabled it will enable getting an
- * interrupt handle via #wasmtime_interrupt_handle_new which can be used to
- * interrupt currently-executing WebAssembly code.
- */
-WASMTIME_CONFIG_PROP(void, interruptable, bool)
-
-/**
  * \brief Whether or not fuel is enabled for generated code.
  *
  * This setting is `false` by default. When enabled it will enable fuel counting
@@ -113,6 +108,22 @@ WASMTIME_CONFIG_PROP(void, interruptable, bool)
  * and trap when reaching zero.
  */
 WASMTIME_CONFIG_PROP(void, consume_fuel, bool)
+
+/**
+ * \brief Whether or not epoch-based interruption is enabled for generated code.
+ *
+ * This setting is `false` by default. When enabled wasm code will check the
+ * current epoch periodically and abort if the current epoch is beyond a
+ * store-configured limit.
+ *
+ * Note that when this setting is enabled all stores will immediately trap and
+ * need to have their epoch deadline otherwise configured with
+ * #wasmtime_context_set_epoch_deadline.
+ *
+ * Note that the current epoch is engine-local and can be incremented with
+ * #wasmtime_engine_increment_epoch.
+ */
+WASMTIME_CONFIG_PROP(void, epoch_interruption, bool)
 
 /**
  * \brief Configures the maximum stack size, in bytes, that JIT code can use.
@@ -179,14 +190,6 @@ WASMTIME_CONFIG_PROP(void, wasm_multi_value, bool)
 WASMTIME_CONFIG_PROP(void, wasm_multi_memory, bool)
 
 /**
- * \brief Configures whether the WebAssembly module linking proposal is
- * enabled.
- *
- * This setting is `false` by default.
- */
-WASMTIME_CONFIG_PROP(void, wasm_module_linking, bool)
-
-/**
  * \brief Configures whether the WebAssembly memory64 proposal is
  * enabled.
  *
@@ -198,11 +201,16 @@ WASMTIME_CONFIG_PROP(void, wasm_memory64, bool)
  * \brief Configures how JIT code will be compiled.
  *
  * This setting is #WASMTIME_STRATEGY_AUTO by default.
- *
- * If the compilation strategy selected could not be enabled then an error is
- * returned.
  */
-WASMTIME_CONFIG_PROP(wasmtime_error_t*, strategy, wasmtime_strategy_t)
+WASMTIME_CONFIG_PROP(void, strategy, wasmtime_strategy_t)
+
+/**
+ * \brief Configure wether wasmtime should compile a module using multiple threads.
+ *
+ * For more information see the Rust documentation at
+ * https://docs.wasmtime.dev/api/wasmtime/struct.Config.html#method.parallel_compilation.
+ */
+WASMTIME_CONFIG_PROP(void, parallel_compilation, bool)
 
 /**
  * \brief Configures whether Cranelift's debug verifier is enabled.
@@ -215,6 +223,19 @@ WASMTIME_CONFIG_PROP(wasmtime_error_t*, strategy, wasmtime_strategy_t)
 WASMTIME_CONFIG_PROP(void, cranelift_debug_verifier, bool)
 
 /**
+ * \brief Configures whether Cranelift should perform a NaN-canonicalization pass.
+ *
+ * When Cranelift is used as a code generation backend this will configure
+ * it to replace NaNs with a single canonical value. This is useful for users
+ * requiring entirely deterministic WebAssembly computation.
+ * 
+ * This is not required by the WebAssembly spec, so it is not enabled by default.
+ * 
+ * The default value for this is `false`
+ */
+WASMTIME_CONFIG_PROP(void, cranelift_nan_canonicalization, bool)
+  
+/**
  * \brief Configures Cranelift's optimization level for JIT code.
  *
  * This setting in #WASMTIME_OPT_LEVEL_SPEED by default.
@@ -226,7 +247,7 @@ WASMTIME_CONFIG_PROP(void, cranelift_opt_level, wasmtime_opt_level_t)
  *
  * This setting in #WASMTIME_PROFILING_STRATEGY_NONE by default.
  */
-WASMTIME_CONFIG_PROP(wasmtime_error_t*, profiler, wasmtime_profiling_strategy_t)
+WASMTIME_CONFIG_PROP(void, profiler, wasmtime_profiling_strategy_t)
 
 /**
  * \brief Configures the maximum size for memory to be considered "static"

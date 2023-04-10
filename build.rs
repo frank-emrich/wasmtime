@@ -12,6 +12,7 @@ use std::process::Command;
 
 fn main() -> anyhow::Result<()> {
     println!("cargo:rerun-if-changed=build.rs");
+
     let out_dir = PathBuf::from(
         env::var_os("OUT_DIR").expect("The OUT_DIR environment variable must be set"),
     );
@@ -25,10 +26,12 @@ fn main() -> anyhow::Result<()> {
         with_test_module(&mut out, "misc", |out| {
             test_directory(out, "tests/misc_testsuite", strategy)?;
             test_directory_module(out, "tests/misc_testsuite/multi-memory", strategy)?;
-            test_directory_module(out, "tests/misc_testsuite/module-linking", strategy)?;
             test_directory_module(out, "tests/misc_testsuite/simd", strategy)?;
             test_directory_module(out, "tests/misc_testsuite/threads", strategy)?;
             test_directory_module(out, "tests/misc_testsuite/memory64", strategy)?;
+            test_directory_module(out, "tests/misc_testsuite/component-model", strategy)?;
+            test_directory_module(out, "tests/misc_testsuite/function-references", strategy)?;
+            test_directory_module(out, "tests/misc_testsuite/typed-continuations", strategy)?;
             Ok(())
         })?;
 
@@ -37,12 +40,27 @@ fn main() -> anyhow::Result<()> {
             // Skip running spec_testsuite tests if the submodule isn't checked
             // out.
             if spec_tests > 0 {
-                test_directory_module(out, "tests/spec_testsuite/proposals/simd", strategy)?;
                 test_directory_module(out, "tests/spec_testsuite/proposals/memory64", strategy)?;
+                test_directory_module(
+                    out,
+                    "tests/spec_testsuite/proposals/function-references",
+                    strategy,
+                )?;
+                test_directory_module(
+                    out,
+                    "tests/spec_testsuite/proposals/multi-memory",
+                    strategy,
+                )?;
+                test_directory_module(out, "tests/spec_testsuite/proposals/threads", strategy)?;
+                test_directory_module(
+                    out,
+                    "tests/spec_testsuite/proposals/relaxed-simd",
+                    strategy,
+                )?;
             } else {
                 println!(
                     "cargo:warning=The spec testsuite is disabled. To enable, run `git submodule \
-                 update --remote`."
+                     update --remote`."
                 );
             }
             Ok(())
@@ -87,7 +105,7 @@ fn test_directory(
                 return None;
             }
             // Ignore files starting with `.`, which could be editor temporary files
-            if p.file_stem()?.to_str()?.starts_with(".") {
+            if p.file_stem()?.to_str()?.starts_with('.') {
                 return None;
             }
             Some(p)
@@ -112,8 +130,7 @@ fn extract_name(path: impl AsRef<Path>) -> String {
         .expect("filename should have a stem")
         .to_str()
         .expect("filename should be representable as a string")
-        .replace("-", "_")
-        .replace("/", "_")
+        .replace(['-', '/'], "_")
 }
 
 fn with_test_module<T>(
@@ -159,7 +176,7 @@ fn write_testsuite_tests(
         "    crate::wast::run_wast(r#\"{}\"#, crate::wast::Strategy::{}, {}).unwrap();",
         path.display(),
         strategy,
-        pooling
+        pooling,
     )?;
     writeln!(out, "}}")?;
     writeln!(out)?;
@@ -168,19 +185,27 @@ fn write_testsuite_tests(
 
 /// Ignore tests that aren't supported yet.
 fn ignore(testsuite: &str, testname: &str, strategy: &str) -> bool {
-    match strategy {
-        "Cranelift" => match (testsuite, testname) {
-            // No simd support yet for s390x.
-            ("simd", _) if platform_is_s390x() => return true,
-            ("memory64", "simd") if platform_is_s390x() => return true,
-            _ => {}
-        },
-        _ => panic!("unrecognized strategy"),
+    assert_eq!(strategy, "Cranelift");
+
+    // This is an empty file right now which the `wast` crate doesn't parse
+    if testname.contains("memory_copy1") {
+        return true;
     }
 
-    false
-}
+    match env::var("CARGO_CFG_TARGET_ARCH").unwrap().as_str() {
+        "s390x" => {
+            // FIXME: These tests fail under qemu due to a qemu bug.
+            testname == "simd_f32x4_pmin_pmax" || testname == "simd_f64x2_pmin_pmax"
+        }
 
-fn platform_is_s390x() -> bool {
-    env::var("CARGO_CFG_TARGET_ARCH").unwrap() == "s390x"
+        // Currently the simd wasm proposal is not implemented in the riscv64
+        // backend so skip all tests which could use simd.
+        "riscv64" => {
+            testsuite.contains("simd")
+                || testname.contains("simd")
+                || testname.contains("memory_multi")
+        }
+
+        _ => false,
+    }
 }

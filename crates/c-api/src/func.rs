@@ -3,6 +3,8 @@ use crate::{
     wasm_extern_t, wasm_functype_t, wasm_store_t, wasm_val_t, wasm_val_vec_t, wasmtime_error_t,
     wasmtime_extern_t, wasmtime_val_t, wasmtime_val_union, CStoreContext, CStoreContextMut,
 };
+use anyhow::{Error, Result};
+use std::any::Any;
 use std::ffi::c_void;
 use std::mem::{self, MaybeUninit};
 use std::panic::{self, AssertUnwindSafe};
@@ -67,7 +69,7 @@ unsafe fn create_function(
             let mut out_results: wasm_val_vec_t = vec![wasm_val_t::default(); results.len()].into();
             let out = func(&params, &mut out_results);
             if let Some(trap) = out {
-                return Err(trap.trap.clone());
+                return Err(trap.error);
             }
 
             let out_results = out_results.as_slice();
@@ -104,6 +106,7 @@ pub unsafe extern "C" fn wasm_func_new_with_env(
 ) -> Box<wasm_func_t> {
     let finalizer = crate::ForeignData { data, finalizer };
     create_function(store, ty, move |params, results| {
+        drop(&finalizer); // move entire finalizer into this closure
         callback(finalizer.data, params, results)
     })
 }
@@ -151,21 +154,22 @@ pub unsafe extern "C" fn wasm_func_call(
             }
             ptr::null_mut()
         }
-        Ok(Err(trap)) => match trap.downcast::<Trap>() {
-            Ok(trap) => Box::into_raw(Box::new(wasm_trap_t::new(trap))),
-            Err(err) => Box::into_raw(Box::new(wasm_trap_t::new(err.into()))),
-        },
+        Ok(Err(err)) => Box::into_raw(Box::new(wasm_trap_t::new(err))),
         Err(panic) => {
-            let trap = if let Some(msg) = panic.downcast_ref::<String>() {
-                Trap::new(msg)
-            } else if let Some(msg) = panic.downcast_ref::<&'static str>() {
-                Trap::new(*msg)
-            } else {
-                Trap::new("rust panic happened")
-            };
-            let trap = Box::new(wasm_trap_t::new(trap));
+            let err = error_from_panic(panic);
+            let trap = Box::new(wasm_trap_t::new(err));
             Box::into_raw(trap)
         }
+    }
+}
+
+fn error_from_panic(panic: Box<dyn Any + Send>) -> Error {
+    if let Some(msg) = panic.downcast_ref::<String>() {
+        Error::msg(msg.clone())
+    } else if let Some(msg) = panic.downcast_ref::<&'static str>() {
+        Error::msg(*msg)
+    } else {
+        Error::msg("rust panic happened")
     }
 }
 
@@ -208,8 +212,12 @@ pub type wasmtime_func_callback_t = extern "C" fn(
     usize,
 ) -> Option<Box<wasm_trap_t>>;
 
-pub type wasmtime_func_unchecked_callback_t =
-    extern "C" fn(*mut c_void, *mut wasmtime_caller_t, *mut ValRaw) -> Option<Box<wasm_trap_t>>;
+pub type wasmtime_func_unchecked_callback_t = extern "C" fn(
+    *mut c_void,
+    *mut wasmtime_caller_t,
+    *mut ValRaw,
+    usize,
+) -> Option<Box<wasm_trap_t>>;
 
 #[no_mangle]
 pub unsafe extern "C" fn wasmtime_func_new(
@@ -230,9 +238,11 @@ pub(crate) unsafe fn c_callback_to_rust_fn(
     callback: wasmtime_func_callback_t,
     data: *mut c_void,
     finalizer: Option<extern "C" fn(*mut std::ffi::c_void)>,
-) -> impl Fn(Caller<'_, crate::StoreData>, &[Val], &mut [Val]) -> Result<(), Trap> {
+) -> impl Fn(Caller<'_, crate::StoreData>, &[Val], &mut [Val]) -> Result<()> {
     let foreign = crate::ForeignData { data, finalizer };
     move |mut caller, params, results| {
+        drop(&foreign); // move entire foreign into this closure
+
         // Convert `params/results` to `wasmtime_val_t`. Use the previous
         // storage in `hostcall_val_storage` to help avoid allocations all the
         // time.
@@ -257,12 +267,12 @@ pub(crate) unsafe fn c_callback_to_rust_fn(
             out_results.len(),
         );
         if let Some(trap) = out {
-            return Err(trap.trap);
+            return Err(trap.error);
         }
 
         // Translate the `wasmtime_val_t` results into the `results` space
         for (i, result) in out_results.iter().enumerate() {
-            results[i] = unsafe { result.to_val() };
+            results[i] = result.to_val();
         }
 
         // Move our `vals` storage back into the store now that we no longer
@@ -292,13 +302,14 @@ pub(crate) unsafe fn c_unchecked_callback_to_rust_fn(
     callback: wasmtime_func_unchecked_callback_t,
     data: *mut c_void,
     finalizer: Option<extern "C" fn(*mut std::ffi::c_void)>,
-) -> impl Fn(Caller<'_, crate::StoreData>, *mut ValRaw) -> Result<(), Trap> {
+) -> impl Fn(Caller<'_, crate::StoreData>, &mut [ValRaw]) -> Result<()> {
     let foreign = crate::ForeignData { data, finalizer };
     move |caller, values| {
+        drop(&foreign); // move entire foreign into this closure
         let mut caller = wasmtime_caller_t { caller };
-        match callback(foreign.data, &mut caller, values) {
+        match callback(foreign.data, &mut caller, values.as_mut_ptr(), values.len()) {
             None => Ok(()),
-            Some(trap) => Err(trap.trap),
+            Some(trap) => Err(trap.error),
         }
     }
 }
@@ -340,22 +351,10 @@ pub unsafe extern "C" fn wasmtime_func_call(
             store.data_mut().wasm_val_storage = params;
             None
         }
-        Ok(Err(trap)) => match trap.downcast::<Trap>() {
-            Ok(trap) => {
-                *trap_ret = Box::into_raw(Box::new(wasm_trap_t::new(trap)));
-                None
-            }
-            Err(err) => Some(Box::new(wasmtime_error_t::from(err))),
-        },
+        Ok(Err(trap)) => store_err(trap, trap_ret),
         Err(panic) => {
-            let trap = if let Some(msg) = panic.downcast_ref::<String>() {
-                Trap::new(msg)
-            } else if let Some(msg) = panic.downcast_ref::<&'static str>() {
-                Trap::new(*msg)
-            } else {
-                Trap::new("rust panic happened")
-            };
-            *trap_ret = Box::into_raw(Box::new(wasm_trap_t::new(trap)));
+            let err = error_from_panic(panic);
+            *trap_ret = Box::into_raw(Box::new(wasm_trap_t::new(err)));
             None
         }
     }
@@ -366,10 +365,20 @@ pub unsafe extern "C" fn wasmtime_func_call_unchecked(
     store: CStoreContextMut<'_>,
     func: &Func,
     args_and_results: *mut ValRaw,
-) -> *mut wasm_trap_t {
+    trap_ret: &mut *mut wasm_trap_t,
+) -> Option<Box<wasmtime_error_t>> {
     match func.call_unchecked(store, args_and_results) {
-        Ok(()) => ptr::null_mut(),
-        Err(trap) => Box::into_raw(Box::new(wasm_trap_t::new(trap))),
+        Ok(()) => None,
+        Err(trap) => store_err(trap, trap_ret),
+    }
+}
+
+fn store_err(err: Error, trap_ret: &mut *mut wasm_trap_t) -> Option<Box<wasmtime_error_t>> {
+    if err.is::<Trap>() {
+        *trap_ret = Box::into_raw(Box::new(wasm_trap_t::new(err)));
+        None
+    } else {
+        Some(Box::new(wasmtime_error_t::from(err)))
     }
 }
 

@@ -1,9 +1,11 @@
 //! Lexer for the ISLE language.
 
-use crate::error::{Error, Result, Source};
+use crate::error::{Error, Errors, Span};
 use std::borrow::Cow;
 use std::path::Path;
 use std::sync::Arc;
+
+type Result<T> = std::result::Result<T, Errors>;
 
 /// The lexer.
 ///
@@ -43,10 +45,6 @@ pub struct Pos {
 }
 
 impl Pos {
-    /// Print this source position as `file.isle:12:34`.
-    pub fn pretty_print(&self, filenames: &[Arc<str>]) -> String {
-        format!("{}:{}:{}", filenames[self.file], self.line, self.col)
-    }
     /// Print this source position as `file.isle line 12`.
     pub fn pretty_print_line(&self, filenames: &[Arc<str>]) -> String {
         format!("{} line {}", filenames[self.file], self.line)
@@ -63,11 +61,9 @@ pub enum Token {
     /// A symbol, e.g. `Foo`.
     Symbol(String),
     /// An integer.
-    Int(i64),
+    Int(i128),
     /// `@`
     At,
-    /// `<`
-    Lt,
 }
 
 impl<'a> Lexer<'a> {
@@ -104,7 +100,7 @@ impl<'a> Lexer<'a> {
             filenames.push(f.display().to_string().into());
 
             let s = std::fs::read_to_string(f)
-                .map_err(|e| Error::from_io(e, format!("failed to read file: {}", f.display())))?;
+                .map_err(|e| Errors::from_io(e, format!("failed to read file: {}", f.display())))?;
             file_texts.push(s.into());
         }
 
@@ -141,7 +137,7 @@ impl<'a> Lexer<'a> {
             file: self.pos.file,
             offset: self.pos.offset - self.file_starts[self.pos.file],
             line: self.pos.line,
-            col: self.pos.file,
+            col: self.pos.col,
         }
     }
 
@@ -162,21 +158,21 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn error(&self, pos: Pos, msg: impl Into<String>) -> Error {
-        Error::ParseError {
-            msg: msg.into(),
-            src: Source::new(
-                self.filenames[pos.file].clone(),
-                self.file_texts[pos.file].clone(),
-            ),
-            span: miette::SourceSpan::from((self.pos().offset, 1)),
+    fn error(&self, pos: Pos, msg: impl Into<String>) -> Errors {
+        Errors {
+            errors: vec![Error::ParseError {
+                msg: msg.into(),
+                span: Span::new_single(pos),
+            }],
+            filenames: self.filenames.clone(),
+            file_texts: self.file_texts.clone(),
         }
     }
 
     fn next_token(&mut self) -> Result<Option<(Pos, Token)>> {
         fn is_sym_first_char(c: u8) -> bool {
             match c {
-                b'-' | b'0'..=b'9' | b'(' | b')' | b';' => false,
+                b'-' | b'0'..=b'9' | b'(' | b')' | b';' | b'<' | b'>' => false,
                 c if c.is_ascii_whitespace() => false,
                 _ => true,
             }
@@ -222,10 +218,6 @@ impl<'a> Lexer<'a> {
                 self.advance_pos();
                 Ok(Some((char_pos, Token::At)))
             }
-            b'<' => {
-                self.advance_pos();
-                Ok(Some((char_pos, Token::Lt)))
-            }
             c if is_sym_first_char(c) => {
                 let start = self.pos.offset;
                 let start_pos = self.pos();
@@ -240,7 +232,7 @@ impl<'a> Lexer<'a> {
                 debug_assert!(!s.is_empty());
                 Ok(Some((start_pos, Token::Symbol(s.to_string()))))
             }
-            c if (c >= b'0' && c <= b'9') || c == b'-' => {
+            c @ (b'0'..=b'9' | b'-') => {
                 let start_pos = self.pos();
                 let neg = if c == b'-' {
                     self.advance_pos();
@@ -253,7 +245,8 @@ impl<'a> Lexer<'a> {
 
                 // Check for hex literals.
                 if self.buf.get(self.pos.offset).copied() == Some(b'0')
-                    && self.buf.get(self.pos.offset + 1).copied() == Some(b'x')
+                    && (self.buf.get(self.pos.offset + 1).copied() == Some(b'x')
+                        || self.buf.get(self.pos.offset + 1).copied() == Some(b'X'))
                 {
                     self.advance_pos();
                     self.advance_pos();
@@ -263,39 +256,35 @@ impl<'a> Lexer<'a> {
                 // Find the range in the buffer for this integer literal. We'll
                 // pass this range to `i64::from_str_radix` to do the actual
                 // string-to-integer conversion.
-                let start_offset = self.pos.offset;
+                let mut s = vec![];
                 while self.pos.offset < self.buf.len()
-                    && ((radix == 10
-                        && self.buf[self.pos.offset] >= b'0'
-                        && self.buf[self.pos.offset] <= b'9')
-                        || (radix == 16
-                            && ((self.buf[self.pos.offset] >= b'0'
-                                && self.buf[self.pos.offset] <= b'9')
-                                || (self.buf[self.pos.offset] >= b'a'
-                                    && self.buf[self.pos.offset] <= b'f')
-                                || (self.buf[self.pos.offset] >= b'A'
-                                    && self.buf[self.pos.offset] <= b'F'))))
+                    && ((radix == 10 && self.buf[self.pos.offset].is_ascii_digit())
+                        || (radix == 16 && self.buf[self.pos.offset].is_ascii_hexdigit())
+                        || self.buf[self.pos.offset] == b'_')
                 {
+                    if self.buf[self.pos.offset] != b'_' {
+                        s.push(self.buf[self.pos.offset]);
+                    }
                     self.advance_pos();
                 }
-                let end_offset = self.pos.offset;
+                let s_utf8 = std::str::from_utf8(&s[..]).unwrap();
 
-                let num = i64::from_str_radix(
-                    std::str::from_utf8(&self.buf[start_offset..end_offset]).unwrap(),
-                    radix,
-                )
-                .map_err(|e| self.error(start_pos, e.to_string()))?;
+                // Support either signed range (-2^127..2^127) or
+                // unsigned range (0..2^128).
+                let num = i128::from_str_radix(s_utf8, radix)
+                    .or_else(|_| u128::from_str_radix(s_utf8, radix).map(|val| val as i128))
+                    .map_err(|e| self.error(start_pos, e.to_string()))?;
 
                 let tok = if neg {
                     Token::Int(num.checked_neg().ok_or_else(|| {
-                        self.error(start_pos, "integer literal cannot fit in i64")
+                        self.error(start_pos, "integer literal cannot fit in i128")
                     })?)
                 } else {
                     Token::Int(num)
                 };
                 Ok(Some((start_pos, tok)))
             }
-            c => panic!("Unexpected character '{}' at offset {}", c, self.pos.offset),
+            c => Err(self.error(self.pos, format!("Unexpected character '{}'", c))),
         }
     }
 
