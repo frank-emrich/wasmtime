@@ -61,7 +61,7 @@ jobs:
   cargo_deny:
     name: Cargo deny
     needs: determine
-    if: needs.determine.outputs.audit
+    if: needs.determine.outputs.audit && ${{ false }} # disabled for wasmfx
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
@@ -85,7 +85,7 @@ jobs:
   cargo_vet:
     name: Cargo vet
     needs: determine
-    if: needs.determine.outputs.audit
+    if: needs.determine.outputs.audit && ${{ false }} # disabled for wasmfx
     runs-on: ubuntu-latest
     env:
       CARGO_VET_VERSION: 0.6.1
@@ -323,7 +323,7 @@ jobs:
   # Tracking issue: https://github.com/bytecodealliance/wasmtime/issues/4992
   checks_winarm64:
     needs: determine
-    if: needs.determine.outputs.run-full
+    if: needs.determine.outputs.run-full && ${{ false }} # disabled for wasmfx
     name: Check Windows ARM64
     runs-on: windows-latest
     steps:
@@ -343,7 +343,7 @@ jobs:
   # Verify all fuzz targets compile successfully
   fuzz_targets:
     needs: determine
-    if: needs.determine.outputs.build-fuzz
+    if: needs.determine.outputs.build-fuzz && ${{ false }} # disabled for wasmfx
     name: Fuzz Targets
     runs-on: ubuntu-latest
     steps:
@@ -483,7 +483,7 @@ jobs:
   # Build and test the wasi-nn module.
   test_wasi_nn:
     needs: determine
-    if: needs.determine.outputs.run-full
+    if: needs.determine.outputs.run-full && ${{ false }} # disabled for wasmfx
     name: Test wasi-nn module
     runs-on: ubuntu-latest
     steps:
@@ -509,7 +509,7 @@ jobs:
   # Build and test the wasi-crypto module.
   test_wasi_crypto:
     needs: determine
-    if: needs.determine.outputs.run-full
+    if: needs.determine.outputs.run-full && ${{ false }} # disabled for wasmfx
     name: Test wasi-crypto module
     runs-on: ubuntu-latest
     steps:
@@ -531,7 +531,7 @@ jobs:
   build-preview1-component-adapter:
     name: Build wasi-preview1-component-adapter
     needs: determine
-    if: needs.determine.outputs.preview1-adapter
+    if: needs.determine.outputs.preview1-adapter && ${{ false }} # disabled for wasmfx
     runs-on: ubuntu-latest
     permissions:
       deployments: write
@@ -567,7 +567,7 @@ jobs:
 
   bench:
     needs: determine
-    if: needs.determine.outputs.run-full
+    if: needs.determine.outputs.run-full && ${{ false }} # disabled for wasmfx
     name: Run benchmarks
     runs-on: ubuntu-latest
     steps:
@@ -587,7 +587,7 @@ jobs:
   # Verify that cranelift's code generation is deterministic
   meta_deterministic_check:
     needs: determine
-    if: needs.determine.outputs.run-full
+    if: needs.determine.outputs.run-full && ${{ false }} # disabled for wasmfx
     name: Meta deterministic check
     runs-on: ubuntu-latest
     steps:
@@ -769,20 +769,20 @@ jobs:
       - test
       - build
       - rustfmt
-      - cargo_deny
-      - cargo_vet
+      # - cargo_deny # disabled for wasmfx
+      # - cargo_vet # disabled for wasmfx
       - doc
       - checks
-      - checks_winarm64
-      - fuzz_targets
-      - test_wasi_nn
-      - test_wasi_crypto
-      - bench
-      - meta_deterministic_check
-      - verify-publish
+      # - checks_winarm64 # disabled for wasmfx
+      # - fuzz_targets # disabled for wasmfx
+      # - test_wasi_nn # disabled for wasmfx
+      # - test_wasi_crypto # disabled for wasmfx
+      # - bench # disabled for wasmfx
+      # - meta_deterministic_check # disabled for wasmfx
+      # - verify-publish # disabled for wasmfx
       - determine
-      - miri
-      - build-preview1-component-adapter
+      # - miri # disabled for wasmfx
+      # - build-preview1-component-adapter # disabled for wasmfx
     if: always()
     steps:
     - name: Dump needs context
