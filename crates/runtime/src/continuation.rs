@@ -7,6 +7,48 @@ use wasmtime_environ::MAXIMUM_CONTINUATION_PAYLOAD_COUNT;
 use wasmtime_fibre::{Fiber, FiberStack, Suspend};
 
 /// TODO
+#[repr(C)]
+pub struct ContinuationObject {
+    fiber: *mut Box<Fiber<'static, u128, u128, u128>>,
+    args: Vec<u128>,
+    payloads: Vec<u128>,
+}
+
+/// M:1 Many-to-one mapping. A single ContinuationObject may be
+/// referenced by multiple ContinuationReference, though, only one
+/// ContinuationReference may hold a non-null reference to the object
+/// at a given time.
+#[repr(C)]
+pub struct ContinuationReference(*mut Option<*mut ContinuationObject>);
+
+/// TODO
+#[inline(always)]
+pub fn cont_ref_get_obj(contref: *mut u8) -> Result<*mut u8, TrapReason> {
+    let contref = contref as *mut ContinuationReference;
+    let contopt = unsafe { contref.as_mut().unwrap().0.as_mut().unwrap() };
+    match contopt {
+        None => Err(TrapReason::user_with_backtrace(anyhow::Error::msg(
+            "Continuation is already taken",
+        ))), // TODO(dhil): presumably we can set things up such that we always read from a non-null reference.
+        Some(contptr) => Ok(*contptr as *mut u8),
+    }
+}
+
+/// TODO
+#[inline(always)]
+pub fn cont_obj_get_args(_instance: &mut Instance, obj: *mut u8) -> *mut u8 {
+    let obj = obj as *mut ContinuationObject;
+    unsafe { (*obj).args.as_mut_ptr() as *mut u128 as *mut u8 }
+}
+
+/// TODO
+#[inline(always)]
+pub fn cont_obj_get_payloads(_instance: &mut Instance, obj: *mut u8) -> *mut u8 {
+    let obj = obj as *mut ContinuationObject;
+    unsafe { (*obj).payloads.as_mut_ptr() as *mut u128 as *mut u8 }
+}
+
+/// TODO
 #[inline(always)]
 pub fn cont_new(instance: &mut Instance, func: *mut u8) -> *mut u8 {
     let func = func as *mut VMFuncRef;
