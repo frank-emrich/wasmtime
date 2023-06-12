@@ -57,6 +57,13 @@ macro_rules! foreach_builtin_function {
             resume(vmctx: vmctx, r: pointer) -> i32;
             /// Suspends a continuation.
             suspend(vmctx: vmctx, r: i32);
+            /// Projects the continuation argument buffer.
+            cont_obj_get_args(vmctx: vmctx, r: pointer) -> pointer;
+            /// Projects the continuation suspend payloads buffer.
+            cont_obj_get_payloads(vmctx: vmctx, r: pointer) -> pointer;
+            /// Increases the capacity of the continuation object's
+            /// payloads buffer if needed.
+            cont_obj_ensure_payloads_capacity(vmctx: vmctx, r: pointer, capacity: i64);
         }
     };
 }

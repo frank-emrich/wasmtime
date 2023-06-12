@@ -638,3 +638,15 @@ fn resume(instance: &mut Instance, cont: *mut u8) -> Result<u32, TrapReason> {
 fn suspend(instance: &mut Instance, tag_index: u32) {
     crate::continuation::suspend(instance, tag_index)
 }
+
+fn cont_obj_get_args(instance: &mut Instance, contobj: *mut u8) -> *mut u8 {
+    crate::continuation::cont_obj_get_args(instance, contobj)
+}
+
+fn cont_obj_get_payloads(instance: &mut Instance, contobj: *mut u8) -> *mut u8 {
+    crate::continuation::cont_obj_get_payloads(instance, contobj)
+}
+
+fn cont_obj_ensure_payloads_capacity(_instance: &mut Instance, contobj: *mut u8, capacity: u64) {
+    crate::continuation::cont_obj_ensure_payloads_capacity(contobj as *mut crate::continuation::ContinuationObject, capacity as usize)
+}
