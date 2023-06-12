@@ -19,18 +19,19 @@ pub struct ContinuationObject {
 /// ContinuationReference may hold a non-null reference to the object
 /// at a given time.
 #[repr(C)]
-pub struct ContinuationReference(*mut Option<*mut ContinuationObject>);
+pub struct ContinuationReference(Option<*mut ContinuationObject>);
 
 /// TODO
 #[inline(always)]
 pub fn cont_ref_get_obj(contref: *mut u8) -> Result<*mut u8, TrapReason> {
     let contref = contref as *mut ContinuationReference;
-    let contopt = unsafe { contref.as_mut().unwrap().0.as_mut().unwrap() };
+    let contopt = unsafe { contref.as_mut().unwrap().0 };
     match contopt {
         None => Err(TrapReason::user_with_backtrace(anyhow::Error::msg(
             "Continuation is already taken",
-        ))), // TODO(dhil): presumably we can set things up such that we always read from a non-null reference.
-        Some(contptr) => Ok(*contptr as *mut u8),
+        ))), // TODO(dhil): presumably we can set things up such that
+             // we always read from a non-null reference.
+        Some(contptr) => Ok(contptr as *mut u8),
     }
 }
 
@@ -55,8 +56,6 @@ pub fn cont_new(instance: &mut Instance, func: *mut u8) -> *mut u8 {
     let callee_ctx = unsafe { (*func).vmctx };
     let caller_ctx = VMOpaqueContext::from_vmcontext(instance.vmctx());
     let f = unsafe {
-        // TODO(dhil): Not sure whether we should use
-        // VMWasmCallFunction or VMNativeCallFunction here.
         std::mem::transmute::<
             VMArrayCallFunction,
             unsafe extern "C" fn(*mut VMOpaqueContext, *mut VMOpaqueContext, *mut ValRaw, usize),
@@ -67,10 +66,6 @@ pub fn cont_new(instance: &mut Instance, func: *mut u8) -> *mut u8 {
         Fiber::new(
             FiberStack::new(4096).unwrap(),
             move |_first_val: (), _suspend: &Suspend<(), u32, ()>| {
-                // TODO(frank-emrich): Need to load arguments (if present) from
-                // payload storage and pass to f.
-                // Consider getting the array_call version from func
-                // to achieve this instead.
                 unsafe {
                     f(
                         callee_ctx,

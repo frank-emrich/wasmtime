@@ -2472,6 +2472,15 @@ pub fn translate_operator<FE: FuncEnvironment + ?Sized>(
                 // TODO(frank-emrich) Is it actually the case that the suspended continuation MUST
                 // be the one we resumed here? In that case we wouldn't actually have to go via memory
                 // but could just re-use the cont object on the (WASM) stack in the beginning
+
+                // ANSWER(dhil): Yes, in general it will be a
+                // completely different object. If we had some static
+                // information to tell us that the previous
+                // continuation object wasn't ever invoked again, then
+                // we could reuse it. A different question is how to
+                // avoid allocation of the intermediary "continuation
+                // proxy objects", though, for that I reckon we need
+                // fat pointers.
                 let cont = environ.typed_continuations_load_continuation_object(builder, base_addr);
 
                 // We need to terminate this block before being allowed to switch to another one
@@ -2497,30 +2506,34 @@ pub fn translate_operator<FE: FuncEnvironment + ?Sized>(
                 switch.set_entry(tag as u128, case);
                 builder.switch_to_block(case);
 
-                // Load and push arguments
+                // Load and push arguments.
                 let param_types = environ.tag_params(tag);
                 let params =
                     environ.typed_continuations_load_payloads(builder, param_types, base_addr);
 
                 state.pushn(&params);
-                // Push the continuation object
+                // Push the continuation object.
                 state.push1(cont);
                 let count = params.len() + 1;
                 let (br_destination, inputs) = translate_br_if_args(label, state);
 
-                // Now jump to the actual user-defined block handling this tag, as given by the resumetable
+                // Now jump to the actual user-defined block handling
+                // this tag, as given by the resumetable.
                 builder.ins().jump(br_destination, inputs);
                 state.popn(count);
                 case_blocks.push(case);
             }
 
-            // Note that at this point we haven't actually emitted any code for the switching logic itself,
-            // but only filled the Switch structure and created the blocks it jumps to.
+            // Note that at this point we haven't actually emitted any
+            // code for the switching logic itself, but only filled
+            // the Switch structure and created the blocks it jumps
+            // to.
 
             let forwarding_case =
                 crate::translation_utils::resumetable_forwarding_block(builder, environ)?;
 
-            // Switch block (where the actual switching logic is emitted to)
+            // Switch block (where the actual switching logic is
+            // emitted to).
             {
                 builder.switch_to_block(switch_block);
                 switch.emit(builder, tag, forwarding_case);
@@ -2530,18 +2543,19 @@ pub fn translate_operator<FE: FuncEnvironment + ?Sized>(
                 // TODO: emit effect forwarding logic.
                 builder.ins().trap(ir::TrapCode::UnreachableCodeReached);
 
-                // We can only seal the blocks we generated for each tag now, after switch.emit ran
+                // We can only seal the blocks we generated for each
+                // tag now, after switch.emit ran.
                 for case_block in case_blocks {
                     builder.seal_block(case_block);
                 }
             }
 
-            // Now, finish the return block
+            // Now, finish the return block.
             {
                 builder.switch_to_block(return_block);
                 builder.seal_block(return_block);
 
-                // Load and push the results
+                // Load and push the results.
                 let returns = environ.continuation_returns(*type_index);
                 let values = environ.typed_continuations_load_payloads(builder, returns, base_addr);
                 state.pushn(&values);
