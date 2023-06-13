@@ -69,6 +69,8 @@ macro_rules! foreach_builtin_function {
             ensure_suspend_payloads_capacity(vmctx: vmctx, capacity: i64);
             /// Drops the given continuation object.
             drop_cont_obj(vmctx: vmctx, contobj: pointer);
+            /// Crates a new continuation reference.
+            new_cont_ref(vmctx: vmctx, contobj: pointer) -> pointer;
         }
     };
 }

@@ -764,6 +764,21 @@ impl<'dummy_environment> FuncEnvironment for DummyFuncEnvironment<'dummy_environ
     ) -> ir::Value {
         todo!()
     }
+
+    fn typed_continuations_new_cont_ref(
+        &mut self,
+        _builder: &mut FunctionBuilder,
+        _contobj_addr: ir::Value,
+    ) -> ir::Value {
+        todo!()
+    }
+
+    fn typed_continuations_load_return_values(
+        &self,
+        _builder: &mut FunctionBuilder,
+        _valtypes: &[wasmtime_types::WasmType],
+        _contref_addr: ir::Value,
+    ) -> std::vec::Vec<ir::Value>;
 }
 
 impl TypeConvert for DummyEnvironment {

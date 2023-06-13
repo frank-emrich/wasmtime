@@ -67,7 +67,7 @@ pub fn drop_cont_obj(contobj: *mut ContinuationObject) {
     let args : Vec<u128> = unsafe { Vec::from_raw_parts((*contobj).args, (*contobj).len, (*contobj).capacity) };
     mem::drop(unsafe { (*contobj).fiber });
     mem::drop(args);
-    mem::drop(unsafe { contobj })
+    mem::drop(contobj)
 }
 
 /// TODO

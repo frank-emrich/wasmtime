@@ -2230,7 +2230,7 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         builder: &mut FunctionBuilder,
         _state: &FuncTranslationState,
         contref: ir::Value,
-        call_arg_types: &[WasmType],
+        _call_arg_types: &[WasmType],
         call_args: &[ir::Value],
     ) -> WasmResult<(ir::Value, ir::Value, ir::Value)> {
         // Strategy:
@@ -2429,6 +2429,20 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         builder
             .ins()
             .load(self.pointer_type(), memflags, base_addr, offset)
+    }
+
+    fn typed_continuations_new_cont_ref(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        contobj_addr: ir::Value,
+    ) -> ir::Value {
+        let new_cont_ref_index = BuiltinFunctionIndex::new_cont_ref();
+        let new_cont_ref_sig = self.builtin_function_signatures.new_cont_ref(&mut builder.func);
+        let (vmctx, new_cont_ref_addr) =
+            self.translate_load_builtin_function_address(&mut builder.cursor(), new_cont_ref_index);
+        let new_cont_ref_inst = builder.ins()
+            .call_indirect(new_cont_ref_sig, new_cont_ref_addr, &[vmctx, contobj_addr]);
+        builder.func.dfg.first_result(new_cont_ref_inst)
     }
 
     fn use_x86_blendv_for_relaxed_laneselect(&self, ty: Type) -> bool {
