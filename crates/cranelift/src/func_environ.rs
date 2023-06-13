@@ -2445,6 +2445,19 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         builder.func.dfg.first_result(new_cont_ref_inst)
     }
 
+    fn typed_continuations_load_return_values(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        valtypes: &[wasmtime_types::WasmType],
+        contref_addr: ir::Value,
+    ) -> std::vec::Vec<ir::Value> {
+        // First get the continuation object.
+
+        // Now get the args buffer.
+
+        todo!()
+    }
+
     fn use_x86_blendv_for_relaxed_laneselect(&self, ty: Type) -> bool {
         self.isa.has_x86_blendv_lowering(ty)
     }
