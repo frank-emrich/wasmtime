@@ -675,7 +675,7 @@ impl<'dummy_environment> FuncEnvironment for DummyFuncEnvironment<'dummy_environ
 
     fn translate_cont_new(
         &mut self,
-        _pos: FuncCursor,
+        _builder: &mut FunctionBuilder,
         _state: &FuncTranslationState,
         _func: ir::Value,
         _arg_types: &[wasmtime_types::WasmType],
@@ -735,6 +735,15 @@ impl<'dummy_environment> FuncEnvironment for DummyFuncEnvironment<'dummy_environ
         _valtypes: &[WasmType],
         _base_addr: ir::Value,
     ) -> Vec<ir::Value> {
+        todo!()
+    }
+
+    fn typed_continuations_store_resume_args(
+        &mut self,
+        _builder: &mut FunctionBuilder,
+        _values: &[ir::Value],
+        _contref: ir::Value,
+    ) {
         todo!()
     }
 

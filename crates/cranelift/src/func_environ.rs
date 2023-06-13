@@ -2203,27 +2203,33 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
 
     fn translate_cont_new(
         &mut self,
-        mut pos: cranelift_codegen::cursor::FuncCursor<'_>,
+        builder: &mut FunctionBuilder,
         _state: &FuncTranslationState,
         func: ir::Value,
-        _arg_types: &[WasmType],
+        arg_types: &[WasmType],
     ) -> WasmResult<ir::Value> {
         let builtin_index = BuiltinFunctionIndex::cont_new();
-        let builtin_sig = self.builtin_function_signatures.cont_new(&mut pos.func);
+        let builtin_sig = self.builtin_function_signatures.cont_new(&mut builder.func);
         let (vmctx, builtin_addr) =
-            self.translate_load_builtin_function_address(&mut pos, builtin_index);
+            self.translate_load_builtin_function_address(&mut builder.cursor(), builtin_index);
 
-        let call_inst = pos
+        let nargs = builder.ins().iconst(I64, arg_types.len() as i64);
+
+        let call_inst = builder
             .ins()
-            .call_indirect(builtin_sig, builtin_addr, &[vmctx, func]);
-        Ok(pos.func.dfg.first_result(call_inst))
+            .call_indirect(builtin_sig, builtin_addr, &[vmctx, func, nargs]);
+        Ok(builder.func.dfg.first_result(call_inst))
     }
 
+    // TODO(dhil): Currently, this function invokes
+    // `translate_load_builtin_function_address` multiple times, which
+    // causes repeated allocation of values pointing to the vmctx. We
+    // should refactor or inline this logic at some point.
     fn translate_resume(
         &mut self,
         builder: &mut FunctionBuilder,
         _state: &FuncTranslationState,
-        cont: ir::Value,
+        contref: ir::Value,
         call_arg_types: &[WasmType],
         call_args: &[ir::Value],
     ) -> WasmResult<(ir::Value, ir::Value, ir::Value)> {
@@ -2247,13 +2253,12 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         let (vmctx, builtin_addr) =
             self.translate_load_builtin_function_address(&mut builder.cursor(), builtin_index);
 
-        // Second step: store `call_args` in the typed continuations
-        // store.
-        self.typed_continuations_store_payloads(builder, call_arg_types, call_args, vmctx);
+        // Second step: store `call_args` on the continuation object.
+        self.typed_continuations_store_resume_args(builder, call_args, contref);
 
         // Third step: setup the call arguments and apply the builtin
         // resume function.
-        let real_args = vec![vmctx, cont];
+        let real_args = vec![vmctx, contref];
 
         // Now we perform the call.
         let call_inst = builder
@@ -2352,6 +2357,41 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
             panic!("Unsupported continuation arity!");
         }
         values
+    }
+
+    fn typed_continuations_store_resume_args(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        values: &[ir::Value],
+        contref: ir::Value,
+    ) {
+        let cont_ref_get_cont_obj_index = BuiltinFunctionIndex::cont_ref_get_cont_obj();
+        let cont_ref_get_cont_obj_sig = self.builtin_function_signatures.cont_ref_get_cont_obj(&mut builder.func);
+        let (vmctx, cont_ref_get_cont_obj_addr) =
+            self.translate_load_builtin_function_address(&mut builder.cursor(), cont_ref_get_cont_obj_index);
+
+        let contobj_inst = builder.ins()
+            .call_indirect(cont_ref_get_cont_obj_sig, cont_ref_get_cont_obj_addr, &[vmctx, contref]);
+        let contobj = builder.func.dfg.first_result(contobj_inst);
+
+        let nargs = builder.ins().iconst(I64, values.len() as i64);
+
+        let cont_obj_get_args_at_next_free_index = BuiltinFunctionIndex::cont_obj_get_args_at_next_free();
+        let cont_obj_get_args_at_next_free_sig = self.builtin_function_signatures.cont_obj_get_args_at_next_free(&mut builder.func);
+        let (vmctx, cont_obj_get_args_at_next_free_addr) =
+            self.translate_load_builtin_function_address(&mut builder.cursor(), cont_obj_get_args_at_next_free_index);
+        let args_ptr_inst = builder.ins()
+            .call_indirect(cont_obj_get_args_at_next_free_sig, cont_obj_get_args_at_next_free_addr, &[vmctx, contobj, nargs]);
+        let args_ptr = builder.func.dfg.first_result(args_ptr_inst);
+
+        // Store the values.
+        let memflags = ir::MemFlags::trusted();
+        let mut offset =
+            i32::try_from(0).unwrap();
+        for value in values {
+            builder.ins().store(memflags, *value, args_ptr, offset);
+            offset += self.offsets.ptr.maximum_value_size() as i32;
+        }
     }
 
     //TODO(frank-emrich) Consider removing `valtypes` argument, as values are inherently typed

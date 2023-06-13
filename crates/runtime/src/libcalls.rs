@@ -627,8 +627,8 @@ pub mod relocs {
 
 // Builtins for continuations. These are thin wrappers around the
 // respective definitions in continuation.rs.
-fn cont_new(instance: &mut Instance, func: *mut u8) -> *mut u8 {
-    crate::continuation::cont_new(instance, func)
+fn cont_new(instance: &mut Instance, func: *mut u8, nargs: u64) -> *mut u8 {
+    crate::continuation::cont_new(instance, func, nargs as usize)
 }
 
 fn resume(instance: &mut Instance, cont: *mut u8) -> Result<u32, TrapReason> {
@@ -640,13 +640,25 @@ fn suspend(instance: &mut Instance, tag_index: u32) {
 }
 
 fn cont_obj_get_args(instance: &mut Instance, contobj: *mut u8) -> *mut u8 {
-    crate::continuation::cont_obj_get_args(instance, contobj)
+    crate::continuation::cont_obj_get_args(instance, contobj as *mut crate::continuation::ContinuationObject) as *mut u8
 }
 
-fn cont_obj_get_payloads(instance: &mut Instance, contobj: *mut u8) -> *mut u8 {
-    crate::continuation::cont_obj_get_payloads(instance, contobj)
+fn cont_obj_get_args_at_next_free(instance: &mut Instance, contobj: *mut u8, nargs: u64) -> *mut u8 {
+    crate::continuation::cont_obj_get_args_at_next_free(instance, contobj as *mut crate::continuation::ContinuationObject, nargs as usize) as *mut u8
 }
 
-fn cont_obj_ensure_payloads_capacity(_instance: &mut Instance, contobj: *mut u8, capacity: u64) {
-    crate::continuation::cont_obj_ensure_payloads_capacity(contobj as *mut crate::continuation::ContinuationObject, capacity as usize)
+fn drop_cont_obj(_instance: &mut Instance, contobj: *mut u8) {
+    crate::continuation::drop_cont_obj(contobj as *mut crate::continuation::ContinuationObject)
+}
+
+fn ensure_suspend_payloads_capacity(instance: &mut Instance, min_capacity: u64) {
+    crate::continuation::ensure_suspend_payloads_capacity(instance, min_capacity as usize)
+}
+
+fn new_cont_ref(_instance: &mut Instance, contobj: *mut u8) -> *mut u8 {
+    crate::continuation::new_cont_ref(contobj as *mut crate::continuation::ContinuationObject) as *mut u8
+}
+
+fn cont_ref_get_cont_obj(_instance: &mut Instance, contref: *mut u8) -> Result<*mut u8, TrapReason> {
+    Ok(crate::continuation::cont_ref_get_cont_obj(contref as *mut crate::continuation::ContinuationReference)? as *mut u8)
 }

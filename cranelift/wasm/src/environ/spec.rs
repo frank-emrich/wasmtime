@@ -566,7 +566,7 @@ pub trait FuncEnvironment: TargetEnvironment {
     /// TODO(dhil): write documentation.
     fn translate_cont_new(
         &mut self,
-        pos: FuncCursor,
+        builder: &mut FunctionBuilder,
         state: &FuncTranslationState,
         func: ir::Value,
         arg_types: &[wasmtime_types::WasmType],
@@ -619,6 +619,14 @@ pub trait FuncEnvironment: TargetEnvironment {
         valtypes: &[wasmtime_types::WasmType],
         values: &[ir::Value],
         base_addr: ir::Value,
+    );
+
+    /// TODO
+    fn typed_continuations_store_resume_args(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        values: &[ir::Value],
+        contref: ir::Value,
     );
 
     /// TODO

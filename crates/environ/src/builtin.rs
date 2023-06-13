@@ -52,18 +52,23 @@ macro_rules! foreach_builtin_function {
             /// Invoked when we reach a new epoch.
             new_epoch(vmctx: vmctx) -> i64;
             /// Creates a new continuation from a funcref.
-            cont_new(vmctx: vmctx, r: pointer) -> pointer;
+            cont_new(vmctx: vmctx, r: pointer, nargs: i64) -> pointer;
             /// Resumes a continuation.
             resume(vmctx: vmctx, r: pointer) -> i32;
             /// Suspends a continuation.
             suspend(vmctx: vmctx, r: i32);
             /// Projects the continuation argument buffer.
             cont_obj_get_args(vmctx: vmctx, r: pointer) -> pointer;
+            /// Projects the continuation argument buffer pointing at
+            /// the next free slot.
+            cont_obj_get_args_at_next_free(vmctx: vmctx, r: pointer, nargs: i64) -> pointer;
             /// Projects the continuation suspend payloads buffer.
-            cont_obj_get_payloads(vmctx: vmctx, r: pointer) -> pointer;
+            cont_ref_get_cont_obj(vmctx: vmctx, r: pointer) -> pointer;
             /// Increases the capacity of the continuation object's
             /// payloads buffer if needed.
-            cont_obj_ensure_payloads_capacity(vmctx: vmctx, r: pointer, capacity: i64);
+            ensure_suspend_payloads_capacity(vmctx: vmctx, capacity: i64);
+            /// Drops the given continuation object.
+            drop_cont_obj(vmctx: vmctx, contobj: pointer);
         }
     };
 }
