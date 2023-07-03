@@ -4,7 +4,6 @@ use crate::instance::TopOfStackPointer;
 use crate::vmcontext::{VMArrayCallFunction, VMFuncRef, VMOpaqueContext, ValRaw};
 use crate::{Instance, TrapReason};
 use std::mem;
-use wasmtime_environ::MAXIMUM_CONTINUATION_PAYLOAD_COUNT;
 use wasmtime_fibre::{Fiber, FiberStack, Suspend};
 
 type ContinuationFiber = Fiber<'static, (), u32, ()>;

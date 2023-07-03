@@ -606,7 +606,7 @@ pub trait FuncEnvironment: TargetEnvironment {
 
     /// TODO
     fn typed_continuations_load_return_values(
-        &self,
+        &mut self,
         builder: &mut FunctionBuilder,
         valtypes: &[wasmtime_types::WasmType],
         contref_addr: ir::Value,

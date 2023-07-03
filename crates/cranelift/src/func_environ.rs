@@ -2469,7 +2469,7 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
     fn typed_continuations_load_return_values(
         &mut self,
         builder: &mut FunctionBuilder,
-        valtypes: &[wasmtime_types::WasmType],
+        valtypes: &[WasmType],
         contref_addr: ir::Value,
     ) -> std::vec::Vec<ir::Value> {
         // First get the continuation object.

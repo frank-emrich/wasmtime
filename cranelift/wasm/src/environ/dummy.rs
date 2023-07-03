@@ -774,11 +774,13 @@ impl<'dummy_environment> FuncEnvironment for DummyFuncEnvironment<'dummy_environ
     }
 
     fn typed_continuations_load_return_values(
-        &self,
+        &mut self,
         _builder: &mut FunctionBuilder,
-        _valtypes: &[wasmtime_types::WasmType],
+        _valtypes: &[WasmType],
         _contref_addr: ir::Value,
-    ) -> std::vec::Vec<ir::Value>;
+    ) -> std::vec::Vec<ir::Value> {
+        unimplemented!()
+    }
 }
 
 impl TypeConvert for DummyEnvironment {
