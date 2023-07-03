@@ -2215,9 +2215,10 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
 
         let nargs = builder.ins().iconst(I64, arg_types.len() as i64);
 
-        let call_inst = builder
-            .ins()
-            .call_indirect(builtin_sig, builtin_addr, &[vmctx, func, nargs]);
+        let call_inst =
+            builder
+                .ins()
+                .call_indirect(builtin_sig, builtin_addr, &[vmctx, func, nargs]);
         Ok(builder.func.dfg.first_result(call_inst))
     }
 
@@ -2366,28 +2367,43 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         contref: ir::Value,
     ) {
         let cont_ref_get_cont_obj_index = BuiltinFunctionIndex::cont_ref_get_cont_obj();
-        let cont_ref_get_cont_obj_sig = self.builtin_function_signatures.cont_ref_get_cont_obj(&mut builder.func);
-        let (vmctx, cont_ref_get_cont_obj_addr) =
-            self.translate_load_builtin_function_address(&mut builder.cursor(), cont_ref_get_cont_obj_index);
+        let cont_ref_get_cont_obj_sig = self
+            .builtin_function_signatures
+            .cont_ref_get_cont_obj(&mut builder.func);
+        let (vmctx, cont_ref_get_cont_obj_addr) = self.translate_load_builtin_function_address(
+            &mut builder.cursor(),
+            cont_ref_get_cont_obj_index,
+        );
 
-        let contobj_inst = builder.ins()
-            .call_indirect(cont_ref_get_cont_obj_sig, cont_ref_get_cont_obj_addr, &[vmctx, contref]);
+        let contobj_inst = builder.ins().call_indirect(
+            cont_ref_get_cont_obj_sig,
+            cont_ref_get_cont_obj_addr,
+            &[vmctx, contref],
+        );
         let contobj = builder.func.dfg.first_result(contobj_inst);
 
         let nargs = builder.ins().iconst(I64, values.len() as i64);
 
-        let cont_obj_get_args_at_next_free_index = BuiltinFunctionIndex::cont_obj_get_args_at_next_free();
-        let cont_obj_get_args_at_next_free_sig = self.builtin_function_signatures.cont_obj_get_args_at_next_free(&mut builder.func);
-        let (vmctx, cont_obj_get_args_at_next_free_addr) =
-            self.translate_load_builtin_function_address(&mut builder.cursor(), cont_obj_get_args_at_next_free_index);
-        let args_ptr_inst = builder.ins()
-            .call_indirect(cont_obj_get_args_at_next_free_sig, cont_obj_get_args_at_next_free_addr, &[vmctx, contobj, nargs]);
+        let cont_obj_get_args_at_next_free_index =
+            BuiltinFunctionIndex::cont_obj_get_args_at_next_free();
+        let cont_obj_get_args_at_next_free_sig = self
+            .builtin_function_signatures
+            .cont_obj_get_args_at_next_free(&mut builder.func);
+        let (vmctx, cont_obj_get_args_at_next_free_addr) = self
+            .translate_load_builtin_function_address(
+                &mut builder.cursor(),
+                cont_obj_get_args_at_next_free_index,
+            );
+        let args_ptr_inst = builder.ins().call_indirect(
+            cont_obj_get_args_at_next_free_sig,
+            cont_obj_get_args_at_next_free_addr,
+            &[vmctx, contobj, nargs],
+        );
         let args_ptr = builder.func.dfg.first_result(args_ptr_inst);
 
         // Store the values.
         let memflags = ir::MemFlags::trusted();
-        let mut offset =
-            i32::try_from(0).unwrap();
+        let mut offset = i32::try_from(0).unwrap();
         for value in values {
             builder.ins().store(memflags, *value, args_ptr, offset);
             offset += self.offsets.ptr.maximum_value_size() as i32;
@@ -2437,11 +2453,16 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         contobj_addr: ir::Value,
     ) -> ir::Value {
         let new_cont_ref_index = BuiltinFunctionIndex::new_cont_ref();
-        let new_cont_ref_sig = self.builtin_function_signatures.new_cont_ref(&mut builder.func);
+        let new_cont_ref_sig = self
+            .builtin_function_signatures
+            .new_cont_ref(&mut builder.func);
         let (vmctx, new_cont_ref_addr) =
             self.translate_load_builtin_function_address(&mut builder.cursor(), new_cont_ref_index);
-        let new_cont_ref_inst = builder.ins()
-            .call_indirect(new_cont_ref_sig, new_cont_ref_addr, &[vmctx, contobj_addr]);
+        let new_cont_ref_inst = builder.ins().call_indirect(
+            new_cont_ref_sig,
+            new_cont_ref_addr,
+            &[vmctx, contobj_addr],
+        );
         builder.func.dfg.first_result(new_cont_ref_inst)
     }
 

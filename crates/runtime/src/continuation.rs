@@ -1,9 +1,9 @@
 //! Continuations TODO
 
-use std::mem;
 use crate::instance::TopOfStackPointer;
 use crate::vmcontext::{VMArrayCallFunction, VMFuncRef, VMOpaqueContext, ValRaw};
 use crate::{Instance, TrapReason};
+use std::mem;
 use wasmtime_environ::MAXIMUM_CONTINUATION_PAYLOAD_COUNT;
 use wasmtime_fibre::{Fiber, FiberStack, Suspend};
 
@@ -28,13 +28,15 @@ pub struct ContinuationReference(Option<*mut ContinuationObject>);
 
 /// TODO
 #[inline(always)]
-pub fn cont_ref_get_cont_obj(contref: *mut ContinuationReference) -> Result<*mut ContinuationObject, TrapReason> {
+pub fn cont_ref_get_cont_obj(
+    contref: *mut ContinuationReference,
+) -> Result<*mut ContinuationObject, TrapReason> {
     let contopt = unsafe { contref.as_mut().unwrap().0 };
     match contopt {
         None => Err(TrapReason::user_with_backtrace(anyhow::Error::msg(
             "Continuation is already taken",
         ))), // TODO(dhil): presumably we can set things up such that
-             // we always read from a non-null reference.
+        // we always read from a non-null reference.
         Some(contobj) => Ok(contobj as *mut ContinuationObject),
     }
 }
@@ -47,7 +49,11 @@ pub fn cont_obj_get_args(_instance: &mut Instance, obj: *mut ContinuationObject)
 
 /// TODO
 #[inline(always)]
-pub fn cont_obj_get_args_at_next_free(instance: &mut Instance, obj: *mut ContinuationObject, nargs: usize) -> *mut u128 {
+pub fn cont_obj_get_args_at_next_free(
+    instance: &mut Instance,
+    obj: *mut ContinuationObject,
+    nargs: usize,
+) -> *mut u128 {
     let args_ptr = cont_obj_get_args(instance, obj);
     let args_len = unsafe { (*obj).len };
     unsafe { (*obj).len += nargs };
@@ -64,7 +70,8 @@ pub fn new_cont_ref(contobj: *mut ContinuationObject) -> *mut ContinuationRefere
 /// TODO
 #[inline(always)]
 pub fn drop_cont_obj(contobj: *mut ContinuationObject) {
-    let args : Vec<u128> = unsafe { Vec::from_raw_parts((*contobj).args, (*contobj).len, (*contobj).capacity) };
+    let args: Vec<u128> =
+        unsafe { Vec::from_raw_parts((*contobj).args, (*contobj).len, (*contobj).capacity) };
     mem::drop(unsafe { (*contobj).fiber });
     mem::drop(args);
     mem::drop(contobj)
@@ -96,15 +103,8 @@ pub fn cont_new(instance: &mut Instance, func: *mut u8, nargs: usize) -> *mut u8
     let fiber = Box::new(
         Fiber::new(
             FiberStack::new(4096).unwrap(),
-            move |_first_val: (), _suspend: &Yield| {
-                unsafe {
-                    f(
-                        callee_ctx,
-                        caller_ctx,
-                        args_ptr as *mut ValRaw,
-                        nargs,
-                    )
-                }
+            move |_first_val: (), _suspend: &Yield| unsafe {
+                f(callee_ctx, caller_ctx, args_ptr as *mut ValRaw, nargs)
             },
         )
         .unwrap(),
@@ -114,7 +114,7 @@ pub fn cont_new(instance: &mut Instance, func: *mut u8, nargs: usize) -> *mut u8
         fiber: Box::into_raw(fiber),
         len: 0,
         capacity: nargs,
-        args: args_ptr
+        args: args_ptr,
     });
     let contref = new_cont_ref(Box::into_raw(contobj));
     contref as *mut u8 // TODO(dhil): we need memory clean up of
@@ -138,8 +138,8 @@ pub fn resume(instance: &mut Instance, contraw: *mut u8) -> Result<u32, TrapReas
             instance.set_tsp(TopOfStackPointer::from_raw(fiber_stack.top().unwrap()));
             unsafe {
                 (*(*(*instance.store()).vmruntime_limits())
-                 .stack_limit
-                 .get_mut()) = 0
+                    .stack_limit
+                    .get_mut()) = 0
             };
             match unsafe { fiber.as_mut().unwrap().resume(()) } {
                 Ok(()) => {
