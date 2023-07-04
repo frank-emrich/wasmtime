@@ -28,18 +28,20 @@ impl Payload {
         };
     }
 
-    fn ensure_capacity(&mut self, capacity: usize) {
-        assert!(capacity != 0);
+    fn ensure_capacity(&mut self, requested_capacity: usize) {
+        assert!(requested_capacity != 0);
 
         if self.capacity == 0 {
             assert!(unsafe { self.data.as_ref() }.is_none());
             assert!(self.length == 0);
-            let mut vec = Vec::with_capacity(capacity);
+            let mut vec = Vec::with_capacity(requested_capacity);
             let ptr = vec.as_mut_ptr();
             self.data = ptr;
-        } else {
+        } else if requested_capacity > self.capacity {
             let mut vec = unsafe { Vec::from_raw_parts(self.data, self.length, self.capacity) };
-            vec.resize(capacity, 0)
+            vec.resize(requested_capacity, 0);
+            let ptr = vec.as_mut_ptr();
+            self.data = ptr;
         }
     }
 }
