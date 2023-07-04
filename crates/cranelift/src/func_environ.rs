@@ -105,26 +105,6 @@ macro_rules! declare_function_signatures {
 
 wasmtime_environ::foreach_builtin_function!(declare_function_signatures);
 
-// macro_rules! generate_builtin_call {
-//     ($builtin_name: ident, $self : ident, $builder: ident, $args: ident) => {
-//         {
-//         let index = BuiltinFunctionIndex::$builtin_name();
-//         let sig = $self
-//             .builtin_function_signatures
-//             .$builtin_name(&mut $builder.func);
-//         let (vmctx, addr) =
-//             $self.translate_load_builtin_function_address(&mut $builder.cursor(), index);
-//         $args.insert(0, vmctx);
-//         let call_inst = $builder.ins().call_indirect(
-//             sig,
-//             addr,
-//             &$args
-//         );
-//         $builder.func.dfg.first_result(call_inst)
-//         }
-//     };
-// }
-
 /// The `FuncEnvironment` implementation for use by the `ModuleEnvironment`.
 pub struct FuncEnvironment<'module_environment> {
     isa: &'module_environment (dyn TargetIsa + 'module_environment),
@@ -887,7 +867,6 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
         sig: ir::SigRef,
         args: Vec<ir::Value>,
     ) -> ir::Value {
-        //let sig = sig(&mut builder.func);
         let mut args = args;
         let (vmctx, addr) =
             self.translate_load_builtin_function_address(&mut builder.cursor(), index);
@@ -895,6 +874,17 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
         let call_inst = builder.ins().call_indirect(sig, addr, &args);
         return builder.func.dfg.first_result(call_inst);
     }
+}
+
+macro_rules! generate_builtin_call {
+    ($self : ident, $builder: ident, $builtin_name: ident, $args: expr) => {{
+        let index = BuiltinFunctionIndex::$builtin_name();
+        let sig = $self
+            .builtin_function_signatures
+            .$builtin_name(&mut $builder.func);
+        let args = $args.to_vec();
+        $self.generate_builtin_call($builder, index, sig, args)
+    }};
 }
 
 impl TypeConvert for FuncEnvironment<'_> {
@@ -2507,23 +2497,7 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         builder: &mut FunctionBuilder,
         contobj_addr: ir::Value,
     ) -> ir::Value {
-        // let mut args = vec![contobj_addr];
-        // return generate_builtin_call!(new_cont_ref, self, builder, args);
-
-        todo!()
-
-        // let new_cont_ref_index = BuiltinFunctionIndex::new_cont_ref();
-        // let new_cont_ref_sig = self
-        //     .builtin_function_signatures
-        //     .new_cont_ref(&mut builder.func);
-        // let (vmctx, new_cont_ref_addr) =
-        //     self.translate_load_builtin_function_address(&mut builder.cursor(), new_cont_ref_index);
-        // let new_cont_ref_inst = builder.ins().call_indirect(
-        //     new_cont_ref_sig,
-        //     new_cont_ref_addr,
-        //     &[vmctx, contobj_addr],
-        // );
-        // builder.func.dfg.first_result(new_cont_ref_inst)
+        return generate_builtin_call!(self, builder, new_cont_ref, [contobj_addr]);
     }
 
     fn typed_continuations_load_return_values(
@@ -2532,28 +2506,27 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         valtypes: &[WasmType],
         contref: ir::Value,
     ) -> std::vec::Vec<ir::Value> {
-        todo!()
-        // let mut values = vec!([]);
+        let mut values = vec![];
 
-        // if valtypes.len() > 0 {
-        //     let cont_obj = cont_ref_get_cont_obj(contref);
-        //     let mut builtin_call_args = vec![contref];
-        //     let result_buffer_addr = generate_builtin_call!(cont_obj_get_results, self, builder, builtin_call_args);
+        if valtypes.len() > 0 {
+            let cont_obj = self.typed_continuations_cont_ref_get_cont_obj(builder, contref);
+            let result_buffer_addr =
+                generate_builtin_call!(self, builder, cont_obj_get_results, [cont_obj]);
 
-        //     let offset = result_buffer_addr;
-        //     let memflags = ir::MemFlags::trusted();
-        //     for valtype in valtypes {
-        //         let val = builder.ins().load(
-        //             super::value_type(self.isa, *valtype),
-        //             memflags,
-        //             base_addr,
-        //             offset,
-        //         );
-        //         values.push(val);
-        //         offset += self.offsets.ptr.maximum_value_size() as i32;
-        //     }
-        // }
-        // return values;
+            let mut offset = 0;
+            let memflags = ir::MemFlags::trusted();
+            for valtype in valtypes {
+                let val = builder.ins().load(
+                    super::value_type(self.isa, *valtype),
+                    memflags,
+                    result_buffer_addr,
+                    offset,
+                );
+                values.push(val);
+                offset += self.offsets.ptr.maximum_value_size() as i32;
+            }
+        }
+        return values;
     }
 
     fn use_x86_blendv_for_relaxed_laneselect(&self, ty: Type) -> bool {
