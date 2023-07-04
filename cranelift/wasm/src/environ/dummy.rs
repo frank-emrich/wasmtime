@@ -781,6 +781,14 @@ impl<'dummy_environment> FuncEnvironment for DummyFuncEnvironment<'dummy_environ
     ) -> std::vec::Vec<ir::Value> {
         unimplemented!()
     }
+
+    fn typed_continuations_cont_ref_get_cont_obj(
+        &mut self,
+        _builder: &mut FunctionBuilder,
+        _contref: ir::Value,
+    ) -> ir::Value {
+        unimplemented!()
+    }
 }
 
 impl TypeConvert for DummyEnvironment {

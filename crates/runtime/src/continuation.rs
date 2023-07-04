@@ -107,6 +107,7 @@ pub fn cont_obj_get_results(obj: *mut ContinuationObject) -> *mut u128 {
     unsafe { (*obj).results.unwrap() }
 }
 
+/// TODO
 #[inline(always)]
 pub fn cont_obj_get_next_free_payload_slot(obj: *mut ContinuationObject) -> *mut u128 {
     let args_len = unsafe { (*obj).payload.length };

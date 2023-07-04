@@ -676,7 +676,11 @@ fn cont_obj_drop(_instance: &mut Instance, contobj: *mut u8) {
     crate::continuation::drop_cont_obj(contobj as *mut crate::continuation::ContinuationObject)
 }
 
-fn ensure_suspend_payloads_capacity(_instance: &mut Instance, contobj: *mut u8, min_capacity: u64) {
+fn cont_obj_ensure_payloads_capacity(
+    _instance: &mut Instance,
+    contobj: *mut u8,
+    min_capacity: u64,
+) {
     crate::continuation::ensure_suspend_payloads_capacity(
         contobj as *mut crate::continuation::ContinuationObject,
         min_capacity as usize,

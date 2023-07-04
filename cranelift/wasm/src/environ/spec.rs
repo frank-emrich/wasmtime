@@ -657,6 +657,13 @@ pub trait FuncEnvironment: TargetEnvironment {
         contobj_addr: ir::Value,
     ) -> ir::Value;
 
+    /// TODO
+    fn typed_continuations_cont_ref_get_cont_obj(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        contref: ir::Value,
+    ) -> ir::Value;
+
     /// Returns whether the CLIF `x86_blendv` instruction should be used for the
     /// relaxed simd `*.relaxed_laneselect` instruction for the specified type.
     fn use_x86_blendv_for_relaxed_laneselect(&self, ty: Type) -> bool {
