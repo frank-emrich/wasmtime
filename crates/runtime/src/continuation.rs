@@ -3,19 +3,62 @@
 use crate::instance::TopOfStackPointer;
 use crate::vmcontext::{VMArrayCallFunction, VMFuncRef, VMOpaqueContext, ValRaw};
 use crate::{Instance, TrapReason};
+use std::cmp;
 use std::mem;
+use std::ptr;
 use wasmtime_fibre::{Fiber, FiberStack, Suspend};
 
 type ContinuationFiber = Fiber<'static, (), u32, ()>;
 type Yield = Suspend<(), u32, ()>;
 
+/// Similar to Vector<*mut u128>, but allowing us to hand out the `data` pointer to generated code.
+struct Payload {
+    length: usize,
+    capacity: usize,
+    /// This is null if and only if capacity (and thus also payload_length) are 0.
+    data: *mut u128,
+}
+
+impl Payload {
+    fn empty() -> Payload {
+        return Payload {
+            length: 0,
+            capacity: 0,
+            data: ptr::null_mut(),
+        };
+    }
+
+    fn ensure_capacity(&mut self, capacity: usize) {
+        assert!(capacity != 0);
+
+        if self.capacity == 0 {
+            assert!(unsafe { self.data.as_ref() }.is_none());
+            assert!(self.length == 0);
+            let mut vec = Vec::with_capacity(capacity);
+            let ptr = vec.as_mut_ptr();
+            self.data = ptr;
+        } else {
+            let mut vec = unsafe { Vec::from_raw_parts(self.data, self.length, self.capacity) };
+            vec.resize(capacity, 0)
+        }
+    }
+}
+
 /// TODO
 #[repr(C)]
 pub struct ContinuationObject {
     fiber: *mut ContinuationFiber,
-    len: usize,
-    capacity: usize,
-    args: *mut u128,
+
+    /// Used to store payload data that is
+    /// 1. supplied by cont.bind
+    /// 2. supplied by resume
+    /// 3. supplied when suspending to a tag
+    payload: Payload,
+
+    /// Becomes Some once the initial resume is executed.
+    /// The enclosed pointer is null if and only if the function passed to `cont.new` has 0 parameters and return values.
+    /// If the continuation finishes normally (i.e., the underlying function returns), this contains the returned data.
+    results: Option<*mut u128>,
 }
 
 /// M:1 Many-to-one mapping. A single ContinuationObject may be
@@ -42,21 +85,32 @@ pub fn cont_ref_get_cont_obj(
 
 /// TODO
 #[inline(always)]
-pub fn cont_obj_get_args(_instance: &mut Instance, obj: *mut ContinuationObject) -> *mut u128 {
-    unsafe { (*obj).args }
+pub fn cont_obj_get_payloads(obj: *mut ContinuationObject) -> *mut u128 {
+    // This panics if `data` is null, which is the case if `capacity` is 0.
+    // This means that generated code acting on payloads must *not* work
+    // in a way such that it unconditionally asks for the payload pointer
+    // and then only accesses it if it actually needs to read or write payload data.
+    assert!(unsafe { (*obj).payload.data.as_ref() }.is_some());
+    unsafe { (*obj).payload.data }
 }
 
 /// TODO
 #[inline(always)]
-pub fn cont_obj_get_args_at_next_free(
-    instance: &mut Instance,
-    obj: *mut ContinuationObject,
-    nargs: usize,
-) -> *mut u128 {
-    let args_ptr = cont_obj_get_args(instance, obj);
-    let args_len = unsafe { (*obj).len };
-    unsafe { (*obj).len += nargs };
-    unsafe { args_ptr.offset(args_len as isize) }
+pub fn cont_obj_reset_payloads(obj: *mut ContinuationObject) {
+    unsafe { (*obj).payload.length = 0 };
+}
+
+/// TODO
+#[inline(always)]
+pub fn cont_obj_get_results(obj: *mut ContinuationObject) -> *mut u128 {
+    assert!(unsafe { (*obj).results.unwrap().as_ref().is_some() });
+    unsafe { (*obj).results.unwrap() }
+}
+
+#[inline(always)]
+pub fn cont_obj_get_next_free_payload_slot(obj: *mut ContinuationObject) -> *mut u128 {
+    let args_len = unsafe { (*obj).payload.length };
+    unsafe { (*obj).payload.data.offset(args_len as isize) }
 }
 
 /// TODO
@@ -69,17 +123,18 @@ pub fn new_cont_ref(contobj: *mut ContinuationObject) -> *mut ContinuationRefere
 /// TODO
 #[inline(always)]
 pub fn drop_cont_obj(contobj: *mut ContinuationObject) {
-    let args: Vec<u128> =
-        unsafe { Vec::from_raw_parts((*contobj).args, (*contobj).len, (*contobj).capacity) };
     mem::drop(unsafe { (*contobj).fiber });
-    mem::drop(args);
+    unsafe {
+        mem::drop((*contobj).payload.data);
+        (*contobj).results.map_or((), mem::drop);
+    }
     mem::drop(contobj)
 }
 
 /// TODO
 #[inline(always)]
-pub fn ensure_suspend_payloads_capacity(_instance: &mut Instance, _npayloads: usize) {
-    todo!()
+pub fn ensure_suspend_payloads_capacity(obj: *mut ContinuationObject, capacity: usize) {
+    unsafe { (*obj).payload.ensure_capacity(capacity) };
     // if unsafe { (*contobj).payloads.len() } < npayloads {
     //     Vec::resize(unsafe { &mut (*contobj).payloads }, npayloads, 0u128)
     // }
@@ -87,7 +142,12 @@ pub fn ensure_suspend_payloads_capacity(_instance: &mut Instance, _npayloads: us
 
 /// TODO
 #[inline(always)]
-pub fn cont_new(instance: &mut Instance, func: *mut u8, nargs: usize) -> *mut u8 {
+pub fn cont_new(
+    instance: &mut Instance,
+    func: *mut u8,
+    param_count: usize,
+    result_count: usize,
+) -> *mut ContinuationReference {
     let func = func as *mut VMFuncRef;
     let callee_ctx = unsafe { (*func).vmctx };
     let caller_ctx = VMOpaqueContext::from_vmcontext(instance.vmctx());
@@ -97,33 +157,58 @@ pub fn cont_new(instance: &mut Instance, func: *mut u8, nargs: usize) -> *mut u8
             unsafe extern "C" fn(*mut VMOpaqueContext, *mut VMOpaqueContext, *mut ValRaw, usize),
         >((*func).array_call)
     };
-    let mut args = Vec::with_capacity(nargs);
-    let args_ptr = args.as_mut_ptr();
+    let capacity = cmp::max(param_count, result_count);
+
+    let payload = if capacity == 0 {
+        Payload::empty()
+    } else {
+        let mut args = Vec::with_capacity(capacity);
+        Payload {
+            length: 0,
+            capacity,
+            data: args.as_mut_ptr(),
+        }
+    };
+
+    let args_ptr = payload.data;
+
+    let contobj = Box::new(ContinuationObject {
+        fiber: ptr::null_mut(),
+        payload,
+        results: None,
+    });
+    let contobj_ptr = Box::into_raw(contobj);
+
     let fiber = Box::new(
         Fiber::new(
             FiberStack::new(4096).unwrap(),
             move |_first_val: (), _suspend: &Yield| unsafe {
-                f(callee_ctx, caller_ctx, args_ptr as *mut ValRaw, nargs)
+                let contobj = contobj_ptr.as_mut().unwrap();
+
+                contobj.results = Some(contobj.payload.data);
+                contobj.payload = Payload::empty();
+
+                f(callee_ctx, caller_ctx, args_ptr as *mut ValRaw, param_count)
             },
         )
         .unwrap(),
     );
 
-    let contobj = Box::new(ContinuationObject {
-        fiber: Box::into_raw(fiber),
-        len: 0,
-        capacity: nargs,
-        args: args_ptr,
-    });
-    let contref = new_cont_ref(Box::into_raw(contobj));
-    contref as *mut u8 // TODO(dhil): we need memory clean up of
-                       // continuation reference objects.
+    unsafe {
+        contobj_ptr.as_mut().unwrap().fiber = Box::into_raw(fiber);
+    }
+
+    new_cont_ref(contobj_ptr)
+    // TODO(dhil): we need memory clean up of
+    // continuation reference objects.
 }
 
 /// TODO
 #[inline(always)]
-pub fn resume(instance: &mut Instance, contraw: *mut u8) -> Result<u32, TrapReason> {
-    let contref = contraw as *mut ContinuationReference;
+pub fn resume(
+    instance: &mut Instance,
+    contref: *mut ContinuationReference,
+) -> Result<u32, TrapReason> {
     match unsafe { (*contref).0 } {
         None => Err(TrapReason::user_with_backtrace(anyhow::Error::msg(
             "Continuation is already taken",

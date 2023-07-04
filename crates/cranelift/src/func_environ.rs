@@ -2362,10 +2362,12 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
 
     fn typed_continuations_store_resume_args(
         &mut self,
-        builder: &mut FunctionBuilder,
-        values: &[ir::Value],
-        contref: ir::Value,
+        _builder: &mut FunctionBuilder,
+        _values: &[ir::Value],
+        _contref: ir::Value,
     ) {
+        todo!();
+        /*
         let cont_ref_get_cont_obj_index = BuiltinFunctionIndex::cont_ref_get_cont_obj();
         let cont_ref_get_cont_obj_sig = self
             .builtin_function_signatures
@@ -2408,6 +2410,7 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
             builder.ins().store(memflags, *value, args_ptr, offset);
             offset += self.offsets.ptr.maximum_value_size() as i32;
         }
+        */
     }
 
     //TODO(frank-emrich) Consider removing `valtypes` argument, as values are inherently typed
@@ -2468,9 +2471,9 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
 
     fn typed_continuations_load_return_values(
         &mut self,
-        builder: &mut FunctionBuilder,
-        valtypes: &[WasmType],
-        contref_addr: ir::Value,
+        _builder: &mut FunctionBuilder,
+        _valtypes: &[WasmType],
+        _contref_addr: ir::Value,
     ) -> std::vec::Vec<ir::Value> {
         // First get the continuation object.
 

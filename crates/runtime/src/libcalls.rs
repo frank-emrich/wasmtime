@@ -627,43 +627,60 @@ pub mod relocs {
 
 // Builtins for continuations. These are thin wrappers around the
 // respective definitions in continuation.rs.
-fn cont_new(instance: &mut Instance, func: *mut u8, nargs: u64) -> *mut u8 {
-    crate::continuation::cont_new(instance, func, nargs as usize)
+fn cont_new(
+    instance: &mut Instance,
+    func: *mut u8,
+    param_count: u64,
+    result_count: u64,
+) -> *mut u8 {
+    crate::continuation::cont_new(instance, func, param_count as usize, result_count as usize)
+        as *mut u8
 }
 
 fn resume(instance: &mut Instance, cont: *mut u8) -> Result<u32, TrapReason> {
-    crate::continuation::resume(instance, cont)
+    crate::continuation::resume(
+        instance,
+        cont as *mut crate::continuation::ContinuationReference,
+    )
 }
 
 fn suspend(instance: &mut Instance, tag_index: u32) {
     crate::continuation::suspend(instance, tag_index)
 }
 
-fn cont_obj_get_args(instance: &mut Instance, contobj: *mut u8) -> *mut u8 {
-    crate::continuation::cont_obj_get_args(
-        instance,
+fn cont_obj_get_payloads(_instance: &mut Instance, contobj: *mut u8) -> *mut u8 {
+    crate::continuation::cont_obj_get_payloads(
         contobj as *mut crate::continuation::ContinuationObject,
     ) as *mut u8
 }
 
-fn cont_obj_get_args_at_next_free(
-    instance: &mut Instance,
-    contobj: *mut u8,
-    nargs: u64,
-) -> *mut u8 {
-    crate::continuation::cont_obj_get_args_at_next_free(
-        instance,
+fn cont_obj_reset_payloads(_instance: &mut Instance, contobj: *mut u8) {
+    crate::continuation::cont_obj_reset_payloads(
         contobj as *mut crate::continuation::ContinuationObject,
-        nargs as usize,
+    );
+}
+
+fn cont_obj_get_results(_instance: &mut Instance, contobj: *mut u8) -> *mut u8 {
+    crate::continuation::cont_obj_get_results(
+        contobj as *mut crate::continuation::ContinuationObject,
     ) as *mut u8
 }
 
-fn drop_cont_obj(_instance: &mut Instance, contobj: *mut u8) {
+fn cont_obj_get_next_free_payload_slot(_instance: &mut Instance, contobj: *mut u8) -> *mut u8 {
+    crate::continuation::cont_obj_get_next_free_payload_slot(
+        contobj as *mut crate::continuation::ContinuationObject,
+    ) as *mut u8
+}
+
+fn cont_obj_drop(_instance: &mut Instance, contobj: *mut u8) {
     crate::continuation::drop_cont_obj(contobj as *mut crate::continuation::ContinuationObject)
 }
 
-fn ensure_suspend_payloads_capacity(instance: &mut Instance, min_capacity: u64) {
-    crate::continuation::ensure_suspend_payloads_capacity(instance, min_capacity as usize)
+fn ensure_suspend_payloads_capacity(_instance: &mut Instance, contobj: *mut u8, min_capacity: u64) {
+    crate::continuation::ensure_suspend_payloads_capacity(
+        contobj as *mut crate::continuation::ContinuationObject,
+        min_capacity as usize,
+    )
 }
 
 fn new_cont_ref(_instance: &mut Instance, contobj: *mut u8) -> *mut u8 {
