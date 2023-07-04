@@ -874,6 +874,20 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
         let call_inst = builder.ins().call_indirect(sig, addr, &args);
         return builder.func.dfg.first_result(call_inst);
     }
+
+    fn generate_builtin_call_no_return(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        index: BuiltinFunctionIndex,
+        sig: ir::SigRef,
+        args: Vec<ir::Value>,
+    ) {
+        let mut args = args;
+        let (vmctx, addr) =
+            self.translate_load_builtin_function_address(&mut builder.cursor(), index);
+        args.insert(0, vmctx);
+        builder.ins().call_indirect(sig, addr, &args);
+    }
 }
 
 macro_rules! generate_builtin_call {
