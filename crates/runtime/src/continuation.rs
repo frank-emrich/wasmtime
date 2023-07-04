@@ -111,8 +111,13 @@ pub fn cont_obj_get_results(obj: *mut ContinuationObject) -> *mut u128 {
 
 /// TODO
 #[inline(always)]
-pub fn cont_obj_get_next_free_payload_slot(obj: *mut ContinuationObject) -> *mut u128 {
+pub fn cont_obj_occuppy_next_payload_slots(
+    obj: *mut ContinuationObject,
+    arg_count: usize,
+) -> *mut u128 {
+    cont_obj_ensure_payloads_additional_capacity(obj, arg_count);
     let args_len = unsafe { (*obj).payload.length };
+    unsafe { (*obj).payload.length += arg_count };
     unsafe { (*obj).payload.data.offset(args_len as isize) }
 }
 
