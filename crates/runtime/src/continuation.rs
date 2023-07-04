@@ -134,8 +134,9 @@ pub fn drop_cont_obj(contobj: *mut ContinuationObject) {
 
 /// TODO
 #[inline(always)]
-pub fn ensure_suspend_payloads_capacity(obj: *mut ContinuationObject, capacity: usize) {
-    unsafe { (*obj).payload.ensure_capacity(capacity) };
+pub fn cont_obj_ensure_payloads_additional_capacity(obj: *mut ContinuationObject, capacity: usize) {
+    let length = unsafe { (*obj).payload.length };
+    unsafe { (*obj).payload.ensure_capacity(length + capacity) };
     // if unsafe { (*contobj).payloads.len() } < npayloads {
     //     Vec::resize(unsafe { &mut (*contobj).payloads }, npayloads, 0u128)
     // }

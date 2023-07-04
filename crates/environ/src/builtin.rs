@@ -68,8 +68,8 @@ macro_rules! foreach_builtin_function {
             /// Sets the payloads index back to 0.
             cont_obj_reset_payloads(vmctx: vmctx, contobj: pointer);
             /// Increases the capacity of the continuation object's
-            /// payloads buffer if needed.
-            cont_obj_ensure_payloads_capacity(vmctx: vmctx, contobj: pointer, capacity: i64);
+            /// payloads buffer if needed to allow storing `additional_capacity` additional elements.
+            cont_obj_ensure_payloads_additional_capacity(vmctx: vmctx, contobj: pointer, additional_capacity: i64);
             /// Projects the continuation suspend payloads buffer.
             cont_ref_get_cont_obj(vmctx: vmctx, contref: pointer) -> pointer;
             /// Drops the given continuation object.
