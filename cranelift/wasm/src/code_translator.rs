@@ -2432,12 +2432,12 @@ pub fn translate_operator<FE: FuncEnvironment + ?Sized>(
             //
             //  [ arg1 ... argN cont ]
             let arity = environ.continuation_arguments(*type_index).len();
-            let (cont, call_args) = state.peekn(arity + 1).split_last().unwrap();
+            let (contref, call_args) = state.peekn(arity + 1).split_last().unwrap();
             let call_arg_types = environ.continuation_arguments(*type_index).to_vec();
 
             // Now, we generate the call instruction.
             let (base_addr, signal, tag) =
-                environ.translate_resume(builder, state, *cont, &call_arg_types, call_args)?;
+                environ.translate_resume(builder, state, *contref, &call_arg_types, call_args)?;
             // Description of results:
             // * The `base_addr` is the base address of VM context.
             // * The `signal` is an encoded boolean indicating whether
@@ -2464,7 +2464,7 @@ pub fn translate_operator<FE: FuncEnvironment + ?Sized>(
             canonicalise_brif(builder, is_zero, return_block, &[], suspend_block, &[]);
 
             // Next, build the suspend block.
-            let cont = {
+            let (contobj, contref) = {
                 builder.switch_to_block(suspend_block);
                 builder.seal_block(suspend_block);
 
@@ -2481,11 +2481,13 @@ pub fn translate_operator<FE: FuncEnvironment + ?Sized>(
                 // avoid allocation of the intermediary "continuation
                 // proxy objects", though, for that I reckon we need
                 // fat pointers.
-                let cont = environ.typed_continuations_load_continuation_object(builder, base_addr);
+                let contobj =
+                    environ.typed_continuations_load_continuation_object(builder, base_addr);
+                let contref = environ.typed_continuations_new_cont_ref(builder, contobj);
 
                 // We need to terminate this block before being allowed to switch to another one
                 builder.ins().jump(switch_block, &[]);
-                cont
+                (contobj, contref)
             };
 
             // Strategy:
@@ -2509,13 +2511,13 @@ pub fn translate_operator<FE: FuncEnvironment + ?Sized>(
                 // Load and push arguments.
                 let param_types = environ.tag_params(tag).to_vec();
                 let params =
-                    environ.typed_continuations_load_payloads(builder, &param_types, base_addr);
+                    environ.typed_continuations_load_payloads(builder, &param_types, contobj);
 
-                environ.typed_continuations_reset_payloads(builder, cont);
+                environ.typed_continuations_reset_payloads(builder, contobj);
 
                 state.pushn(&params);
-                // Push the continuation object.
-                state.push1(cont);
+                // Push the continuation reference.
+                state.push1(contref);
                 let count = params.len() + 1;
                 let (br_destination, inputs) = translate_br_if_args(label, state);
 
