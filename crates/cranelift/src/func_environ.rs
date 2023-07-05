@@ -876,7 +876,7 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
         return (vmctx, result_value);
     }
 
-    fn generate_builtin_call_no_return(
+    fn generate_builtin_call_no_return_val(
         &mut self,
         builder: &mut FunctionBuilder,
         index: BuiltinFunctionIndex,
@@ -903,14 +903,14 @@ macro_rules! generate_builtin_call {
     }};
 }
 
-macro_rules! generate_builtin_call_no_return {
+macro_rules! generate_builtin_call_no_return_val {
     ($self : ident, $builder: ident, $builtin_name: ident, $args: expr) => {{
         let index = BuiltinFunctionIndex::$builtin_name();
         let sig = $self
             .builtin_function_signatures
             .$builtin_name(&mut $builder.func);
         let args = $args.to_vec();
-        $self.generate_builtin_call_no_return($builder, index, sig, args)
+        $self.generate_builtin_call_no_return_val($builder, index, sig, args)
     }};
 }
 
@@ -2326,7 +2326,7 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
     ) {
         let tag_index = builder.ins().iconst(I32, tag_index as i64);
 
-        generate_builtin_call_no_return!(self, builder, suspend, [tag_index]);
+        generate_builtin_call_no_return_val!(self, builder, suspend, [tag_index]);
     }
 
     fn continuation_arguments(&self, index: u32) -> &[WasmType] {
@@ -2430,7 +2430,7 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
             let nargs = builder.ins().iconst(I64, values.len() as i64);
 
             // FIXME: We must (have?) reset length before this!
-            generate_builtin_call_no_return!(
+            generate_builtin_call_no_return_val!(
                 self,
                 builder,
                 cont_obj_ensure_payloads_additional_capacity,
