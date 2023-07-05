@@ -614,7 +614,7 @@ pub trait FuncEnvironment: TargetEnvironment {
         &mut self,
         builder: &mut FunctionBuilder,
         valtypes: &[wasmtime_types::WasmType],
-        contref_addr: ir::Value,
+        contobj: ir::Value,
     ) -> std::vec::Vec<ir::Value>;
 
     /// TODO

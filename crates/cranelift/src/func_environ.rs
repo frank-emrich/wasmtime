@@ -2482,14 +2482,13 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         &mut self,
         builder: &mut FunctionBuilder,
         valtypes: &[WasmType],
-        contref: ir::Value,
+        contobj: ir::Value,
     ) -> std::vec::Vec<ir::Value> {
         let mut values = vec![];
 
         if valtypes.len() > 0 {
-            let cont_obj = self.typed_continuations_cont_ref_get_cont_obj(builder, contref);
             let (_vmctx, result_buffer_addr) =
-                generate_builtin_call!(self, builder, cont_obj_get_results, [cont_obj]);
+                generate_builtin_call!(self, builder, cont_obj_get_results, [contobj]);
 
             let mut offset = 0;
             let memflags = ir::MemFlags::trusted();

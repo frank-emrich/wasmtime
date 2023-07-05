@@ -2562,7 +2562,7 @@ pub fn translate_operator<FE: FuncEnvironment + ?Sized>(
                 // Load and push the results.
                 let returns = environ.continuation_returns(*type_index).to_vec();
                 let values =
-                    environ.typed_continuations_load_payloads(builder, &returns, base_addr);
+                    environ.typed_continuations_load_return_values(builder, &returns, contobj);
                 state.pushn(&values);
             }
         }

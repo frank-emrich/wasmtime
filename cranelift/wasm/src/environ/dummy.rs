@@ -785,7 +785,7 @@ impl<'dummy_environment> FuncEnvironment for DummyFuncEnvironment<'dummy_environ
         &mut self,
         _builder: &mut FunctionBuilder,
         _valtypes: &[WasmType],
-        _contref_addr: ir::Value,
+        _contobj: ir::Value,
     ) -> std::vec::Vec<ir::Value> {
         unimplemented!()
     }
