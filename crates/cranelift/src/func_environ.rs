@@ -866,13 +866,14 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
         index: BuiltinFunctionIndex,
         sig: ir::SigRef,
         args: Vec<ir::Value>,
-    ) -> ir::Value {
+    ) -> (ir::Value, ir::Value) {
         let mut args = args;
         let (vmctx, addr) =
             self.translate_load_builtin_function_address(&mut builder.cursor(), index);
         args.insert(0, vmctx);
         let call_inst = builder.ins().call_indirect(sig, addr, &args);
-        return builder.func.dfg.first_result(call_inst);
+        let result_value = builder.func.dfg.first_result(call_inst);
+        return (vmctx, result_value);
     }
 
     fn generate_builtin_call_no_return(
@@ -881,12 +882,13 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
         index: BuiltinFunctionIndex,
         sig: ir::SigRef,
         args: Vec<ir::Value>,
-    ) {
+    ) -> ir::Value {
         let mut args = args;
         let (vmctx, addr) =
             self.translate_load_builtin_function_address(&mut builder.cursor(), index);
         args.insert(0, vmctx);
         builder.ins().call_indirect(sig, addr, &args);
+        return vmctx;
     }
 }
 
@@ -898,6 +900,17 @@ macro_rules! generate_builtin_call {
             .$builtin_name(&mut $builder.func);
         let args = $args.to_vec();
         $self.generate_builtin_call($builder, index, sig, args)
+    }};
+}
+
+macro_rules! generate_builtin_call_no_return {
+    ($self : ident, $builder: ident, $builtin_name: ident, $args: expr) => {{
+        let index = BuiltinFunctionIndex::$builtin_name();
+        let sig = $self
+            .builtin_function_signatures
+            .$builtin_name(&mut $builder.func);
+        let args = $args.to_vec();
+        $self.generate_builtin_call_no_return($builder, index, sig, args)
     }};
 }
 
@@ -2276,38 +2289,15 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
     ) -> WasmResult<(ir::Value, ir::Value, ir::Value)> {
         // Strategy:
         //
-        // First, load the builtin `resume`. As a side effect obtain a
-        // handle to the base of the VM context.
         //
-        // Second, store the remainder of `call_args` in the
+        // First, store the remainder of `call_args` in the
         // designated typed continuation store in the VM context.
         //
-        // Third, pack up the arguments and call `resume`.
-        //
-        // Fourth, return the result of the resume call.
-
-        // First step: load the builtin `resume` and as a side-effect
-        // return the address of the vmctx.
-        let builtin_index = BuiltinFunctionIndex::resume();
-        let builtin_sig = self.builtin_function_signatures.resume(&mut builder.func);
-
-        let (vmctx, builtin_addr) =
-            self.translate_load_builtin_function_address(&mut builder.cursor(), builtin_index);
-
-        // Second step: store `call_args` on the continuation object.
+        // Second: Call the `resume` builtin
         self.typed_continuations_store_resume_args(builder, call_args, contref);
 
-        // Third step: setup the call arguments and apply the builtin
-        // resume function.
-        let real_args = vec![vmctx, contref];
-
-        // Now we perform the call.
-        let call_inst = builder
-            .ins()
-            .call_indirect(builtin_sig, builtin_addr, &real_args);
-
         // Fourth step: finally, we return the result of the call.
-        let result = builder.func.dfg.first_result(call_inst);
+        let (vmctx, result) = generate_builtin_call!(self, builder, resume, [contref]);
 
         // The result encodes whether the return happens via ordinary
         // means or via a suspend. If the high bit is set, then it is
@@ -2381,7 +2371,7 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         let mut values = vec![];
 
         if valtypes.len() > 0 {
-            let payload_ptr =
+            let (_vmctx, payload_ptr) =
                 generate_builtin_call!(self, builder, cont_obj_get_payloads, [contobj]);
 
             let mut offset = 0;
@@ -2405,13 +2395,9 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         builder: &mut FunctionBuilder,
         contref: ir::Value,
     ) -> ir::Value {
-        let args = vec![contref];
-        // return generate_builtin_call!(new_cont_ref, self, builder, args);
-        let index = BuiltinFunctionIndex::cont_ref_get_cont_obj();
-        let sig = self
-            .builtin_function_signatures
-            .cont_ref_get_cont_obj(&mut builder.func);
-        return self.generate_builtin_call(builder, index, sig, args);
+        let (_vmctx, contobj) =
+            generate_builtin_call!(self, builder, cont_ref_get_cont_obj, [contref]);
+        return contobj;
     }
 
     /// TODO
@@ -2425,7 +2411,7 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
 
         let nargs = builder.ins().iconst(I64, values.len() as i64);
 
-        let args_ptr = generate_builtin_call!(
+        let (_vmctx, args_ptr) = generate_builtin_call!(
             self,
             builder,
             cont_obj_occuppy_next_payload_slots,
@@ -2456,15 +2442,14 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
             let nargs = builder.ins().iconst(I64, values.len() as i64);
 
             // FIXME: We must (have?) reset length before this!
-            // FIXME Must use no-return version here!
-            let payload_addr = generate_builtin_call!(
+            generate_builtin_call_no_return!(
                 self,
                 builder,
                 cont_obj_ensure_payloads_additional_capacity,
                 [contobj, nargs]
             );
 
-            let payload_addr =
+            let (_vmctx, payload_addr) =
                 generate_builtin_call!(self, builder, cont_obj_get_payloads, [contobj]);
 
             let mut offset =
@@ -2493,7 +2478,8 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         builder: &mut FunctionBuilder,
         contobj_addr: ir::Value,
     ) -> ir::Value {
-        return generate_builtin_call!(self, builder, new_cont_ref, [contobj_addr]);
+        let (_vmctx, contref) = generate_builtin_call!(self, builder, new_cont_ref, [contobj_addr]);
+        return contref;
     }
 
     fn typed_continuations_load_return_values(
@@ -2506,7 +2492,7 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
 
         if valtypes.len() > 0 {
             let cont_obj = self.typed_continuations_cont_ref_get_cont_obj(builder, contref);
-            let result_buffer_addr =
+            let (_vmctx, result_buffer_addr) =
                 generate_builtin_call!(self, builder, cont_obj_get_results, [cont_obj]);
 
             let mut offset = 0;
