@@ -57,7 +57,7 @@ macro_rules! foreach_builtin_function {
             resume(vmctx: vmctx, contref: pointer) -> i32;
             /// Suspends a continuation.
             suspend(vmctx: vmctx, tag: i32);
-            /// Projects the continuation payload buffer.
+            /// Projects the beginning of the continuation payload buffer.
             cont_obj_get_payloads(vmctx: vmctx, contobj: pointer) -> pointer;
             /// Projects the continuation result value buffer.
             /// Must only be called after the continuation returned and the executed function has return values.
@@ -65,7 +65,7 @@ macro_rules! foreach_builtin_function {
             /// Projects a pointer within the continuation argument buffer pointing at
             /// the next free slot.
             cont_obj_occuppy_next_payload_slots(vmctx: vmctx, contobj: pointer, arg_count: i32) -> pointer;
-            /// Sets the payloads index back to 0.
+            /// Sets the payloads index back to 0, effectively deleting the contents of the payload buffer
             cont_obj_reset_payloads(vmctx: vmctx, contobj: pointer);
             /// Increases the capacity of the continuation object's
             /// payloads buffer if needed to allow storing `additional_capacity` additional elements.
