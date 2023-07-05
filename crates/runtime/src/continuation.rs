@@ -75,13 +75,19 @@ pub struct ContinuationReference(Option<*mut ContinuationObject>);
 pub fn cont_ref_get_cont_obj(
     contref: *mut ContinuationReference,
 ) -> Result<*mut ContinuationObject, TrapReason> {
+    //FIXME rename to indicate that this invalidates the cont ref
     let contopt = unsafe { contref.as_mut().unwrap().0 };
     match contopt {
         None => Err(TrapReason::user_with_backtrace(anyhow::Error::msg(
             "Continuation is already taken",
         ))), // TODO(dhil): presumably we can set things up such that
         // we always read from a non-null reference.
-        Some(contobj) => Ok(contobj as *mut ContinuationObject),
+        Some(contobj) => {
+            unsafe {
+                *contref = ContinuationReference(None);
+            }
+            Ok(contobj as *mut ContinuationObject)
+        }
     }
 }
 
@@ -216,45 +222,37 @@ pub fn cont_new(
 #[inline(always)]
 pub fn resume(
     instance: &mut Instance,
-    contref: *mut ContinuationReference,
+    contobj: *mut ContinuationObject,
 ) -> Result<u32, TrapReason> {
-    match unsafe { (*contref).0 } {
-        None => Err(TrapReason::user_with_backtrace(anyhow::Error::msg(
-            "Continuation is already taken",
-        ))),
-        Some(contobj) => {
-            unsafe { *contref = ContinuationReference(None) };
-            let fiber = unsafe { (*contobj).fiber };
-            let fiber_stack = unsafe { &fiber.as_ref().unwrap().stack() };
-            let tsp = TopOfStackPointer::as_raw(instance.tsp());
-            unsafe { fiber_stack.write_parent(tsp) };
-            instance.set_tsp(TopOfStackPointer::from_raw(fiber_stack.top().unwrap()));
-            unsafe {
-                (*(*(*instance.store()).vmruntime_limits())
-                    .stack_limit
-                    .get_mut()) = 0
-            };
-            match unsafe { fiber.as_mut().unwrap().resume(()) } {
-                Ok(()) => {
-                    // The result of the continuation was written to the first
-                    // entry of the payload store by virtue of using the array
-                    // calling trampoline to execute it.
+    let fiber = unsafe { (*contobj).fiber };
+    let fiber_stack = unsafe { &fiber.as_ref().unwrap().stack() };
+    let tsp = TopOfStackPointer::as_raw(instance.tsp());
+    unsafe { fiber_stack.write_parent(tsp) };
+    instance.set_tsp(TopOfStackPointer::from_raw(fiber_stack.top().unwrap()));
+    unsafe {
+        (*(*(*instance.store()).vmruntime_limits())
+            .stack_limit
+            .get_mut()) = 0
+    };
+    match unsafe { fiber.as_mut().unwrap().resume(()) } {
+        Ok(()) => {
+            // The result of the continuation was written to the first
+            // entry of the payload store by virtue of using the array
+            // calling trampoline to execute it.
 
-                    Ok(0) // zero value = return normally.
-                }
-                Err(tag) => {
-                    // We set the high bit to signal a return via suspend. We
-                    // encode the tag into the remainder of the integer.
-                    let signal_mask = 0xf000_0000;
-                    debug_assert_eq!(tag & signal_mask, 0);
-                    unsafe {
-                        let cont_store_ptr = instance.get_typed_continuations_store_mut()
-                            as *mut *mut ContinuationObject;
-                        cont_store_ptr.write(contobj)
-                    };
-                    Ok(tag | signal_mask)
-                }
-            }
+            Ok(0) // zero value = return normally.
+        }
+        Err(tag) => {
+            // We set the high bit to signal a return via suspend. We
+            // encode the tag into the remainder of the integer.
+            let signal_mask = 0xf000_0000;
+            debug_assert_eq!(tag & signal_mask, 0);
+            unsafe {
+                let cont_store_ptr =
+                    instance.get_typed_continuations_store_mut() as *mut *mut ContinuationObject;
+                cont_store_ptr.write(contobj)
+            };
+            Ok(tag | signal_mask)
         }
     }
 }

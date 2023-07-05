@@ -647,7 +647,7 @@ pub trait FuncEnvironment: TargetEnvironment {
         &mut self,
         builder: &mut FunctionBuilder,
         values: &[ir::Value],
-        contref: ir::Value,
+        contobj: ir::Value,
     );
 
     /// TODO

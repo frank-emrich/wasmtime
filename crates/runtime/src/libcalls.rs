@@ -637,10 +637,10 @@ fn cont_new(
         as *mut u8
 }
 
-fn resume(instance: &mut Instance, cont: *mut u8) -> Result<u32, TrapReason> {
+fn resume(instance: &mut Instance, contobj: *mut u8) -> Result<u32, TrapReason> {
     crate::continuation::resume(
         instance,
-        cont as *mut crate::continuation::ContinuationReference,
+        contobj as *mut crate::continuation::ContinuationObject,
     )
 }
 

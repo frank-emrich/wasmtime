@@ -54,7 +54,7 @@ macro_rules! foreach_builtin_function {
             /// Creates a new continuation from a funcref.
             cont_new(vmctx: vmctx, r: pointer, param_count: i64, result_count: i64) -> pointer;
             /// Resumes a continuation.
-            resume(vmctx: vmctx, contref: pointer) -> i32;
+            resume(vmctx: vmctx, contobj: pointer) -> i32;
             /// Suspends a continuation.
             suspend(vmctx: vmctx, tag: i32);
             /// Projects the beginning of the continuation payload buffer.

@@ -2278,7 +2278,7 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         &mut self,
         builder: &mut FunctionBuilder,
         _state: &FuncTranslationState,
-        contref: ir::Value,
+        contobj: ir::Value,
         _call_arg_types: &[WasmType],
         call_args: &[ir::Value],
     ) -> WasmResult<(ir::Value, ir::Value, ir::Value)> {
@@ -2290,9 +2290,9 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         //
         // Second: Call the `resume` builtin
 
-        self.typed_continuations_store_resume_args(builder, call_args, contref);
+        self.typed_continuations_store_resume_args(builder, call_args, contobj);
 
-        let (vmctx, result) = generate_builtin_call!(self, builder, resume, [contref]);
+        let (vmctx, result) = generate_builtin_call!(self, builder, resume, [contobj]);
 
         // The result encodes whether the return happens via ordinary
         // means or via a suspend. If the high bit is set, then it is
@@ -2403,10 +2403,8 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         &mut self,
         builder: &mut FunctionBuilder,
         values: &[ir::Value],
-        contref: ir::Value,
+        contobj: ir::Value,
     ) {
-        let contobj = self.typed_continuations_cont_ref_get_cont_obj(builder, contref);
-
         let nargs = builder.ins().iconst(I32, values.len() as i64);
 
         let (_vmctx, args_ptr) = generate_builtin_call!(
