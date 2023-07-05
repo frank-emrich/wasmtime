@@ -16,7 +16,6 @@ use cranelift_wasm::{
 use std::convert::TryFrom;
 use std::mem;
 use wasmparser::Operator;
-use wasmtime_environ::MAXIMUM_CONTINUATION_PAYLOAD_COUNT;
 use wasmtime_environ::{
     BuiltinFunctionIndex, MemoryPlan, MemoryStyle, Module, ModuleTranslation, ModuleTypes, PtrSize,
     TableStyle, Tunables, TypeConvert, VMOffsets, WASM_PAGE_SIZE,
