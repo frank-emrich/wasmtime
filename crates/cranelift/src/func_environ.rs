@@ -2259,10 +2259,13 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         _state: &FuncTranslationState,
         func: ir::Value,
         arg_types: &[WasmType],
+        return_types: &[WasmType],
     ) -> WasmResult<ir::Value> {
         let nargs = builder.ins().iconst(I64, arg_types.len() as i64);
+        let nreturns = builder.ins().iconst(I64, return_types.len() as i64);
 
-        let (_vmctx, contref) = generate_builtin_call!(self, builder, cont_new, [func, nargs]);
+        let (_vmctx, contref) =
+            generate_builtin_call!(self, builder, cont_new, [func, nargs, nreturns]);
 
         Ok(contref)
     }

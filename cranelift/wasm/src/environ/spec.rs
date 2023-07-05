@@ -570,6 +570,7 @@ pub trait FuncEnvironment: TargetEnvironment {
         state: &FuncTranslationState,
         func: ir::Value,
         arg_types: &[wasmtime_types::WasmType],
+        return_types: &[wasmtime_types::WasmType],
     ) -> WasmResult<ir::Value>;
 
     /// Translates a resume instruction and returns a triple (vmctx,

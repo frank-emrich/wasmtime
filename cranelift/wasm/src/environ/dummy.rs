@@ -679,6 +679,7 @@ impl<'dummy_environment> FuncEnvironment for DummyFuncEnvironment<'dummy_environ
         _state: &FuncTranslationState,
         _func: ir::Value,
         _arg_types: &[wasmtime_types::WasmType],
+        _return_types: &[wasmtime_types::WasmType],
     ) -> WasmResult<ir::Value> {
         todo!()
     }

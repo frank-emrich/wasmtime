@@ -2415,8 +2415,15 @@ pub fn translate_operator<FE: FuncEnvironment + ?Sized>(
 
         Operator::ContNew { type_index } => {
             let arg_types = environ.continuation_arguments(*type_index).to_vec();
+            let result_types = environ.continuation_returns(*type_index).to_vec();
             let r = state.pop1();
-            state.push1(environ.translate_cont_new(builder, state, r, &arg_types)?);
+            state.push1(environ.translate_cont_new(
+                builder,
+                state,
+                r,
+                &arg_types,
+                &result_types,
+            )?);
         }
         Operator::Resume {
             type_index,
