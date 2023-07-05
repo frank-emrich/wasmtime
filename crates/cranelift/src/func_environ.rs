@@ -2290,7 +2290,9 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         //
         // Second: Call the `resume` builtin
 
-        self.typed_continuations_store_resume_args(builder, call_args, contobj);
+        if call_args.len() > 0 {
+            self.typed_continuations_store_resume_args(builder, call_args, contobj);
+        }
 
         let (vmctx, result) = generate_builtin_call!(self, builder, resume, [contobj]);
 
