@@ -2407,7 +2407,7 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
     ) {
         let contobj = self.typed_continuations_cont_ref_get_cont_obj(builder, contref);
 
-        let nargs = builder.ins().iconst(I64, values.len() as i64);
+        let nargs = builder.ins().iconst(I32, values.len() as i64);
 
         let (_vmctx, args_ptr) = generate_builtin_call!(
             self,
