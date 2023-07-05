@@ -2594,6 +2594,8 @@ pub fn translate_operator<FE: FuncEnvironment + ?Sized>(
                 .create_global_value(ir::GlobalValueData::VMContext);
             let base_addr = builder.cursor().ins().global_value(pointer_type, vmctx);
 
+            // FIXME(frank-emrich): We need a mechanism to detect if no continuation object is available
+            // (i.e., calling suspend from code not subject to a handler) and fail cleanly
             let cont_obj = environ.typed_continuations_load_continuation_object(builder, base_addr);
 
             environ.typed_continuations_store_payloads(builder, &param_types, params, cont_obj);
