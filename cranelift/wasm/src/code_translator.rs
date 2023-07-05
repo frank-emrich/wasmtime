@@ -2511,6 +2511,8 @@ pub fn translate_operator<FE: FuncEnvironment + ?Sized>(
                 let params =
                     environ.typed_continuations_load_payloads(builder, &param_types, base_addr);
 
+                environ.typed_continuations_reset_payloads(builder, cont);
+
                 state.pushn(&params);
                 // Push the continuation object.
                 state.push1(cont);
@@ -2573,8 +2575,8 @@ pub fn translate_operator<FE: FuncEnvironment + ?Sized>(
                 .create_global_value(ir::GlobalValueData::VMContext);
             let base_addr = builder.cursor().ins().global_value(pointer_type, vmctx);
 
-            // FIXME: Need to reset length in payloads
             let cont_obj = environ.typed_continuations_load_continuation_object(builder, base_addr);
+
             environ.typed_continuations_store_payloads(builder, &param_types, params, cont_obj);
             state.popn(param_count);
 
@@ -2583,6 +2585,9 @@ pub fn translate_operator<FE: FuncEnvironment + ?Sized>(
             let return_types = environ.tag_returns(*tag_index).to_vec();
             let return_values =
                 environ.typed_continuations_load_payloads(builder, &return_types, cont_obj);
+
+            environ.typed_continuations_reset_payloads(builder, cont_obj);
+
             state.pushn(&return_values);
         }
         Operator::ContBind {
