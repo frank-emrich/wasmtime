@@ -614,7 +614,7 @@ pub trait FuncEnvironment: TargetEnvironment {
 
     /// TODO
     fn typed_continuations_load_payloads(
-        &self,
+        &mut self,
         builder: &mut FunctionBuilder,
         valtypes: &[wasmtime_types::WasmType],
         base_addr: ir::Value,
@@ -622,7 +622,7 @@ pub trait FuncEnvironment: TargetEnvironment {
 
     /// TODO
     fn typed_continuations_store_payloads(
-        &self,
+        &mut self,
         builder: &mut FunctionBuilder,
         valtypes: &[wasmtime_types::WasmType],
         values: &[ir::Value],

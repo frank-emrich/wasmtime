@@ -730,7 +730,7 @@ impl<'dummy_environment> FuncEnvironment for DummyFuncEnvironment<'dummy_environ
     }
 
     fn typed_continuations_load_payloads(
-        &self,
+        &mut self,
         _builder: &mut FunctionBuilder,
         _valtypes: &[WasmType],
         _base_addr: ir::Value,
@@ -748,7 +748,7 @@ impl<'dummy_environment> FuncEnvironment for DummyFuncEnvironment<'dummy_environ
     }
 
     fn typed_continuations_store_payloads(
-        &self,
+        &mut self,
         _builder: &mut FunctionBuilder,
         _valtypes: &[WasmType],
         _values: &[ir::Value],

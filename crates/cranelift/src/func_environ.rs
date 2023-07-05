@@ -2372,30 +2372,29 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
     }
 
     fn typed_continuations_load_payloads(
-        &self,
+        &mut self,
         builder: &mut FunctionBuilder,
         valtypes: &[WasmType],
-        base_addr: ir::Value,
+        contobj: ir::Value,
     ) -> Vec<ir::Value> {
         let memflags = ir::MemFlags::trusted();
         let mut values = vec![];
-        if valtypes.len() == 0 {
-            // OK
-        } else if valtypes.len() <= MAXIMUM_CONTINUATION_PAYLOAD_COUNT as usize {
-            let mut offset =
-                i32::try_from(self.offsets.vmctx_typed_continuations_payloads()).unwrap();
+
+        if valtypes.len() > 0 {
+            let payload_ptr =
+                generate_builtin_call!(self, builder, cont_obj_get_payloads, [contobj]);
+
+            let mut offset = 0;
             for valtype in valtypes {
                 let val = builder.ins().load(
                     super::value_type(self.isa, *valtype),
                     memflags,
-                    base_addr,
+                    payload_ptr,
                     offset,
                 );
                 values.push(val);
                 offset += self.offsets.ptr.maximum_value_size() as i32;
             }
-        } else {
-            panic!("Unsupported continuation arity!");
         }
         values
     }
@@ -2418,79 +2417,62 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
     /// TODO
     fn typed_continuations_store_resume_args(
         &mut self,
-        _builder: &mut FunctionBuilder,
-        _values: &[ir::Value],
-        _contref: ir::Value,
+        builder: &mut FunctionBuilder,
+        values: &[ir::Value],
+        contref: ir::Value,
     ) {
-        todo!();
-        /*
-        let cont_ref_get_cont_obj_index = BuiltinFunctionIndex::cont_ref_get_cont_obj();
-        let cont_ref_get_cont_obj_sig = self
-            .builtin_function_signatures
-            .cont_ref_get_cont_obj(&mut builder.func);
-        let (vmctx, cont_ref_get_cont_obj_addr) = self.translate_load_builtin_function_address(
-            &mut builder.cursor(),
-            cont_ref_get_cont_obj_index,
-        );
-
-        let contobj_inst = builder.ins().call_indirect(
-            cont_ref_get_cont_obj_sig,
-            cont_ref_get_cont_obj_addr,
-            &[vmctx, contref],
-        );
-        let contobj = builder.func.dfg.first_result(contobj_inst);
+        let contobj = self.typed_continuations_cont_ref_get_cont_obj(builder, contref);
 
         let nargs = builder.ins().iconst(I64, values.len() as i64);
 
-        let cont_obj_get_args_at_next_free_index =
-            BuiltinFunctionIndex::cont_obj_get_args_at_next_free();
-        let cont_obj_get_args_at_next_free_sig = self
-            .builtin_function_signatures
-            .cont_obj_get_args_at_next_free(&mut builder.func);
-        let (vmctx, cont_obj_get_args_at_next_free_addr) = self
-            .translate_load_builtin_function_address(
-                &mut builder.cursor(),
-                cont_obj_get_args_at_next_free_index,
-            );
-        let args_ptr_inst = builder.ins().call_indirect(
-            cont_obj_get_args_at_next_free_sig,
-            cont_obj_get_args_at_next_free_addr,
-            &[vmctx, contobj, nargs],
+        let args_ptr = generate_builtin_call!(
+            self,
+            builder,
+            cont_obj_occuppy_next_payload_slots,
+            [contobj, nargs]
         );
-        let args_ptr = builder.func.dfg.first_result(args_ptr_inst);
 
         // Store the values.
         let memflags = ir::MemFlags::trusted();
-        let mut offset = i32::try_from(0).unwrap();
+        let mut offset = 0;
         for value in values {
             builder.ins().store(memflags, *value, args_ptr, offset);
             offset += self.offsets.ptr.maximum_value_size() as i32;
         }
-        */
     }
 
     //TODO(frank-emrich) Consider removing `valtypes` argument, as values are inherently typed
     fn typed_continuations_store_payloads(
-        &self,
+        &mut self,
         builder: &mut FunctionBuilder,
         valtypes: &[WasmType],
         values: &[ir::Value],
-        base_addr: ir::Value,
+        contobj: ir::Value,
     ) {
         //TODO(frank-emrich) what flags exactly do we need here?
         let memflags = ir::MemFlags::trusted();
 
-        if valtypes.len() == 0 {
-            // OK
-        } else if valtypes.len() <= MAXIMUM_CONTINUATION_PAYLOAD_COUNT as usize {
+        if valtypes.len() > 0 {
+            let nargs = builder.ins().iconst(I64, values.len() as i64);
+
+            // FIXME: We must (have?) reset length before this!
+            // FIXME Must use no-return version here!
+            let payload_addr = generate_builtin_call!(
+                self,
+                builder,
+                cont_obj_ensure_payloads_additional_capacity,
+                [contobj, nargs]
+            );
+
+            let payload_addr =
+                generate_builtin_call!(self, builder, cont_obj_get_payloads, [contobj]);
+
             let mut offset =
                 i32::try_from(self.offsets.vmctx_typed_continuations_payloads()).unwrap();
             for value in values {
-                builder.ins().store(memflags, *value, base_addr, offset);
+                builder.ins().store(memflags, *value, payload_addr, offset);
                 offset += self.offsets.ptr.maximum_value_size() as i32;
             }
-        } else {
-            panic!("Unsupported continuation arity!");
         }
     }
 

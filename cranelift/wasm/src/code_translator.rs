@@ -2507,9 +2507,9 @@ pub fn translate_operator<FE: FuncEnvironment + ?Sized>(
                 builder.switch_to_block(case);
 
                 // Load and push arguments.
-                let param_types = environ.tag_params(tag);
+                let param_types = environ.tag_params(tag).to_vec();
                 let params =
-                    environ.typed_continuations_load_payloads(builder, param_types, base_addr);
+                    environ.typed_continuations_load_payloads(builder, &param_types, base_addr);
 
                 state.pushn(&params);
                 // Push the continuation object.
@@ -2556,13 +2556,14 @@ pub fn translate_operator<FE: FuncEnvironment + ?Sized>(
                 builder.seal_block(return_block);
 
                 // Load and push the results.
-                let returns = environ.continuation_returns(*type_index);
-                let values = environ.typed_continuations_load_payloads(builder, returns, base_addr);
+                let returns = environ.continuation_returns(*type_index).to_vec();
+                let values =
+                    environ.typed_continuations_load_payloads(builder, &returns, base_addr);
                 state.pushn(&values);
             }
         }
         Operator::Suspend { tag_index } => {
-            let param_types = environ.tag_params(*tag_index);
+            let param_types = environ.tag_params(*tag_index).to_vec();
 
             let params = state.peekn(param_types.len());
             let param_count = params.len();
@@ -2571,14 +2572,17 @@ pub fn translate_operator<FE: FuncEnvironment + ?Sized>(
                 .func
                 .create_global_value(ir::GlobalValueData::VMContext);
             let base_addr = builder.cursor().ins().global_value(pointer_type, vmctx);
-            environ.typed_continuations_store_payloads(builder, param_types, params, base_addr);
+
+            // FIXME: Need to reset length in payloads
+            let cont_obj = environ.typed_continuations_load_continuation_object(builder, base_addr);
+            environ.typed_continuations_store_payloads(builder, &param_types, params, cont_obj);
             state.popn(param_count);
 
             environ.translate_suspend(builder.cursor(), state, *tag_index);
 
-            let return_types = environ.tag_returns(*tag_index);
+            let return_types = environ.tag_returns(*tag_index).to_vec();
             let return_values =
-                environ.typed_continuations_load_payloads(builder, return_types, base_addr);
+                environ.typed_continuations_load_payloads(builder, &return_types, cont_obj);
             state.pushn(&return_values);
         }
         Operator::ContBind {
