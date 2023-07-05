@@ -73,7 +73,7 @@ macro_rules! foreach_builtin_function {
             /// Projects the continuation suspend payloads buffer.
             cont_ref_get_cont_obj(vmctx: vmctx, contref: pointer) -> pointer;
             /// Drops the given continuation object.
-            cont_obj_drop(vmctx: vmctx, contobj: pointer);
+            //cont_obj_drop(vmctx: vmctx, contobj: pointer);
             /// Crates a new continuation reference.
             new_cont_ref(vmctx: vmctx, contobj: pointer) -> pointer;
         }

@@ -677,9 +677,9 @@ fn cont_obj_occuppy_next_payload_slots(
     ) as *mut u8
 }
 
-fn cont_obj_drop(_instance: &mut Instance, contobj: *mut u8) {
-    crate::continuation::drop_cont_obj(contobj as *mut crate::continuation::ContinuationObject)
-}
+// fn cont_obj_drop(_instance: &mut Instance, contobj: *mut u8) {
+//     crate::continuation::drop_cont_obj(contobj as *mut crate::continuation::ContinuationObject)
+// }
 
 fn cont_obj_ensure_payloads_additional_capacity(
     _instance: &mut Instance,
