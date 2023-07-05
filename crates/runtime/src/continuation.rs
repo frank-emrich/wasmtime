@@ -43,6 +43,7 @@ impl Payload {
             let ptr = vec.as_mut_ptr();
             self.data = ptr;
         }
+        self.capacity = requested_capacity;
     }
 }
 
