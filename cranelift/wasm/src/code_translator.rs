@@ -2578,7 +2578,7 @@ pub fn translate_operator<FE: FuncEnvironment + ?Sized>(
             environ.typed_continuations_store_payloads(builder, &param_types, params, cont_obj);
             state.popn(param_count);
 
-            environ.translate_suspend(builder.cursor(), state, *tag_index);
+            environ.translate_suspend(builder, state, *tag_index);
 
             let return_types = environ.tag_returns(*tag_index).to_vec();
             let return_values =

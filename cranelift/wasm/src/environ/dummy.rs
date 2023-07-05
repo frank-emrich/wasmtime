@@ -706,7 +706,7 @@ impl<'dummy_environment> FuncEnvironment for DummyFuncEnvironment<'dummy_environ
 
     fn translate_suspend(
         &mut self,
-        _pos: FuncCursor,
+        _builder: &mut FunctionBuilder,
         _state: &FuncTranslationState,
         _tag_index: u32,
     ) {

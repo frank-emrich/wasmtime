@@ -596,7 +596,12 @@ pub trait FuncEnvironment: TargetEnvironment {
     ) -> WasmResult<ir::Value>;
 
     /// TODO(dhil): write documentation.
-    fn translate_suspend(&mut self, pos: FuncCursor, state: &FuncTranslationState, tag_index: u32);
+    fn translate_suspend(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        state: &FuncTranslationState,
+        tag_index: u32,
+    );
 
     /// TODO
     fn continuation_arguments(&self, type_index: u32) -> &[wasmtime_types::WasmType];

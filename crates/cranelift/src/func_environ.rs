@@ -2261,18 +2261,11 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         func: ir::Value,
         arg_types: &[WasmType],
     ) -> WasmResult<ir::Value> {
-        let builtin_index = BuiltinFunctionIndex::cont_new();
-        let builtin_sig = self.builtin_function_signatures.cont_new(&mut builder.func);
-        let (vmctx, builtin_addr) =
-            self.translate_load_builtin_function_address(&mut builder.cursor(), builtin_index);
-
         let nargs = builder.ins().iconst(I64, arg_types.len() as i64);
 
-        let call_inst =
-            builder
-                .ins()
-                .call_indirect(builtin_sig, builtin_addr, &[vmctx, func, nargs]);
-        Ok(builder.func.dfg.first_result(call_inst))
+        let (_vmctx, contref) = generate_builtin_call!(self, builder, cont_new, [func, nargs]);
+
+        Ok(contref)
     }
 
     // TODO(dhil): Currently, this function invokes
@@ -2294,9 +2287,9 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         // designated typed continuation store in the VM context.
         //
         // Second: Call the `resume` builtin
+
         self.typed_continuations_store_resume_args(builder, call_args, contref);
 
-        // Fourth step: finally, we return the result of the call.
         let (vmctx, result) = generate_builtin_call!(self, builder, resume, [contref]);
 
         // The result encodes whether the return happens via ordinary
@@ -2327,18 +2320,13 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
 
     fn translate_suspend(
         &mut self,
-        mut pos: cranelift_codegen::cursor::FuncCursor<'_>,
+        builder: &mut FunctionBuilder,
         _state: &FuncTranslationState,
         tag_index: u32,
     ) {
-        let builtin_index = BuiltinFunctionIndex::suspend();
-        let builtin_sig = self.builtin_function_signatures.suspend(&mut pos.func);
-        let (vmctx, builtin_addr) =
-            self.translate_load_builtin_function_address(&mut pos, builtin_index);
+        let tag_index = builder.ins().iconst(I32, tag_index as i64);
 
-        let tag_index = pos.ins().iconst(I32, tag_index as i64);
-        pos.ins()
-            .call_indirect(builtin_sig, builtin_addr, &[vmctx, tag_index]);
+        generate_builtin_call_no_return!(self, builder, suspend, [tag_index]);
     }
 
     fn continuation_arguments(&self, index: u32) -> &[WasmType] {
