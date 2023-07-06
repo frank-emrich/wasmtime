@@ -36,11 +36,13 @@ impl Payload {
             assert!(self.length == 0);
             let mut vec = Vec::with_capacity(requested_capacity);
             let ptr = vec.as_mut_ptr();
+            vec.leak();
             self.data = ptr;
         } else if requested_capacity > self.capacity {
             let mut vec = unsafe { Vec::from_raw_parts(self.data, self.length, self.capacity) };
             vec.resize(requested_capacity, 0);
             let ptr = vec.as_mut_ptr();
+            vec.leak();
             self.data = ptr;
         }
         self.capacity = requested_capacity;
@@ -179,10 +181,12 @@ pub fn cont_new(
         Payload::empty()
     } else {
         let mut args = Vec::with_capacity(capacity);
+        let args_ptr = args.as_mut_ptr();
+        args.leak();
         Payload {
             length: 0,
             capacity,
-            data: args.as_mut_ptr(),
+            data: args_ptr,
         }
     };
 
