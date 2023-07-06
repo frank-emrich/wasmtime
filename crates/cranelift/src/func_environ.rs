@@ -2363,7 +2363,7 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         let mut values = vec![];
 
         if valtypes.len() > 0 {
-            let nargs = builder.ins().iconst(I32, values.len() as i64);
+            let nargs = builder.ins().iconst(I32, valtypes.len() as i64);
 
             let (_vmctx, payload_ptr) =
                 generate_builtin_call!(self, builder, get_payload_buffer, [nargs]);
@@ -2470,6 +2470,7 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         //TODO(frank-emrich) what flags exactly do we need here?
         let memflags = ir::MemFlags::trusted();
 
+        assert_eq!(values.len(), valtypes.len());
         if valtypes.len() > 0 {
             let nargs = builder.ins().iconst(I32, values.len() as i64);
 

@@ -135,6 +135,7 @@ pub fn drop_cont_obj(contobj: *mut ContinuationObject) {
 
 /// TODO
 pub fn alllocate_payload_buffer(instance: &mut Instance, element_count: usize) -> *mut u128 {
+    assert!(element_count > 0);
     let payload_ptr =
         unsafe { instance.get_typed_continuations_payloads_ptr_mut() as *mut *mut Vec<u128> };
 
@@ -152,6 +153,7 @@ pub fn alllocate_payload_buffer(instance: &mut Instance, element_count: usize) -
 
 /// TODO
 pub fn dealllocate_payload_buffer(instance: &mut Instance, element_count: usize) {
+    assert!(element_count > 0);
     let payload_ptr =
         unsafe { instance.get_typed_continuations_payloads_ptr_mut() as *mut *mut Vec<u128> };
 
@@ -167,6 +169,7 @@ pub fn dealllocate_payload_buffer(instance: &mut Instance, element_count: usize)
 
 /// TODO
 pub fn get_payload_buffer(instance: &mut Instance, element_count: usize) -> *mut u128 {
+    assert!(element_count > 0);
     let payload_ptr =
         unsafe { instance.get_typed_continuations_payloads_ptr_mut() as *mut *mut Vec<u128> };
 
