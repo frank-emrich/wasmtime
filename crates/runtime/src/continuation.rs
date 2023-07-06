@@ -212,14 +212,6 @@ pub fn cont_new(
     };
 
     let args_ptr = payload.data;
-
-    let contobj = Box::new(ContinuationObject {
-        fiber: ptr::null_mut(),
-        args: payload,
-        status: Status::Initialisation,
-    });
-    let contobj_ptr = Box::into_raw(contobj);
-
     let fiber = Box::new(
         Fiber::new(
             FiberStack::new(4096).unwrap(),
@@ -230,13 +222,14 @@ pub fn cont_new(
         .unwrap(),
     );
 
-    unsafe {
-        contobj_ptr.as_mut().unwrap().fiber = Box::into_raw(fiber);
-    }
-
-    new_cont_ref(contobj_ptr)
-    // TODO(dhil): we need memory clean up of
-    // continuation reference objects.
+    let contobj = Box::new(ContinuationObject {
+        fiber: Box::into_raw(fiber),
+        args: payload,
+        status: Status::Initialisation,
+    });
+    let contref = new_cont_ref(Box::into_raw(contobj));
+    contref // TODO(dhil): we need memory clean up of
+            // continuation reference objects.
 }
 
 /// TODO
