@@ -3,6 +3,7 @@
 use crate::instance::TopOfStackPointer;
 use crate::vmcontext::{VMArrayCallFunction, VMFuncRef, VMOpaqueContext, ValRaw};
 use crate::{Instance, TrapReason};
+use std::alloc;
 use std::cmp;
 use std::mem;
 use std::ptr;
@@ -156,6 +157,20 @@ pub fn cont_obj_ensure_payloads_additional_capacity(obj: *mut ContinuationObject
     // if unsafe { (*contobj).payloads.len() } < npayloads {
     //     Vec::resize(unsafe { &mut (*contobj).payloads }, npayloads, 0u128)
     // }
+}
+
+/// TODO
+pub fn alllocate_payload_buffer(element_count: usize) -> *mut u128 {
+    let size = element_count * mem::size_of::<u128>();
+    let layout = alloc::Layout::from_size_align(size, mem::align_of::<u128>()).unwrap();
+    return unsafe { alloc::alloc(layout) as *mut u128 };
+}
+
+/// TODO
+pub fn dealllocate_payload_buffer(buffer: *mut u128, element_count: usize) {
+    let size = element_count * mem::size_of::<u128>();
+    let layout = alloc::Layout::from_size_align(size, mem::align_of::<u128>()).unwrap();
+    unsafe { alloc::dealloc(buffer as *mut u8, layout) };
 }
 
 /// TODO
