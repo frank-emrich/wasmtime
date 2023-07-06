@@ -679,6 +679,15 @@ fn cont_ref_get_cont_obj(
     )? as *mut u8)
 }
 
+fn cont_obj_has_status_invoked(
+    _instance: &mut Instance,
+    contobj: *mut u8,
+) -> Result<u32, TrapReason> {
+    Ok(crate::continuation::cont_obj_has_status_invoked(
+        contobj as *mut crate::continuation::ContinuationObject,
+    ) as u32)
+}
+
 fn alllocate_payload_buffer(instance: &mut Instance, element_count: u32) -> *mut u8 {
     crate::continuation::alllocate_payload_buffer(instance, element_count as usize) as *mut u8
 }

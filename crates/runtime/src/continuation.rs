@@ -108,6 +108,16 @@ pub fn cont_obj_occupy_next_args_slots(
 
 /// TODO
 #[inline(always)]
+pub fn cont_obj_has_status_invoked(obj: *mut ContinuationObject) -> bool {
+    // We use this function to determine whether a contination object is in initialisation mode or not.
+    // FIXME(frank-emrich) Rename this function to make it clearer that we shouldn't call it in `Returned` mode
+    assert!(unsafe { (*obj).status != Status::Returned });
+
+    return unsafe { (*obj).status == Status::Invoked };
+}
+
+/// TODO
+#[inline(always)]
 pub fn new_cont_ref(contobj: *mut ContinuationObject) -> *mut ContinuationReference {
     let contref = Box::new(ContinuationReference(Some(contobj)));
     Box::into_raw(contref)

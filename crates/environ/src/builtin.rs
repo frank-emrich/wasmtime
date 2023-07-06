@@ -66,6 +66,8 @@ macro_rules! foreach_builtin_function {
             cont_obj_occupy_next_args_slots(vmctx: vmctx, contobj: pointer, arg_count: i32) -> pointer;
 
 
+            /// Returns a boolean indicating whether the status flag of the continutation object is `Invoked`
+            cont_obj_has_status_invoked(vmctx: vmctx, contobj: pointer) -> i32;
 
             /// Projects the continuation suspend payloads buffer.
             cont_ref_get_cont_obj(vmctx: vmctx, contref: pointer) -> pointer;
