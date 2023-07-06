@@ -55,11 +55,6 @@ pub struct ContinuationObject {
     args: Args,
 
     status: Status,
-
-    /// Becomes Some once the initial resume is executed.
-    /// The enclosed pointer is null if and only if the function passed to `cont.new` has 0 parameters and return values.
-    /// If the continuation finishes normally (i.e., the underlying function returns), this contains the returned data.
-    results: Option<*mut u128>,
 }
 
 /// M:1 Many-to-one mapping. A single ContinuationObject may be
@@ -93,8 +88,9 @@ pub fn cont_ref_get_cont_obj(
 /// TODO
 #[inline(always)]
 pub fn cont_obj_get_results(obj: *mut ContinuationObject) -> *mut u128 {
-    assert!(unsafe { !(*obj).results.unwrap().is_null() });
-    unsafe { (*obj).results.unwrap() }
+    assert!(unsafe { (*obj).status == Status::Returned });
+    assert!(unsafe { !(*obj).args.data.is_null() });
+    unsafe { (*obj).args.data }
 }
 
 /// TODO
@@ -103,6 +99,7 @@ pub fn cont_obj_occupy_next_args_slots(
     obj: *mut ContinuationObject,
     arg_count: usize,
 ) -> *mut u128 {
+    assert!(unsafe { (*obj).status == Status::Initialisation });
     let args_len = unsafe { (*obj).args.length };
     unsafe { (*obj).args.length += arg_count };
     assert!(unsafe { (*obj).args.length <= (*obj).args.capacity });
@@ -122,7 +119,6 @@ pub fn drop_cont_obj(contobj: *mut ContinuationObject) {
     mem::drop(unsafe { (*contobj).fiber });
     unsafe {
         mem::drop((*contobj).args.data);
-        (*contobj).results.map_or((), mem::drop);
     }
     mem::drop(contobj)
 }
@@ -210,7 +206,6 @@ pub fn cont_new(
     let contobj = Box::new(ContinuationObject {
         fiber: ptr::null_mut(),
         args: payload,
-        results: None,
         status: Status::Initialisation,
     });
     let contobj_ptr = Box::into_raw(contobj);
@@ -219,11 +214,6 @@ pub fn cont_new(
         Fiber::new(
             FiberStack::new(4096).unwrap(),
             move |_first_val: (), _suspend: &Yield| unsafe {
-                let contobj = contobj_ptr.as_mut().unwrap();
-
-                contobj.results = Some(contobj.args.data);
-                contobj.args = Args::empty();
-
                 f(callee_ctx, caller_ctx, args_ptr as *mut ValRaw, param_count)
             },
         )
