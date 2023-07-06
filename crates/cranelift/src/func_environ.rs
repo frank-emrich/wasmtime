@@ -2451,7 +2451,7 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
                 generate_builtin_call!(self, builder, cont_obj_get_payloads, [contobj]);
 
             let mut offset =
-                i32::try_from(self.offsets.vmctx_typed_continuations_payloads()).unwrap();
+                i32::try_from(self.offsets.vmctx_typed_continuations_payloads_ptr()).unwrap();
             for value in values {
                 builder.ins().store(memflags, *value, payload_addr, offset);
                 offset += self.offsets.ptr.maximum_value_size() as i32;
