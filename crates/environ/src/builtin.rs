@@ -64,7 +64,7 @@ macro_rules! foreach_builtin_function {
             cont_obj_get_results(vmctx: vmctx, contobj: pointer) -> pointer;
             /// Projects a pointer within the continuation argument buffer pointing at
             /// the next free slot.
-            cont_obj_occuppy_next_payload_slots(vmctx: vmctx, contobj: pointer, arg_count: i32) -> pointer;
+            cont_obj_occupy_next_args_slots(vmctx: vmctx, contobj: pointer, arg_count: i32) -> pointer;
             /// Sets the payloads index back to 0, effectively deleting the contents of the payload buffer
             cont_obj_reset_payloads(vmctx: vmctx, contobj: pointer);
             /// Increases the capacity of the continuation object's

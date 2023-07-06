@@ -12,16 +12,16 @@ type ContinuationFiber = Fiber<'static, (), u32, ()>;
 type Yield = Suspend<(), u32, ()>;
 
 /// Similar to Vector<*mut u128>, but allowing us to hand out the `data` pointer to generated code.
-struct Payload {
+struct Args {
     length: usize,
     capacity: usize,
     /// This is null if and only if capacity (and thus also payload_length) are 0.
     data: *mut u128,
 }
 
-impl Payload {
-    fn empty() -> Payload {
-        return Payload {
+impl Args {
+    fn empty() -> Args {
+        return Args {
             length: 0,
             capacity: 0,
             data: ptr::null_mut(),
@@ -58,7 +58,7 @@ pub struct ContinuationObject {
     /// 1. supplied by cont.bind
     /// 2. supplied by resume
     /// 3. supplied when suspending to a tag
-    payload: Payload,
+    args: Args,
 
     /// Becomes Some once the initial resume is executed.
     /// The enclosed pointer is null if and only if the function passed to `cont.new` has 0 parameters and return values.
@@ -101,14 +101,14 @@ pub fn cont_obj_get_payloads(obj: *mut ContinuationObject) -> *mut u128 {
     // This means that generated code acting on payloads must *not* work
     // in a way such that it unconditionally asks for the payload pointer
     // and then only accesses it if it actually needs to read or write payload data.
-    assert!(unsafe { !(*obj).payload.data.is_null() });
-    unsafe { (*obj).payload.data }
+    assert!(unsafe { !(*obj).args.data.is_null() });
+    unsafe { (*obj).args.data }
 }
 
 /// TODO
 #[inline(always)]
 pub fn cont_obj_reset_payloads(obj: *mut ContinuationObject) {
-    unsafe { (*obj).payload.length = 0 };
+    unsafe { (*obj).args.length = 0 };
 }
 
 /// TODO
@@ -120,14 +120,14 @@ pub fn cont_obj_get_results(obj: *mut ContinuationObject) -> *mut u128 {
 
 /// TODO
 #[inline(always)]
-pub fn cont_obj_occuppy_next_payload_slots(
+pub fn cont_obj_occupy_next_args_slots(
     obj: *mut ContinuationObject,
     arg_count: usize,
 ) -> *mut u128 {
     cont_obj_ensure_payloads_additional_capacity(obj, arg_count);
-    let args_len = unsafe { (*obj).payload.length };
-    unsafe { (*obj).payload.length += arg_count };
-    unsafe { (*obj).payload.data.offset(args_len as isize) }
+    let args_len = unsafe { (*obj).args.length };
+    unsafe { (*obj).args.length += arg_count };
+    unsafe { (*obj).args.data.offset(args_len as isize) }
 }
 
 /// TODO
@@ -142,7 +142,7 @@ pub fn new_cont_ref(contobj: *mut ContinuationObject) -> *mut ContinuationRefere
 pub fn drop_cont_obj(contobj: *mut ContinuationObject) {
     mem::drop(unsafe { (*contobj).fiber });
     unsafe {
-        mem::drop((*contobj).payload.data);
+        mem::drop((*contobj).args.data);
         (*contobj).results.map_or((), mem::drop);
     }
     mem::drop(contobj)
@@ -151,8 +151,8 @@ pub fn drop_cont_obj(contobj: *mut ContinuationObject) {
 /// TODO
 #[inline(always)]
 pub fn cont_obj_ensure_payloads_additional_capacity(obj: *mut ContinuationObject, capacity: usize) {
-    let length = unsafe { (*obj).payload.length };
-    unsafe { (*obj).payload.ensure_capacity(length + capacity) };
+    let length = unsafe { (*obj).args.length };
+    unsafe { (*obj).args.ensure_capacity(length + capacity) };
     // if unsafe { (*contobj).payloads.len() } < npayloads {
     //     Vec::resize(unsafe { &mut (*contobj).payloads }, npayloads, 0u128)
     // }
@@ -178,12 +178,12 @@ pub fn cont_new(
     let capacity = cmp::max(param_count, result_count);
 
     let payload = if capacity == 0 {
-        Payload::empty()
+        Args::empty()
     } else {
         let mut args = Vec::with_capacity(capacity);
         let args_ptr = args.as_mut_ptr();
         args.leak();
-        Payload {
+        Args {
             length: 0,
             capacity,
             data: args_ptr,
@@ -194,7 +194,7 @@ pub fn cont_new(
 
     let contobj = Box::new(ContinuationObject {
         fiber: ptr::null_mut(),
-        payload,
+        args: payload,
         results: None,
     });
     let contobj_ptr = Box::into_raw(contobj);
@@ -205,8 +205,8 @@ pub fn cont_new(
             move |_first_val: (), _suspend: &Yield| unsafe {
                 let contobj = contobj_ptr.as_mut().unwrap();
 
-                contobj.results = Some(contobj.payload.data);
-                contobj.payload = Payload::empty();
+                contobj.results = Some(contobj.args.data);
+                contobj.args = Args::empty();
 
                 f(callee_ctx, caller_ctx, args_ptr as *mut ValRaw, param_count)
             },

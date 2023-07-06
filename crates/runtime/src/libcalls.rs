@@ -666,12 +666,12 @@ fn cont_obj_get_results(_instance: &mut Instance, contobj: *mut u8) -> *mut u8 {
     ) as *mut u8
 }
 
-fn cont_obj_occuppy_next_payload_slots(
+fn cont_obj_occupy_next_args_slots(
     _instance: &mut Instance,
     contobj: *mut u8,
     arg_count: u32,
 ) -> *mut u8 {
-    crate::continuation::cont_obj_occuppy_next_payload_slots(
+    crate::continuation::cont_obj_occupy_next_args_slots(
         contobj as *mut crate::continuation::ContinuationObject,
         arg_count as usize,
     ) as *mut u8

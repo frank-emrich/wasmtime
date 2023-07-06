@@ -2412,7 +2412,7 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         let (_vmctx, args_ptr) = generate_builtin_call!(
             self,
             builder,
-            cont_obj_occuppy_next_payload_slots,
+            cont_obj_occupy_next_args_slots,
             [contobj, nargs]
         );
 
