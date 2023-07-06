@@ -76,10 +76,11 @@ macro_rules! foreach_builtin_function {
             //cont_obj_drop(vmctx: vmctx, contobj: pointer);
             /// Crates a new continuation reference.
             new_cont_ref(vmctx: vmctx, contobj: pointer) -> pointer;
-            /// Allocates a buffer able to hold the given number of raw values and returns the pointer to it.
+            /// Populates the typed continuation payload buffer within the vmcontext,
+            /// large enough to hold the given number of raw values and returns the pointer to the buffer.
             alllocate_payload_buffer(vmctx: vmctx, element_count: i32) -> pointer;
             /// Counterpart to previous function.
-            dealllocate_payload_buffer(vmctx: vmctx, buffer: pointer, element_count: i32);
+            dealllocate_payload_buffer(vmctx: vmctx, element_count: i32);
         }
     };
 }

@@ -3,7 +3,6 @@
 use crate::instance::TopOfStackPointer;
 use crate::vmcontext::{VMArrayCallFunction, VMFuncRef, VMOpaqueContext, ValRaw};
 use crate::{Instance, TrapReason};
-use std::alloc;
 use std::cmp;
 use std::mem;
 use std::ptr;
@@ -160,17 +159,35 @@ pub fn cont_obj_ensure_payloads_additional_capacity(obj: *mut ContinuationObject
 }
 
 /// TODO
-pub fn alllocate_payload_buffer(element_count: usize) -> *mut u128 {
-    let size = element_count * mem::size_of::<u128>();
-    let layout = alloc::Layout::from_size_align(size, mem::align_of::<u128>()).unwrap();
-    return unsafe { alloc::alloc(layout) as *mut u128 };
+pub fn alllocate_payload_buffer(instance: &mut Instance, element_count: usize) -> *mut u128 {
+    let payload_ptr =
+        unsafe { instance.get_typed_continuations_payloads_ptr_mut() as *mut *mut Vec<u128> };
+
+    // Ensure that there isn't an active payload buffer. If there was, we didn't clean up propertly
+    assert!(unsafe { (*payload_ptr).is_null() });
+
+    let mut vec = Box::new(Vec::<u128>::with_capacity(element_count));
+
+    let vec_data = (*vec).as_mut_ptr();
+    unsafe {
+        *payload_ptr = Box::into_raw(vec);
+    }
+    return vec_data;
 }
 
 /// TODO
-pub fn dealllocate_payload_buffer(buffer: *mut u128, element_count: usize) {
-    let size = element_count * mem::size_of::<u128>();
-    let layout = alloc::Layout::from_size_align(size, mem::align_of::<u128>()).unwrap();
-    unsafe { alloc::dealloc(buffer as *mut u8, layout) };
+pub fn dealllocate_payload_buffer(instance: &mut Instance, element_count: usize) {
+    let payload_ptr =
+        unsafe { instance.get_typed_continuations_payloads_ptr_mut() as *mut *mut Vec<u128> };
+
+    let vec = unsafe { Box::from_raw(*payload_ptr) };
+
+    // If these don't match something went wrong.
+    assert_eq!(vec.capacity(), element_count);
+
+    unsafe { *payload_ptr = ptr::null_mut() };
+
+    // buffer destroyed when `vec` goes out of scope
 }
 
 /// TODO

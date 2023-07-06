@@ -706,10 +706,10 @@ fn cont_ref_get_cont_obj(
     )? as *mut u8)
 }
 
-fn alllocate_payload_buffer(_instance: &mut Instance, element_count: u32) -> *mut u8 {
-    crate::continuation::alllocate_payload_buffer(element_count as usize) as *mut u8
+fn alllocate_payload_buffer(instance: &mut Instance, element_count: u32) -> *mut u8 {
+    crate::continuation::alllocate_payload_buffer(instance, element_count as usize) as *mut u8
 }
 
-fn dealllocate_payload_buffer(_instance: &mut Instance, buffer: *mut u8, element_count: u32) {
-    crate::continuation::dealllocate_payload_buffer(buffer as *mut u128, element_count as usize);
+fn dealllocate_payload_buffer(instance: &mut Instance, element_count: u32) {
+    crate::continuation::dealllocate_payload_buffer(instance, element_count as usize);
 }
