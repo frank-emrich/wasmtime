@@ -191,6 +191,20 @@ pub fn dealllocate_payload_buffer(instance: &mut Instance, element_count: usize)
 }
 
 /// TODO
+pub fn get_payload_buffer(instance: &mut Instance, element_count: usize) -> *mut u128 {
+    let payload_ptr =
+        unsafe { instance.get_typed_continuations_payloads_ptr_mut() as *mut *mut Vec<u128> };
+
+    let vec = unsafe { (*payload_ptr).as_mut().unwrap() };
+
+    // If these don't match something went wrong.
+    assert_eq!(vec.capacity(), element_count);
+
+    let vec_data = vec.as_mut_ptr();
+    return vec_data;
+}
+
+/// TODO
 #[inline(always)]
 pub fn cont_new(
     instance: &mut Instance,

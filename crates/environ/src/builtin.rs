@@ -79,8 +79,13 @@ macro_rules! foreach_builtin_function {
             /// Populates the typed continuation payload buffer within the vmcontext,
             /// large enough to hold the given number of raw values and returns the pointer to the buffer.
             alllocate_payload_buffer(vmctx: vmctx, element_count: i32) -> pointer;
+
+
             /// Counterpart to previous function.
-            dealllocate_payload_buffer(vmctx: vmctx, element_count: i32);
+            dealllocate_payload_buffer(vmctx: vmctx, expected_element_capacity: i32);
+
+            /// Returns pointer
+            get_payload_buffer(vmctx: vmctx, expected_element_capacity: i32) -> pointer;
         }
     };
 }

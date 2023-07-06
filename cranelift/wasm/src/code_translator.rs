@@ -2478,7 +2478,7 @@ pub fn translate_operator<FE: FuncEnvironment + ?Sized>(
             canonicalise_brif(builder, is_zero, return_block, &[], suspend_block, &[]);
 
             // Next, build the suspend block.
-            let (contobj, contref) = {
+            let contref = {
                 builder.switch_to_block(suspend_block);
                 builder.seal_block(suspend_block);
 
@@ -2501,7 +2501,7 @@ pub fn translate_operator<FE: FuncEnvironment + ?Sized>(
 
                 // We need to terminate this block before being allowed to switch to another one
                 builder.ins().jump(switch_block, &[]);
-                (contobj, contref)
+                contref
             };
 
             // Strategy:
@@ -2524,10 +2524,7 @@ pub fn translate_operator<FE: FuncEnvironment + ?Sized>(
 
                 // Load and push arguments.
                 let param_types = environ.tag_params(tag).to_vec();
-                let params =
-                    environ.typed_continuations_load_payloads(builder, &param_types, contobj);
-
-                environ.typed_continuations_reset_payloads(builder, contobj);
+                let params = environ.typed_continuations_load_payloads(builder, &param_types);
 
                 state.pushn(&params);
                 // Push the continuation reference.
@@ -2588,26 +2585,14 @@ pub fn translate_operator<FE: FuncEnvironment + ?Sized>(
 
             let params = state.peekn(param_types.len());
             let param_count = params.len();
-            let pointer_type = environ.pointer_type();
-            let vmctx = builder
-                .func
-                .create_global_value(ir::GlobalValueData::VMContext);
-            let base_addr = builder.cursor().ins().global_value(pointer_type, vmctx);
 
-            // FIXME(frank-emrich): We need a mechanism to detect if no continuation object is available
-            // (i.e., calling suspend from code not subject to a handler) and fail cleanly
-            let cont_obj = environ.typed_continuations_load_continuation_object(builder, base_addr);
-
-            environ.typed_continuations_store_payloads(builder, &param_types, params, cont_obj);
+            environ.typed_continuations_store_payloads(builder, &param_types, params);
             state.popn(param_count);
 
             environ.translate_suspend(builder, state, *tag_index);
 
             let return_types = environ.tag_returns(*tag_index).to_vec();
-            let return_values =
-                environ.typed_continuations_load_payloads(builder, &return_types, cont_obj);
-
-            environ.typed_continuations_reset_payloads(builder, cont_obj);
+            let return_values = environ.typed_continuations_load_payloads(builder, &return_types);
 
             state.pushn(&return_values);
         }

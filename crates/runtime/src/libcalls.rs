@@ -710,6 +710,10 @@ fn alllocate_payload_buffer(instance: &mut Instance, element_count: u32) -> *mut
     crate::continuation::alllocate_payload_buffer(instance, element_count as usize) as *mut u8
 }
 
-fn dealllocate_payload_buffer(instance: &mut Instance, element_count: u32) {
-    crate::continuation::dealllocate_payload_buffer(instance, element_count as usize);
+fn dealllocate_payload_buffer(instance: &mut Instance, expected_element_capacity: u32) {
+    crate::continuation::dealllocate_payload_buffer(instance, expected_element_capacity as usize);
+}
+
+fn get_payload_buffer(instance: &mut Instance, expected_element_capacity: u32) -> *mut u8 {
+    crate::continuation::get_payload_buffer(instance, expected_element_capacity as usize) as *mut u8
 }

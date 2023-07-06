@@ -2365,14 +2365,15 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         &mut self,
         builder: &mut FunctionBuilder,
         valtypes: &[WasmType],
-        contobj: ir::Value,
     ) -> Vec<ir::Value> {
         let memflags = ir::MemFlags::trusted();
         let mut values = vec![];
 
         if valtypes.len() > 0 {
+            let nargs = builder.ins().iconst(I32, values.len() as i64);
+
             let (_vmctx, payload_ptr) =
-                generate_builtin_call!(self, builder, cont_obj_get_payloads, [contobj]);
+                generate_builtin_call!(self, builder, get_payload_buffer, [nargs]);
 
             let mut offset = 0;
             for valtype in valtypes {
@@ -2385,6 +2386,13 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
                 values.push(val);
                 offset += self.offsets.ptr.maximum_value_size() as i32;
             }
+
+            generate_builtin_call_no_return_val!(
+                self,
+                builder,
+                dealllocate_payload_buffer,
+                [nargs]
+            );
         }
         values
     }
@@ -2431,7 +2439,6 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         builder: &mut FunctionBuilder,
         valtypes: &[WasmType],
         values: &[ir::Value],
-        contobj: ir::Value,
     ) {
         //TODO(frank-emrich) what flags exactly do we need here?
         let memflags = ir::MemFlags::trusted();
@@ -2439,19 +2446,10 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         if valtypes.len() > 0 {
             let nargs = builder.ins().iconst(I64, values.len() as i64);
 
-            // FIXME: We must (have?) reset length before this!
-            generate_builtin_call_no_return_val!(
-                self,
-                builder,
-                cont_obj_ensure_payloads_additional_capacity,
-                [contobj, nargs]
-            );
-
             let (_vmctx, payload_addr) =
-                generate_builtin_call!(self, builder, cont_obj_get_payloads, [contobj]);
+                generate_builtin_call!(self, builder, alllocate_payload_buffer, [nargs]);
 
-            let mut offset =
-                i32::try_from(self.offsets.vmctx_typed_continuations_payloads_ptr()).unwrap();
+            let mut offset = 0;
             for value in values {
                 builder.ins().store(memflags, *value, payload_addr, offset);
                 offset += self.offsets.ptr.maximum_value_size() as i32;

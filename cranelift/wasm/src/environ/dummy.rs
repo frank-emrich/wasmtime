@@ -734,7 +734,6 @@ impl<'dummy_environment> FuncEnvironment for DummyFuncEnvironment<'dummy_environ
         &mut self,
         _builder: &mut FunctionBuilder,
         _valtypes: &[WasmType],
-        _base_addr: ir::Value,
     ) -> Vec<ir::Value> {
         todo!()
     }
@@ -753,7 +752,6 @@ impl<'dummy_environment> FuncEnvironment for DummyFuncEnvironment<'dummy_environ
         _builder: &mut FunctionBuilder,
         _valtypes: &[WasmType],
         _values: &[ir::Value],
-        _base_addr: ir::Value,
     ) {
         todo!()
     }
