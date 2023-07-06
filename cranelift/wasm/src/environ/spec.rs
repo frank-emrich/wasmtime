@@ -634,13 +634,6 @@ pub trait FuncEnvironment: TargetEnvironment {
     );
 
     /// TODO
-    fn typed_continuations_reset_payloads(
-        &mut self,
-        builder: &mut FunctionBuilder,
-        contobj: ir::Value,
-    );
-
-    /// TODO
     fn typed_continuations_store_resume_args(
         &mut self,
         builder: &mut FunctionBuilder,

@@ -2353,14 +2353,6 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         self.types[idx].returns()
     }
 
-    fn typed_continuations_reset_payloads(
-        &mut self,
-        builder: &mut FunctionBuilder,
-        contobj: ir::Value,
-    ) {
-        generate_builtin_call_no_return_val!(self, builder, cont_obj_reset_payloads, [contobj]);
-    }
-
     fn typed_continuations_load_payloads(
         &mut self,
         builder: &mut FunctionBuilder,

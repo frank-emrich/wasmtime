@@ -756,14 +756,6 @@ impl<'dummy_environment> FuncEnvironment for DummyFuncEnvironment<'dummy_environ
         todo!()
     }
 
-    fn typed_continuations_reset_payloads(
-        &mut self,
-        _builder: &mut FunctionBuilder,
-        _contobj: ir::Value,
-    ) {
-        todo!();
-    }
-
     fn typed_continuations_load_continuation_object(
         &self,
         _builder: &mut FunctionBuilder,
