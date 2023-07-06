@@ -32,7 +32,7 @@ impl Payload {
         assert!(requested_capacity != 0);
 
         if self.capacity == 0 {
-            assert!(unsafe { self.data.as_ref() }.is_none());
+            assert!(self.data.is_null());
             assert!(self.length == 0);
             let mut vec = Vec::with_capacity(requested_capacity);
             let ptr = vec.as_mut_ptr();
@@ -101,7 +101,7 @@ pub fn cont_obj_get_payloads(obj: *mut ContinuationObject) -> *mut u128 {
     // This means that generated code acting on payloads must *not* work
     // in a way such that it unconditionally asks for the payload pointer
     // and then only accesses it if it actually needs to read or write payload data.
-    assert!(unsafe { (*obj).payload.data.as_ref() }.is_some());
+    assert!(unsafe { !(*obj).payload.data.is_null() });
     unsafe { (*obj).payload.data }
 }
 
@@ -114,7 +114,7 @@ pub fn cont_obj_reset_payloads(obj: *mut ContinuationObject) {
 /// TODO
 #[inline(always)]
 pub fn cont_obj_get_results(obj: *mut ContinuationObject) -> *mut u128 {
-    assert!(unsafe { (*obj).results.unwrap().as_ref().is_some() });
+    assert!(unsafe { !(*obj).results.unwrap().is_null() });
     unsafe { (*obj).results.unwrap() }
 }
 
