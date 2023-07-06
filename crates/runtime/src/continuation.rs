@@ -29,6 +29,20 @@ impl Args {
     }
 }
 
+/// Encodes the life cycle of a `ContinuationObject`
+#[derive(PartialEq)]
+enum Status {
+    /// The `ContinuationObject` has been created, but `resume` has never been called on it.
+    /// During this stage, we may add arguments using `cont.bind`
+    Initialisation,
+    /// `resume` has been invoked at least once on the `ContinuationObject`, meaning that the function passed to `cont.new` has started executing.
+    /// Note that this status does not indicate whether the execution of this function is currently suspended or not.
+    Invoked,
+    /// The function originally passed to `cont.new` has returned normally.
+    /// Note that there is no guarantee that a ContinuationObject will ever reach this status, as it may stay suspended until being dropped.
+    Returned,
+}
+
 /// TODO
 #[repr(C)]
 pub struct ContinuationObject {
@@ -39,6 +53,8 @@ pub struct ContinuationObject {
     /// 2. supplied by resume
     /// 3. supplied when suspending to a tag
     args: Args,
+
+    status: Status,
 
     /// Becomes Some once the initial resume is executed.
     /// The enclosed pointer is null if and only if the function passed to `cont.new` has 0 parameters and return values.
@@ -195,6 +211,7 @@ pub fn cont_new(
         fiber: ptr::null_mut(),
         args: payload,
         results: None,
+        status: Status::Initialisation,
     });
     let contobj_ptr = Box::into_raw(contobj);
 
@@ -228,6 +245,9 @@ pub fn resume(
     instance: &mut Instance,
     contobj: *mut ContinuationObject,
 ) -> Result<u32, TrapReason> {
+    assert!(unsafe {
+        (*contobj).status == Status::Initialisation || (*contobj).status == Status::Invoked
+    });
     let fiber = unsafe { (*contobj).fiber };
     let fiber_stack = unsafe { &fiber.as_ref().unwrap().stack() };
     let tsp = TopOfStackPointer::as_raw(instance.tsp());
@@ -238,12 +258,14 @@ pub fn resume(
             .stack_limit
             .get_mut()) = 0
     };
+    unsafe { (*contobj).status = Status::Invoked };
     match unsafe { fiber.as_mut().unwrap().resume(()) } {
         Ok(()) => {
             // The result of the continuation was written to the first
             // entry of the payload store by virtue of using the array
             // calling trampoline to execute it.
 
+            unsafe { (*contobj).status = Status::Returned };
             Ok(0) // zero value = return normally.
         }
         Err(tag) => {
