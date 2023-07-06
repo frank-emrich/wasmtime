@@ -139,8 +139,10 @@ pub fn alllocate_payload_buffer(instance: &mut Instance, element_count: usize) -
     let payload_ptr =
         unsafe { instance.get_typed_continuations_payloads_ptr_mut() as *mut *mut Vec<u128> };
 
+    // FIXME(frank-emrich) This doesn't work, yet, because we don't zero-initialize the
+    // payload pointer field in the VMContext, meaning that it may initially contain garbage.
     // Ensure that there isn't an active payload buffer. If there was, we didn't clean up propertly
-    assert!(unsafe { (*payload_ptr).is_null() });
+    // assert!(unsafe { (*payload_ptr).is_null() });
 
     let mut vec = Box::new(Vec::<u128>::with_capacity(element_count));
 
