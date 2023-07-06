@@ -67,7 +67,7 @@ macro_rules! foreach_builtin_function {
 
 
             /// Returns a boolean indicating whether the status flag of the continutation object is `Invoked`
-            cont_obj_has_status_invoked(vmctx: vmctx, contobj: pointer) -> i32;
+            cont_obj_has_state_invoked(vmctx: vmctx, contobj: pointer) -> i32;
 
             /// Projects the continuation suspend payloads buffer.
             cont_ref_get_cont_obj(vmctx: vmctx, contref: pointer) -> pointer;

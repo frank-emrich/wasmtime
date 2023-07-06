@@ -2417,7 +2417,7 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
             builder.append_block_param(store_data_block, self.pointer_type());
 
             let (_vmctx, is_invoked) =
-                generate_builtin_call!(self, builder, cont_obj_has_status_invoked, [contobj]);
+                generate_builtin_call!(self, builder, cont_obj_has_state_invoked, [contobj]);
 
             builder
                 .ins()

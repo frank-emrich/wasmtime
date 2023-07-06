@@ -31,12 +31,12 @@ impl Args {
 
 /// Encodes the life cycle of a `ContinuationObject`
 #[derive(PartialEq)]
-enum Status {
+enum State {
     /// The `ContinuationObject` has been created, but `resume` has never been called on it.
     /// During this stage, we may add arguments using `cont.bind`
     Initialisation,
     /// `resume` has been invoked at least once on the `ContinuationObject`, meaning that the function passed to `cont.new` has started executing.
-    /// Note that this status does not indicate whether the execution of this function is currently suspended or not.
+    /// Note that this state does not indicate whether the execution of this function is currently suspended or not.
     Invoked,
     /// The function originally passed to `cont.new` has returned normally.
     /// Note that there is no guarantee that a ContinuationObject will ever reach this status, as it may stay suspended until being dropped.
@@ -54,7 +54,7 @@ pub struct ContinuationObject {
     /// 3. supplied when suspending to a tag
     args: Args,
 
-    status: Status,
+    state: State,
 }
 
 /// M:1 Many-to-one mapping. A single ContinuationObject may be
@@ -88,7 +88,7 @@ pub fn cont_ref_get_cont_obj(
 /// TODO
 #[inline(always)]
 pub fn cont_obj_get_results(obj: *mut ContinuationObject) -> *mut u128 {
-    assert!(unsafe { (*obj).status == Status::Returned });
+    assert!(unsafe { (*obj).state == State::Returned });
     assert!(unsafe { !(*obj).args.data.is_null() });
     unsafe { (*obj).args.data }
 }
@@ -99,7 +99,7 @@ pub fn cont_obj_occupy_next_args_slots(
     obj: *mut ContinuationObject,
     arg_count: usize,
 ) -> *mut u128 {
-    assert!(unsafe { (*obj).status == Status::Initialisation });
+    assert!(unsafe { (*obj).state == State::Initialisation });
     let args_len = unsafe { (*obj).args.length };
     unsafe { (*obj).args.length += arg_count };
     assert!(unsafe { (*obj).args.length <= (*obj).args.capacity });
@@ -108,12 +108,12 @@ pub fn cont_obj_occupy_next_args_slots(
 
 /// TODO
 #[inline(always)]
-pub fn cont_obj_has_status_invoked(obj: *mut ContinuationObject) -> bool {
+pub fn cont_obj_has_state_invoked(obj: *mut ContinuationObject) -> bool {
     // We use this function to determine whether a contination object is in initialisation mode or not.
     // FIXME(frank-emrich) Rename this function to make it clearer that we shouldn't call it in `Returned` mode
-    assert!(unsafe { (*obj).status != Status::Returned });
+    assert!(unsafe { (*obj).state != State::Returned });
 
-    return unsafe { (*obj).status == Status::Invoked };
+    return unsafe { (*obj).state == State::Invoked };
 }
 
 /// TODO
@@ -230,7 +230,7 @@ pub fn cont_new(
     let contobj = Box::new(ContinuationObject {
         fiber: Box::into_raw(fiber),
         args: payload,
-        status: Status::Initialisation,
+        state: State::Initialisation,
     });
     let contref = new_cont_ref(Box::into_raw(contobj));
     contref // TODO(dhil): we need memory clean up of
@@ -244,7 +244,7 @@ pub fn resume(
     contobj: *mut ContinuationObject,
 ) -> Result<u32, TrapReason> {
     assert!(unsafe {
-        (*contobj).status == Status::Initialisation || (*contobj).status == Status::Invoked
+        (*contobj).state == State::Initialisation || (*contobj).state == State::Invoked
     });
     let fiber = unsafe { (*contobj).fiber };
     let fiber_stack = unsafe { &fiber.as_ref().unwrap().stack() };
@@ -256,14 +256,14 @@ pub fn resume(
             .stack_limit
             .get_mut()) = 0
     };
-    unsafe { (*contobj).status = Status::Invoked };
+    unsafe { (*contobj).state = State::Invoked };
     match unsafe { fiber.as_mut().unwrap().resume(()) } {
         Ok(()) => {
             // The result of the continuation was written to the first
             // entry of the payload store by virtue of using the array
             // calling trampoline to execute it.
 
-            unsafe { (*contobj).status = Status::Returned };
+            unsafe { (*contobj).state = State::Returned };
             Ok(0) // zero value = return normally.
         }
         Err(tag) => {
