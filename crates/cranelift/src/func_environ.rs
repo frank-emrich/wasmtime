@@ -2421,7 +2421,7 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
 
             builder
                 .ins()
-                .brif(is_invoked, use_args_block, &[], use_payloads_block, &[]);
+                .brif(is_invoked, use_payloads_block, &[], use_args_block, &[]);
 
             {
                 builder.switch_to_block(use_args_block);
