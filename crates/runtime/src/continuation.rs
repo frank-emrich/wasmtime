@@ -27,26 +27,6 @@ impl Args {
             data: ptr::null_mut(),
         };
     }
-
-    fn ensure_capacity(&mut self, requested_capacity: usize) {
-        assert!(requested_capacity != 0);
-
-        if self.capacity == 0 {
-            assert!(self.data.is_null());
-            assert!(self.length == 0);
-            let mut vec = Vec::with_capacity(requested_capacity);
-            let ptr = vec.as_mut_ptr();
-            vec.leak();
-            self.data = ptr;
-        } else if requested_capacity > self.capacity {
-            let mut vec = unsafe { Vec::from_raw_parts(self.data, self.length, self.capacity) };
-            vec.resize(requested_capacity, 0);
-            let ptr = vec.as_mut_ptr();
-            vec.leak();
-            self.data = ptr;
-        }
-        self.capacity = requested_capacity;
-    }
 }
 
 /// TODO
@@ -96,23 +76,6 @@ pub fn cont_ref_get_cont_obj(
 
 /// TODO
 #[inline(always)]
-pub fn cont_obj_get_payloads(obj: *mut ContinuationObject) -> *mut u128 {
-    // This panics if `data` is null, which is the case if `capacity` is 0.
-    // This means that generated code acting on payloads must *not* work
-    // in a way such that it unconditionally asks for the payload pointer
-    // and then only accesses it if it actually needs to read or write payload data.
-    assert!(unsafe { !(*obj).args.data.is_null() });
-    unsafe { (*obj).args.data }
-}
-
-/// TODO
-#[inline(always)]
-pub fn cont_obj_reset_payloads(obj: *mut ContinuationObject) {
-    unsafe { (*obj).args.length = 0 };
-}
-
-/// TODO
-#[inline(always)]
 pub fn cont_obj_get_results(obj: *mut ContinuationObject) -> *mut u128 {
     assert!(unsafe { !(*obj).results.unwrap().is_null() });
     unsafe { (*obj).results.unwrap() }
@@ -124,9 +87,9 @@ pub fn cont_obj_occupy_next_args_slots(
     obj: *mut ContinuationObject,
     arg_count: usize,
 ) -> *mut u128 {
-    cont_obj_ensure_payloads_additional_capacity(obj, arg_count);
     let args_len = unsafe { (*obj).args.length };
     unsafe { (*obj).args.length += arg_count };
+    assert!(unsafe { (*obj).args.length <= (*obj).args.capacity });
     unsafe { (*obj).args.data.offset(args_len as isize) }
 }
 
@@ -146,16 +109,6 @@ pub fn drop_cont_obj(contobj: *mut ContinuationObject) {
         (*contobj).results.map_or((), mem::drop);
     }
     mem::drop(contobj)
-}
-
-/// TODO
-#[inline(always)]
-pub fn cont_obj_ensure_payloads_additional_capacity(obj: *mut ContinuationObject, capacity: usize) {
-    let length = unsafe { (*obj).args.length };
-    unsafe { (*obj).args.ensure_capacity(length + capacity) };
-    // if unsafe { (*contobj).payloads.len() } < npayloads {
-    //     Vec::resize(unsafe { &mut (*contobj).payloads }, npayloads, 0u128)
-    // }
 }
 
 /// TODO
