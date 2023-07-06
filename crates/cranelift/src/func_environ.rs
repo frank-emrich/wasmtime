@@ -13,6 +13,7 @@ use cranelift_wasm::{
     MemoryIndex, TableIndex, TagIndex, TargetEnvironment, TypeIndex, WasmHeapType, WasmRefType,
     WasmResult, WasmType,
 };
+
 use std::convert::TryFrom;
 use std::mem;
 use wasmparser::Operator;
@@ -2409,19 +2410,53 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
     ) {
         let nargs = builder.ins().iconst(I32, values.len() as i64);
 
-        let (_vmctx, args_ptr) = generate_builtin_call!(
-            self,
-            builder,
-            cont_obj_occupy_next_args_slots,
-            [contobj, nargs]
-        );
+        if values.len() > 0 {
+            let use_args_block = builder.create_block();
+            let use_payloads_block = builder.create_block();
+            let store_data_block = builder.create_block();
+            builder.append_block_param(store_data_block, self.pointer_type());
 
-        // Store the values.
-        let memflags = ir::MemFlags::trusted();
-        let mut offset = 0;
-        for value in values {
-            builder.ins().store(memflags, *value, args_ptr, offset);
-            offset += self.offsets.ptr.maximum_value_size() as i32;
+            let (_vmctx, is_invoked) =
+                generate_builtin_call!(self, builder, cont_obj_has_status_invoked, [contobj]);
+
+            builder
+                .ins()
+                .brif(is_invoked, use_args_block, &[], use_payloads_block, &[]);
+
+            {
+                builder.switch_to_block(use_args_block);
+                builder.seal_block(use_args_block);
+                let (_vmctx, ptr) = generate_builtin_call!(
+                    self,
+                    builder,
+                    cont_obj_occupy_next_args_slots,
+                    [contobj, nargs]
+                );
+                builder.ins().jump(store_data_block, &[ptr]);
+            }
+
+            {
+                builder.switch_to_block(use_payloads_block);
+                builder.seal_block(use_payloads_block);
+                let (_vmctx, ptr) =
+                    generate_builtin_call!(self, builder, alllocate_payload_buffer, [nargs]);
+                builder.ins().jump(store_data_block, &[ptr]);
+            }
+
+            {
+                builder.switch_to_block(store_data_block);
+                builder.seal_block(store_data_block);
+
+                let ptr = builder.block_params(store_data_block)[0];
+
+                // Store the values.
+                let memflags = ir::MemFlags::trusted();
+                let mut offset = 0;
+                for value in values {
+                    builder.ins().store(memflags, *value, ptr, offset);
+                    offset += self.offsets.ptr.maximum_value_size() as i32;
+                }
+            }
         }
     }
 
