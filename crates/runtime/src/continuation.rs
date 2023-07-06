@@ -221,7 +221,7 @@ pub fn cont_new(
         Fiber::new(
             FiberStack::new(4096).unwrap(),
             move |_first_val: (), _suspend: &Yield| unsafe {
-                f(callee_ctx, caller_ctx, args_ptr as *mut ValRaw, param_count)
+                f(callee_ctx, caller_ctx, args_ptr as *mut ValRaw, capacity)
             },
         )
         .unwrap(),
