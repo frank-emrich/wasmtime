@@ -2471,7 +2471,7 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         let memflags = ir::MemFlags::trusted();
 
         if valtypes.len() > 0 {
-            let nargs = builder.ins().iconst(I64, values.len() as i64);
+            let nargs = builder.ins().iconst(I32, values.len() as i64);
 
             let (_vmctx, payload_addr) =
                 generate_builtin_call!(self, builder, alllocate_payload_buffer, [nargs]);
