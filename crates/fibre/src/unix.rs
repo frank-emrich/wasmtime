@@ -129,13 +129,16 @@ pub struct Fiber;
 pub struct Suspend(*mut u8);
 
 extern "C" {
+    #[wasmtime_versioned_export_macros::versioned_link]
     fn wasmtime_fibre_init(
         top_of_stack: *mut u8,
         entry: extern "C" fn(*mut u8, *mut u8),
         entry_arg0: *mut u8,
     );
+    #[wasmtime_versioned_export_macros::versioned_link]
     fn wasmtime_fibre_switch(top_of_stack: *mut u8);
     #[allow(dead_code)] // only used in inline assembly for some platforms
+    #[wasmtime_versioned_export_macros::versioned_link]
     fn wasmtime_fibre_start();
 }
 
@@ -209,7 +212,9 @@ impl Suspend {
 }
 
 cfg_if::cfg_if! {
-    if #[cfg(target_arch = "x86_64")] {
+    if #[cfg(target_arch = "aarch64")] {
+        mod aarch64;
+    } else if #[cfg(target_arch = "x86_64")] {
         mod x86_64;
     } else {
         compile_error!("fibers are not supported on this CPU architecture");

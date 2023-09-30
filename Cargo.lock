@@ -3624,6 +3624,7 @@ dependencies = [
  "cfg-if",
  "rustix",
  "wasmtime-asm-macros",
+ "wasmtime-versioned-export-macros",
  "windows-sys 0.48.0",
 ]
 
