@@ -2,6 +2,13 @@ import gdb
 
 initial_break = None
 
+class WasmFxGdbEx(Exception):
+
+  def __init__(self, msg):
+    super().__init__(msg)
+
+
+
 class Hunt (gdb.Command):
   """Greet the whole world."""
 
@@ -24,3 +31,36 @@ class Hunt (gdb.Command):
     print("Continue to go to offending write")
 
 Hunt ()
+
+
+def get_mappings():
+  mappings = gdb.execute("info proc mappings",to_string=True)
+  mappings = mappings.split("\n")
+
+  result = []
+
+  headings = ["Start Addr", "End Addr", "Size", "Offset", "Perms", "objfile"]
+  past_header = False
+  for m in mappings:
+    if past_header:
+      data = tuple(m.split())
+      result.append(data)
+    else:
+      if all([ h in m for h in headings ]):
+        past_header = True
+
+
+  if not past_header:
+    raise WasmFxGdbEx("Could not parse output of \"info proc mappings\"")
+      
+  print(result)
+
+
+class WIP (gdb.Command):
+  def __init__ (self):
+    super (WIP, self).__init__ ("wip", gdb.COMMAND_USER)
+
+  def invoke (self, arg, from_tty):
+    get_mappings()
+
+WIP ()
