@@ -4,6 +4,7 @@ set substitute-path /rustc/79e9716c980570bfd1f666e3b16ac583f0168962 /home/frank/
 
 set disassembly-flavor intel
 
+set env LD_PRELOAD=/home/frank/projects/wasmfx/efence/libefence.so.0.0
 
 #source debug.gdb
 file target/debug/wasmtime
