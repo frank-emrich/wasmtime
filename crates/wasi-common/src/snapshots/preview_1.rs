@@ -24,15 +24,62 @@ use error::{Error, ErrorExt};
 // memory.
 pub(crate) const MAX_SHARED_BUFFER_SIZE: usize = 1 << 16;
 
-wiggle::from_witx!({
-    witx: ["$WASI_ROOT/phases/snapshot/witx/wasi_snapshot_preview1.witx"],
-    errors: { errno => trappable Error },
-    // Note: not every function actually needs to be async, however, nearly all of them do, and
-    // keeping that set the same in this macro and the wasmtime_wiggle / lucet_wiggle macros is
-    // tedious, and there is no cost to having a sync function be async in this case.
-    async: *,
-    wasmtime: false,
-});
+mod internal {
+    use super::*;
+
+    wiggle::from_witx!({
+        witx: ["$WASI_ROOT/phases/snapshot/witx/wasi_snapshot_preview1.witx"],
+        errors: { errno => trappable Error },
+        // Note: not every function actually needs to be async, however, nearly all of them do, and
+        // keeping that set the same in this macro and the wasmtime_wiggle / lucet_wiggle macros is
+        // tedious, and there is no cost to having a sync function be async in this case.
+        async: *,
+        wasmtime: false,
+    });
+}
+
+pub use internal::types;
+
+pub mod wasi_snapshot_preview1 {
+
+    pub use super::internal::wasi_snapshot_preview1::*;
+    use super::types::*;
+
+    #[allow(unreachable_code)]
+    pub fn fd_write<'a>(
+        ctx: &'a mut (impl WasiSnapshotPreview1),
+        memory: &'a dyn wiggle::GuestMemory,
+        arg0: i32,
+        arg1: i32,
+        arg2: i32,
+        arg3: i32,
+    ) -> impl std::future::Future<Output = wiggle::anyhow::Result<i32>> + 'a {
+        use std::convert::TryFrom as _;
+        use wiggle::tracing::Instrument as _;
+
+        async move {
+            let fd = Fd::from(arg0);
+            let iovs = wiggle::GuestPtr::<[Ciovec<'_>]>::new(memory, (arg1 as u32, arg2 as u32));
+
+            let ret = WasiSnapshotPreview1::fd_write(ctx, fd, &iovs).await;
+
+            return Ok(match ret {
+                Ok(e) => {
+                    wiggle::GuestPtr::<Size>::new(memory, arg3 as u32)
+                        .write(e)
+                        .map_err(|e| wiggle::GuestError::InFunc {
+                            modulename: "wasi_snapshot_preview1",
+                            funcname: "fd_write",
+                            location: "write size",
+                            err: Box::new(wiggle::GuestError::from(e)),
+                        })?;
+                    <Errno as wiggle::GuestErrorType>::success() as i32
+                }
+                Err(e) => e.downcast()? as i32,
+            });
+        }
+    }
+}
 
 impl wiggle::GuestErrorType for types::Errno {
     fn success() -> Self {
