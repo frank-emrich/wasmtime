@@ -8,4 +8,4 @@ set env LD_PRELOAD=/home/frank/projects/wasmfx/efence/libefence.so.0.0
 
 #source debug.gdb
 file target/debug/wasmtime
-set args -Ddebug-info -Daddress-map -W=exceptions,function-references,typed-continuations luna.wasm
+set args -Ccache=n,parallel-compilation=n -Ddebug-info -Daddress-map -Spreview2=n -W=exceptions,function-references,typed-continuations luna.wasm
