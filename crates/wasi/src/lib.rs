@@ -1338,45 +1338,8 @@ pub mod sync {
                             arg2: i32,
                             arg3: i32,
                         | -> wiggle::anyhow::Result<i32> {
-                            let result = async {
-                                let export = caller.get_export("memory");
-                                let (mem, ctx) = match &export {
-                                    Some(wiggle::wasmtime_crate::Extern::Memory(m)) => {
-                                        let (mem, ctx) = m.data_and_store_mut(&mut caller);
-                                        let ctx = get_cx(ctx);
-                                        (wiggle::wasmtime::WasmtimeGuestMemory::new(mem), ctx)
-                                    }
-                                    Some(wiggle::wasmtime_crate::Extern::SharedMemory(m)) => {
-                                        let ctx = get_cx(caller.data_mut());
-                                        (
-                                            wiggle::wasmtime::WasmtimeGuestMemory::shared(m.data()),
-                                            ctx,
-                                        )
-                                    }
-                                    _ => {
-                                        return ::anyhow::__private::Err({
-                                            let error = ::anyhow::__private::format_err(
-                                                format_args!("missing required memory export"),
-                                            );
-                                            error
-                                        });
-                                    }
-                                };
-                                Ok(
-                                    <i32>::from(
-                                        wasi_common::snapshots::preview_1::wasi_snapshot_preview1::fd_write(
-                                                ctx,
-                                                &mem,
-                                                arg0,
-                                                arg1,
-                                                arg2,
-                                                arg3,
-                                            )
-                                            .await?,
-                                    ),
-                                )
-                            };
-                            wiggle::run_in_dummy_executor(result)?
+                            let export = caller.get_export("memory");
+                            Ok(9)
                         },
                     )?;
                 linker
