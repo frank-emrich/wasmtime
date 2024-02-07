@@ -18,6 +18,10 @@ mod compiler;
 mod debug;
 mod func_environ;
 
+mod wasmfx;
+
+//mod indir;
+
 type CompiledFunctionsMetadata<'a> = PrimaryMap<DefinedFuncIndex, &'a CompiledFunctionMetadata>;
 
 /// Trap code used for debug assertions we emit in our JIT code.
