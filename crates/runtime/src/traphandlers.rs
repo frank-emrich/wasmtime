@@ -280,6 +280,8 @@ pub fn first_wasm_state_on_fiber_stack() -> bool {
 // Module to hide visibility of the `CallThreadState::prev` field and force
 // usage of its accessor methods.
 mod call_thread_state {
+    use wasmtime_continuations::StackChain;
+
     use super::*;
 
     /// Temporary state stored on the stack which is registered in the `tls` module
