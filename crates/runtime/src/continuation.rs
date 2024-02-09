@@ -145,8 +145,10 @@ pub fn cont_new(
     };
 
     let tsp = fiber.stack().top().unwrap();
+    let safe_zone = 512 * 1024;
+    let stack_limit = unsafe { tsp.sub(DEFAULT_FIBER_SIZE - safe_zone) } as usize;
     let contobj = Box::new(ContinuationObject {
-        limits: StackLimits::with_stack_limit(unsafe { tsp.sub(DEFAULT_FIBER_SIZE) } as usize),
+        limits: StackLimits::with_stack_limit(stack_limit),
         fiber: Box::into_raw(fiber),
         parent_chain: StackChain::Absent,
         args: payload,
@@ -225,12 +227,6 @@ pub fn resume(
         *runtime_limits.stack_limit.get() = (*contobj).limits.stack_limit;
         *runtime_limits.last_wasm_entry_sp.get() = (*contobj).limits.last_wasm_entry_sp;
     }
-
-    unsafe {
-        (*(*(*instance.store()).vmruntime_limits())
-            .stack_limit
-            .get_mut()) = 0
-    };
 
     Ok(fiber.resume())
 }
