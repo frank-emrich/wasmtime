@@ -110,12 +110,19 @@ impl Backtrace {
 
         log::trace!("====== Capturing Backtrace ======");
 
+        let first_wasm_state = state
+            .iter()
+            .flat_map(|head| head.iter())
+            .skip_while(|state| state.callee_stack_chain.is_none())
+            .next();
+
         let (last_wasm_exit_pc, last_wasm_exit_fp) = match trap_pc_and_fp {
             // If we exited Wasm by catching a trap, then the Wasm-to-host
             // trampoline did not get a chance to save the last Wasm PC and FP,
             // and we need to use the plumbed-through values instead.
             Some((pc, fp)) => {
                 assert!(std::ptr::eq(limits, state.limits));
+                assert!(first_wasm_state.is_some());
                 (pc, fp)
             }
             // Either there is no Wasm currently on the stack, or we exited Wasm
@@ -127,20 +134,25 @@ impl Backtrace {
             }
         };
 
+        let first_wasm_state_stack_chain = first_wasm_state
+            .map(|state| state.callee_stack_chain.map(|cell| &*(*cell).0.get()))
+            .flatten();
+
         let activations = std::iter::once((
-            state.stack_chain.map(|ptr| &*ptr),
+            first_wasm_state_stack_chain,
             last_wasm_exit_pc,
             last_wasm_exit_fp,
             *(*limits).last_wasm_entry_sp.get(),
         ))
         .chain(
-            state
+            first_wasm_state
                 .iter()
+                .flat_map(|state| state.iter())
                 .filter(|state| std::ptr::eq(limits, state.limits))
                 .map(|state| {
                     //assert!(state.has_vmctx);
                     (
-                        state.old_stack_chain(),
+                        None,
                         state.old_last_wasm_exit_pc(),
                         state.old_last_wasm_exit_fp(),
                         state.old_last_wasm_entry_sp(),
