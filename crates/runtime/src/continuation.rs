@@ -1,7 +1,7 @@
 //! Continuations TODO
 
 use crate::fibre::{Fiber, FiberStack, Suspend};
-use crate::vmcontext::{VMFuncRef, VMOpaqueContext, ValRaw};
+use crate::vmcontext::{VMFuncRef, ValRaw};
 use crate::{Instance, TrapReason};
 use std::cell::UnsafeCell;
 use std::cmp;
@@ -297,20 +297,10 @@ pub fn drop_cont_obj(contobj: *mut ContinuationObject) {
 #[inline(always)]
 pub fn cont_new(
     instance: &mut Instance,
-    func: *mut u8,
+    func_ref: *mut VMFuncRef,
     param_count: u32,
     result_count: u32,
 ) -> Result<*mut ContinuationObject, TrapReason> {
-    let func_ref = unsafe {
-        func.cast::<VMFuncRef>().as_ref().ok_or_else(|| {
-            TrapReason::user_without_backtrace(anyhow::anyhow!(
-                "Attempt to dereference null VMFuncRef"
-            ))
-        })?
-    };
-    let callee_ctx = func_ref.vmctx;
-    let caller_ctx = VMOpaqueContext::from_vmcontext(instance.vmctx());
-
     let capacity = cmp::max(param_count, result_count);
     let payload = Payloads::new(capacity);
 
@@ -318,16 +308,8 @@ pub fn cont_new(
         let wasmfx_config = unsafe { &*(*instance.store()).wasmfx_config() };
         let stack = FiberStack::malloc(wasmfx_config.stack_size)
             .map_err(|error| TrapReason::user_without_backtrace(error.into()))?;
-        let args_ptr = payload.data;
-        let fiber = Fiber::new(stack, move |_first_val: (), _suspend: &Yield| unsafe {
-            (func_ref.array_call)(
-                callee_ctx,
-                caller_ctx,
-                args_ptr.cast::<ValRaw>(),
-                capacity as usize,
-            )
-        })
-        .map_err(|error| TrapReason::user_without_backtrace(error.into()))?;
+        let fiber = Fiber::new(stack, func_ref)
+            .map_err(|error| TrapReason::user_without_backtrace(error.into()))?;
         Box::new(fiber)
     };
 
@@ -419,7 +401,8 @@ pub fn resume(
             .get_mut()) = 0
     };
 
-    Ok(fiber.resume())
+    let vmctx = instance.vmctx();
+    Ok(fiber.resume(vmctx, cont.args.data as *mut ValRaw, cont.args.capacity))
 }
 
 /// TODO
@@ -465,7 +448,8 @@ pub fn suspend(instance: &mut Instance, tag_index: u32) -> Result<(), TrapReason
 
     let suspend = crate::fibre::unix::Suspend::from_top_ptr(stack_ptr);
     let payload = SwitchDirection::suspend(tag_index);
-    Ok(suspend.switch(payload))
+    let vmctx = instance.vmctx();
+    Ok(suspend.switch(vmctx, payload))
 }
 
 #[allow(missing_docs)]

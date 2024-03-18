@@ -148,6 +148,10 @@ macro_rules! declare_function_sig {
                 WasmValType::I64
             }
 
+            fn switch_direction(&self) -> WasmValType {
+                todo!("not implemented")
+            }
+
             fn reference(&self) -> WasmValType {
                 self.pointer()
             }

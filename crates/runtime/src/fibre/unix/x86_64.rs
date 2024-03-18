@@ -9,12 +9,14 @@ use wasmtime_asm_macros::asm_func;
 
 // fn(
 //    top_of_stack(rdi): *mut u8
-//    payload(rsi) : u64
+//    active_vmctx(rsi): *mut VMContext
+//    switch_direction(rdx, rcx) : SwitchDirection
 // )
 //
-// The payload (i.e., second argument) is return unchanged, allowing data to be
-// passed from the continuation that calls `wasmtime_fibre_switch` to the one
-// that subsequently runs.
+// The second parameter is the currently running VMContext. The
+// `switch_direction` argument (which is split into two registers) allows
+// passing data from the the continuation that calls `wasmtime_fibre_switch` to
+// the one that subsequently runs. Thus, this function returns it unchanged.
 asm_func!(
     "wasmtime_fibre_switch",
     "
@@ -48,8 +50,10 @@ asm_func!(
         pop rbx
         pop rbp
 
-        // We return the payload (i.e., the second argument to this function)
-        mov rax, rsi
+        // Move the two `switch_direction` registers into the first and second
+        // return register.
+        mov rax, rdx
+        mov rdx, rcx
 
         ret
     ",
@@ -57,18 +61,20 @@ asm_func!(
 
 // fn(
 //    top_of_stack(rdi): *mut u8,
-//    entry_point(rsi): extern fn(*mut u8, *mut u8),
-//    entry_arg0(rdx): *mut u8,
+//    entry_point(rsi): extern fn(*mut u8, *mut VMContext, SwitchDirection, *mut VMFuncRef),
+//    func_ref(rdx): *mut VMFuncRef
 // )
+//
+//
 //
 // This function installs the launchpad for the computation to run on the fiber,
 // such that invoking wasmtime_fibre_switch on the stack actually runs the
 // desired computation.
 //
-// This function is only ever called such that `entry_point` is a pointer to (an
-// instantiation of) the `fiber_start` function in unix.rs and `entry_arg0` is a
-// `Box<*mut u8>`, containing the function to actually run as the continuation
-// as a `FnOnce(A, &super::Suspend<A, B, C>) -> C`, for some `A`, `B`, `C`.
+// This function is only ever called such that `entry_point` is a pointer to the
+// `fiber_start` function in unix.rs. The parameter `func_ref`, has the same
+// meaning as the corresponding one of `fiber_start`: It denotes the function to
+// run on the fiber.
 //
 // The layout of the FiberStack near the top of stack (TOS) *after* running this
 // function is as follows:
@@ -81,8 +87,7 @@ asm_func!(
 //          -0x18   (RIP-relative) address of wasmtime_fibre_start function
 //          -0x20   TOS
 //          -0x28   entry_point (= pointer to fiber_start function)
-//          -0x30   entry_arg0  (= Box<*mut u8> containing pointer to
-//                                 FuncOne closure to actually execute)
+//          -0x30   func_ref    (= pointer to VMFuncRef to execute)
 //          -0x38   undefined
 //          -0x40   undefined
 //          -0x48   undefined
@@ -134,16 +139,17 @@ asm_func!(
 //
 // This execution of wasmtime_fibre_switch on a stack as described in the
 // comment on wasmtime_fibre_init leads to the following values in various
-// registers at the right before the RET instruction of the latter is executed:
+// registers at the right before the RET instruction of the former is executed:
 //
-// RBP: frame pointer of *caller* of wasmtime_fibre_switch
-// RSP: TOS - 0x18
-// RDI: irrelevant  (not read by wasmtime_fibre_start)
-// RSI: irrelevant  (not read by wasmtime_fibre_start)
-// RAX: irrelevant  (not read by wasmtime_fibre_start)
 // RBP: TOS
+// RSP: TOS - 0x18
+// RDI: TOS
+// RSI: active VMContext
+// RAX: first half of SwitchDirection value
 // RBX: entry_point (= pointer to fiber_start function)
-// R12: entry_arg0  (Box with FuncOnce closure to run as contination)
+// RCX: second half of SwitchDirection value
+// RDX: second half of SwitchDirection value
+// R12: func_ref    (= VMFuncRef to run as contination)
 // R13: irrelevant  (not read by wasmtime_fibre_start)
 // R14: irrelevant  (not read by wasmtime_fibre_start)
 // R15: irrelevant  (not read by wasmtime_fibre_start)
@@ -228,17 +234,24 @@ asm_func!(
         // Note that `call` is used here to leave this frame on the stack so we
         // can use the dwarf info here for unwinding.
         //
-        // Note that the next three instructions amount to calling fiber_start
+        // Note that the next two instructions amount to calling fiber_start
         // with the following arguments:
-        // 1. entry_arg0  (Box with FuncOnce closure to run as contination)
-        // 2. TOS
+        // 1. TOS
+        // 2. active VMContext
+        // 3. switch_direction (split into two registers)
+        // 4. func_ref (VMFuncRef for function to run  as contination)
         //
-        // Note that fiber_start never returns: It calls Suspend::execute, which
-        // runs the FuncOnce closure, and calls impl::Suspend::switch afterwards,
-        // which returns to the parent FiberStack via wasmtime_fibre_switch.
-        mov rdi, r12
-        mov rsi, rbp
+        // Note that fiber_start never returns: It returns to our parent using
+        // wasmtime_fibre_switch instead.
+        //
+        // Registers RDI and RSI already contain the right values
+        // corresponding to arguments 1. and 2. listed above
+        //
+        mov rdx, rax // first half of SwitchDirection
+        // RCX already contains second half of SwitchDirection
+        mov r8, r12 // func_ref
         call rbx
+
         // We should never get here and purposely emit an invalid instruction.
         ud2
         .cfi_endproc

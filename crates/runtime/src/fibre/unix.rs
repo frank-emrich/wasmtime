@@ -35,7 +35,9 @@ use std::alloc::{alloc, dealloc, Layout};
 use std::io;
 use std::ops::Range;
 use std::ptr;
-use wasmtime_continuations::SwitchDirection;
+use wasmtime_continuations::{SwitchDirection, SwitchDirectionEnum};
+
+use crate::{VMContext, VMFuncRef, VMOpaqueContext, ValRaw};
 
 #[derive(Debug)]
 pub struct FiberStack {
@@ -131,50 +133,83 @@ pub struct Suspend(*mut u8);
 extern "C" {
     fn wasmtime_fibre_init(
         top_of_stack: *mut u8,
-        entry: extern "C" fn(*mut u8, *mut u8),
-        entry_arg0: *mut u8,
+        entry_point: extern "C" fn(*mut u8, *mut VMContext, SwitchDirection, *mut VMFuncRef),
+        func_ref: *mut VMFuncRef,
     );
-    fn wasmtime_fibre_switch(top_of_stack: *mut u8, payload: u64) -> u64;
+    fn wasmtime_fibre_switch(
+        top_of_stack: *mut u8,
+        active_vmctx: *mut VMContext,
+        direction: SwitchDirection,
+    ) -> SwitchDirection;
     #[allow(dead_code)] // only used in inline assembly for some platforms
     fn wasmtime_fibre_start();
 }
 
-extern "C" fn fiber_start<F>(arg0: *mut u8, top_of_stack: *mut u8)
-where
-    F: FnOnce((), &super::Suspend),
-{
+/// This function is what is actually executed within a continuation's Fiber.
+/// It is only ever called from `wasmtime_fibre_start`.
+/// This function should not return directly, but instead switches back to the
+/// parent with an appropriate `SwitchDirection` value once the execution of the
+/// function denoted in `func_ref` returns.
+/// This function must not panic, instead returning from it can be used to
+/// signal an error: `wasmtime_fibre_start` deliberately executes an illegal
+/// instruction if `fiber_start` returns.
+extern "C" fn fiber_start(
+    top_of_stack: *mut u8,
+    caller: *mut VMContext,
+    switch_direction: SwitchDirection,
+    func_ref: *mut VMFuncRef,
+) {
+    if cfg!(debug_assertions) && switch_direction.discriminant != SwitchDirectionEnum::Resume {
+        // This if block basically acts as an assertion: If `switch_direction`
+        // is not a `Resume`, something is terribly wrong.
+        return;
+    }
+
+    let args_capacity = switch_direction.data0;
+    let args_ptr = switch_direction.data1 as *mut ValRaw;
+
     unsafe {
-        let inner = Suspend(top_of_stack);
-        super::Suspend::execute(inner, Box::from_raw(arg0.cast::<F>()))
+        let array_trampoline = (*func_ref).array_call;
+        let callee = (*func_ref).vmctx;
+        let caller_opaque = VMOpaqueContext::from_vmcontext(caller);
+        array_trampoline(callee, caller_opaque, args_ptr, args_capacity as usize);
+
+        // We "return" by switching back to the parent
+        let return_ = SwitchDirection::return_();
+        Suspend(top_of_stack).switch(caller, return_);
     }
 }
 
 impl Fiber {
-    pub fn new<F>(stack: &FiberStack, func: F) -> io::Result<Self>
-    where
-        F: FnOnce((), &super::Suspend),
-    {
+    pub fn new(stack: &FiberStack, func_ref: *mut VMFuncRef) -> io::Result<Self> {
         unsafe {
-            let data = Box::into_raw(Box::new(func)).cast();
-            wasmtime_fibre_init(stack.top, fiber_start::<F>, data);
+            wasmtime_fibre_init(stack.top, fiber_start, func_ref);
         }
 
         Ok(Self)
     }
 
-    pub(crate) fn resume(&self, stack: &FiberStack) -> SwitchDirection {
+    pub(crate) fn resume(
+        &self,
+        stack: &FiberStack,
+        active_vmctx: *mut VMContext,
+        args_ptr: *mut u8,
+        args_capacity: u32,
+    ) -> SwitchDirection {
         unsafe {
-            let reason = SwitchDirection::resume().into();
-            SwitchDirection::from(wasmtime_fibre_switch(stack.top, reason))
+            let payload = SwitchDirection::resume(args_ptr, args_capacity);
+            SwitchDirection::from(wasmtime_fibre_switch(stack.top, active_vmctx, payload))
         }
     }
 }
 
 impl Suspend {
-    pub fn switch(&self, payload: SwitchDirection) {
+    pub fn switch(&self, active_vmcontext: *mut VMContext, payload: SwitchDirection) {
+        // `payload::discrimination` should be either
+        // `SwitchDirectionEnum::Suspend` or `SwitchDirectionEnum::Return`, but
+        // we cannot check that and panic in this function.
         unsafe {
-            let arg = payload.into();
-            wasmtime_fibre_switch(self.0, arg);
+            wasmtime_fibre_switch(self.0, active_vmcontext, payload);
         }
     }
 

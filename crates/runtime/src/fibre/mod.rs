@@ -8,6 +8,8 @@ use std::io;
 use std::ops::Range;
 use wasmtime_continuations::{SwitchDirection, SwitchDirectionEnum, TagId};
 
+use crate::{VMContext, VMFuncRef, ValRaw};
+
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
         pub mod unix;
@@ -79,7 +81,7 @@ impl Fiber {
     /// This function returns a `Fiber` which, when resumed, will execute `func`
     /// to completion. When desired the `func` can suspend itself via
     /// `Fiber::suspend`.
-    pub fn new(stack: FiberStack, func: impl FnOnce((), &Suspend)) -> io::Result<Self> {
+    pub fn new(stack: FiberStack, func: *mut VMFuncRef) -> io::Result<Self> {
         let inner = imp::Fiber::new(&stack.0, func)?;
 
         Ok(Self {
@@ -104,12 +106,22 @@ impl Fiber {
     ///
     /// Note that if the fiber itself panics during execution then the panic
     /// will be propagated to this caller.
-    pub fn resume(&self) -> SwitchDirection {
+    pub fn resume(
+        &self,
+        active_vmctx: *mut VMContext,
+        args_ptr: *mut ValRaw,
+        args_capacity: u32,
+    ) -> SwitchDirection {
         assert!(!self.done.replace(true), "cannot resume a finished fiber");
-        let reason = self.inner.resume(&self.stack.0);
+        let reason = self.inner.resume(
+            &self.stack.0,
+            active_vmctx,
+            args_ptr as *mut u8,
+            args_capacity,
+        );
         if let SwitchDirection {
             discriminant: SwitchDirectionEnum::Suspend,
-            data: _,
+            ..
         } = reason
         {
             self.done.set(false)
@@ -138,23 +150,9 @@ impl Suspend {
     /// # Panics
     ///
     /// Panics if the current thread is not executing a fiber from this library.
-    pub fn suspend(&self, tag: TagId) {
+    pub fn suspend(&self, active_vmctx: *mut VMContext, tag: TagId) {
         let reason = SwitchDirection::suspend(tag);
-        self.inner.switch(reason);
-    }
-
-    fn execute(inner: imp::Suspend, func: impl FnOnce((), &Suspend)) {
-        let suspend = Suspend { inner };
-        // Note that the original wasmtime-fiber crate runs `func` wrapped in
-        // `panic::catch_unwind`, to stop panics from being propagated onward,
-        // instead just reporting parent. We eschew this, doing nothing special
-        // about panics. This is justified because we only ever call this
-        // function such that `func` is a closure around a call to a
-        // `VMArrayCallFunction`, namely a host-to-wasm trampoline. It is thus
-        // guaranteed not to panic.
-        (func)((), &suspend);
-        let reason = SwitchDirection::return_();
-        suspend.inner.switch(reason);
+        self.inner.switch(active_vmctx, reason);
     }
 }
 

@@ -12,6 +12,7 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::u32;
 pub use vm_host_func_context::{VMArrayCallHostFuncContext, VMNativeCallHostFuncContext};
+use wasmtime_continuations::SwitchDirection;
 use wasmtime_environ::{DefinedMemoryIndex, Unsigned, VMCONTEXT_MAGIC};
 
 /// A function pointer that exposes the array calling convention.
@@ -667,6 +668,7 @@ mod test_vm_func_ref {
     use super::VMFuncRef;
     use memoffset::offset_of;
     use std::mem::size_of;
+    use wasmtime_continuations::SwitchDirection;
     use wasmtime_environ::{Module, PtrSize, VMOffsets};
 
     #[test]
@@ -735,6 +737,7 @@ macro_rules! define_builtin_array {
     (@ty reference) => (*mut u8);
     (@ty pointer) => (*mut u8);
     (@ty vmctx) => (*mut VMContext);
+    (@ty switch_direction) => (SwitchDirection);
 }
 
 wasmtime_environ::foreach_builtin_function!(define_builtin_array);

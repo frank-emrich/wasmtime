@@ -83,20 +83,20 @@ macro_rules! declare_function_signatures {
                 }
             }
 
-            fn vmctx(&self) -> AbiParam {
-                AbiParam::special(self.pointer_type, ArgumentPurpose::VMContext)
+            fn vmctx(&self) -> Vec<AbiParam> {
+                vec![AbiParam::special(self.pointer_type, ArgumentPurpose::VMContext)]
             }
 
             #[cfg(feature = "gc")]
-            fn reference(&self) -> AbiParam {
-                AbiParam::new(self.reference_type)
+            fn reference(&self) -> Vec<AbiParam> {
+                vec![AbiParam::new(self.reference_type)]
             }
 
-            fn pointer(&self) -> AbiParam {
-                AbiParam::new(self.pointer_type)
+            fn pointer(&self) -> Vec<AbiParam> {
+                vec![AbiParam::new(self.pointer_type)]
             }
 
-            fn i32(&self) -> AbiParam {
+            fn i32(&self) -> Vec<AbiParam> {
                 // Some platform ABIs require i32 values to be zero- or sign-
                 // extended to the full register width.  We need to indicate
                 // this here by using the appropriate .uext or .sext attribute.
@@ -106,11 +106,15 @@ macro_rules! declare_function_signatures {
                 // by builtin functions are unsigned, so we always use .uext.
                 // If that ever changes, we will have to add a second type
                 // marker here.
-                AbiParam::new(I32).uext()
+                vec![AbiParam::new(I32).uext()]
             }
 
-            fn i64(&self) -> AbiParam {
-                AbiParam::new(I64)
+            fn i64(&self) -> Vec<AbiParam> {
+                vec![AbiParam::new(I64)]
+            }
+
+            fn switch_direction(&self) -> Vec<AbiParam> {
+                vec![AbiParam::new(I64), AbiParam::new(I64)]
             }
 
             $(
@@ -118,9 +122,11 @@ macro_rules! declare_function_signatures {
                 // NOTE(frank-emrich) pub for use in crate::wasmfx::* modules
                 pub (crate)fn $name(&mut self, func: &mut Function) -> ir::SigRef {
                     let sig = self.$name.unwrap_or_else(|| {
+                        let params : Vec<Vec<AbiParam>> = vec![ $( self.$param() ),* ];
+                        let results : Vec<Vec<AbiParam>> = vec![ $( self.$result() )? ];
                         func.import_signature(Signature {
-                            params: vec![ $( self.$param() ),* ],
-                            returns: vec![ $( self.$result() )? ],
+                            params: params.into_iter().flatten().collect(),
+                            returns: results.into_iter().flatten().collect(),
                             call_conv: self.call_conv,
                         })
                     });

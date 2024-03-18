@@ -42,8 +42,8 @@ macro_rules! foreach_builtin_function {
             /// Creates a new continuation from a funcref.
             tc_cont_new(vmctx: vmctx, r: pointer, param_count: i32, result_count: i32) -> pointer;
             /// Resumes a continuation. The result value is of type
-            /// wasmtime_continuations::SwitchDirection.
-            tc_resume(vmctx: vmctx, contobj: pointer, parent_stack_limits: pointer) -> i64;
+            /// wasmtime_continuations::SwitchDirection (encodes as two i64 values).
+            tc_resume(vmctx: vmctx, contobj: pointer, parent_stack_limits: pointer) -> switch_direction;
             /// Suspends a continuation.
             tc_suspend(vmctx: vmctx, tag: i32);
             /// Returns the continuation object corresponding to the given continuation reference.
@@ -175,7 +175,7 @@ macro_rules! declare_indexes {
     (
         $(
             $( #[$attr:meta] )*
-            $name:ident( $( $pname:ident: $param:ident ),* ) $( -> $result:ident )?;
+            $name:ident( $( $pname:ident: $param:ident ),* ) $( -> $result:ty )?;
         )*
     ) => {
         impl BuiltinFunctionIndex {

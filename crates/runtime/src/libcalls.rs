@@ -63,6 +63,7 @@ use anyhow::bail;
 use anyhow::Result;
 use cfg_if::cfg_if;
 use std::time::{Duration, Instant};
+use wasmtime_continuations::SwitchDirection;
 use wasmtime_environ::{DataIndex, ElemIndex, FuncIndex, MemoryIndex, TableIndex, Trap, Unsigned};
 #[cfg(feature = "wmemcheck")]
 use wasmtime_wmemcheck::AccessError::{
@@ -82,6 +83,7 @@ pub mod trampolines {
 
     use crate::arch::wasm_to_libcall_trampoline;
     use crate::{Instance, TrapReason, VMContext};
+    use wasmtime_continuations::SwitchDirection;
 
     macro_rules! libcall {
         (
@@ -156,6 +158,7 @@ pub mod trampolines {
         (@ty reference) => (*mut u8);
         (@ty pointer) => (*mut u8);
         (@ty vmctx) => (*mut VMContext);
+        (@ty switch_direction) => (SwitchDirection);
     }
 
     wasmtime_environ::foreach_builtin_function!(libcall);
@@ -785,7 +788,8 @@ fn tc_cont_new(
     param_count: u32,
     result_count: u32,
 ) -> Result<*mut u8, TrapReason> {
-    let ans = crate::continuation::cont_new(instance, func, param_count, result_count)?;
+    let ans =
+        crate::continuation::cont_new(instance, func as *mut VMFuncRef, param_count, result_count)?;
     Ok(ans.cast::<u8>())
 }
 
@@ -793,13 +797,12 @@ fn tc_resume(
     instance: &mut Instance,
     contobj: *mut u8,
     parent_stack_limits: *mut u8,
-) -> Result<u64, TrapReason> {
+) -> Result<SwitchDirection, TrapReason> {
     crate::continuation::resume(
         instance,
         contobj.cast::<crate::continuation::ContinuationObject>(),
         parent_stack_limits.cast::<crate::continuation::StackLimits>(),
     )
-    .map(|reason| reason.into())
 }
 
 fn tc_suspend(instance: &mut Instance, tag_index: u32) -> Result<(), TrapReason> {
