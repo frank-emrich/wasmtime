@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::u32;
 pub use vm_host_func_context::{VMArrayCallHostFuncContext, VMNativeCallHostFuncContext};
 use wasmtime_environ::{BuiltinFunctionIndex, DefinedMemoryIndex, Unsigned, VMCONTEXT_MAGIC};
-use wasmtime_continuations::SwitchDirection;
+use crate::libcalls::Tuple_2x64;
 
 /// A function pointer that exposes the array calling convention.
 ///
@@ -741,7 +741,7 @@ macro_rules! define_builtin_array {
     (@ty reference) => (*mut u8);
     (@ty pointer) => (*mut u8);
     (@ty vmctx) => (*mut VMContext);
-    (@ty switch_direction) => (SwitchDirection);
+    (@ty tuple_2x64) => (Tuple_2x64);
 }
 
 wasmtime_environ::foreach_builtin_function!(define_builtin_array);

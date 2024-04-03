@@ -477,7 +477,7 @@ impl BuiltinFunctionSignatures {
         vec![AbiParam::new(ir::types::I64)]
     }
 
-    fn switch_direction(&self) -> Vec<AbiParam> {
+    fn tuple_2x64(&self) -> Vec<AbiParam> {
         vec![AbiParam::new(ir::types::I64), AbiParam::new(ir::types::I64)]
     }
 

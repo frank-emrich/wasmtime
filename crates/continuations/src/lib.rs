@@ -259,35 +259,7 @@ impl SwitchDirection {
     }
 }
 
-impl From<SwitchDirection> for [u64; 2] {
-    fn from(val: SwitchDirection) -> [u64; 2] {
-        // TODO(frank-emrich) This assumes little endian data layout. Should
-        // make this more explicit.
-        unsafe { std::mem::transmute::<SwitchDirection, [u64; 2]>(val) }
-    }
-}
 
-impl From<[u64; 2]> for SwitchDirection {
-    fn from(val: [u64; 2]) -> SwitchDirection {
-        #[cfg(debug_assertions)]
-        {
-            let discriminant = val[0] as u32;
-            debug_assert!(discriminant <= 2);
-            let data0 = val[0] >> 32;
-            let data1 = val[1];
-
-            if discriminant == SwitchDirectionEnum::Return.discriminant_val() {
-                debug_assert_eq!(data0, 0);
-                debug_assert_eq!(data1, 0)
-            } else if discriminant == SwitchDirectionEnum::Suspend.discriminant_val() {
-                debug_assert_eq!(data1, 0)
-            }
-        }
-        // TODO(frank-emrich) This assumes little endian data layout. Should
-        // make this more explicit.
-        unsafe { std::mem::transmute::<[u64; 2], SwitchDirection>(val) }
-    }
-}
 
 /// Defines offsets of the fields in the continuation-related types
 pub mod offsets {

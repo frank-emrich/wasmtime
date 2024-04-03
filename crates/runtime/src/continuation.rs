@@ -1,12 +1,13 @@
 //! Continuations TODO
 
 use crate::fibre::{Fiber, FiberStack};
+use crate::libcalls::Tuple_2x64;
 use crate::vmcontext::VMFuncRef;
 use crate::{Instance, TrapReason};
 use std::cell::UnsafeCell;
 use std::cmp;
 use std::mem;
-use wasmtime_continuations::{debug_println, ENABLE_DEBUG_PRINTING};
+use wasmtime_continuations::{debug_println, SwitchDirectionEnum, ENABLE_DEBUG_PRINTING};
 pub use wasmtime_continuations::{
     Payloads, StackLimits, State, SwitchDirection, DEFAULT_FIBER_SIZE,
 };
@@ -154,6 +155,44 @@ impl StackChainCell {
 // of their fields from other threads.
 unsafe impl Send for StackChainCell {}
 unsafe impl Sync for StackChainCell {}
+
+
+// The following two `From` implementations define the following translation
+// between `SwitchDirection` and `Tuple_2x64`: Let `s` be the `SwitchDirection`
+// object and let (x1, x2) be the corresponding tuple: Then `s.discriminant`
+// occupies the 32 LSBs of `x1`, `s.data0` occupies the 32 MSBs, and `x2 ==
+// s.data1`.
+impl From<Tuple_2x64> for SwitchDirection {
+    fn from(val: Tuple_2x64) -> SwitchDirection {
+
+
+        #[cfg(debug_assertions)]
+        {
+            let discriminant = val.0 as u32;
+            debug_assert!(discriminant <= 2);
+            let data0 = val.0 >> 32;
+            let data1 = val.1;
+
+            if discriminant == SwitchDirectionEnum::Return.discriminant_val() {
+                debug_assert_eq!(data0, 0);
+                debug_assert_eq!(data1, 0)
+            } else if discriminant == SwitchDirectionEnum::Suspend.discriminant_val() {
+                debug_assert_eq!(data1, 0)
+            }
+        }
+
+        // TODO(frank-emrich) This implementation assumes little endian data layout.
+        unsafe { std::mem::transmute::<Tuple_2x64, SwitchDirection>(val) }
+
+    }
+}
+
+impl From<SwitchDirection> for Tuple_2x64 {
+    fn from(val: SwitchDirection) -> Tuple_2x64 {
+        // TODO(frank-emrich) This implementation assumes little endian data layout.
+        unsafe { std::mem::transmute::<SwitchDirection, Tuple_2x64, >(val) }
+    }
+}
 
 /// TODO
 #[repr(C)]

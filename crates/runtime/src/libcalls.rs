@@ -60,6 +60,7 @@ use crate::{Instance, TrapReason, VMGcRef};
 #[cfg(feature = "wmemcheck")]
 use anyhow::bail;
 use anyhow::Result;
+use wasmtime_continuations::SwitchDirection;
 #[cfg(feature = "threads")]
 use std::time::{Duration, Instant};
 use wasmtime_environ::{DataIndex, ElemIndex, FuncIndex, MemoryIndex, TableIndex, Trap, Unsigned};
@@ -67,7 +68,16 @@ use wasmtime_environ::{DataIndex, ElemIndex, FuncIndex, MemoryIndex, TableIndex,
 use wasmtime_wmemcheck::AccessError::{
     DoubleMalloc, InvalidFree, InvalidRead, InvalidWrite, OutOfBounds,
 };
-use wasmtime_continuations::SwitchDirection;
+
+
+/// This type exists in order to return tuples from libcalls, by using
+/// `tuple_2x64` as the type name in the libcall declaration `builtin.rs`.
+/// Thus, a libcall whose return type is indicated as `tuple_2x64` will
+/// actually have two return values. For consistency, we also allow it to appear as
+/// a libcall parameter.
+#[repr(C)]
+pub struct Tuple_2x64(pub i64, pub i64);
+
 /// Raw functions which are actually called from compiled code.
 ///
 /// Invocation of a builtin currently looks like:
@@ -88,7 +98,7 @@ pub mod raw {
     #![allow(unused_doc_comments, unused_attributes)]
 
     use crate::{Instance, TrapReason, VMContext};
-    use wasmtime_continuations::SwitchDirection;
+    use crate::libcalls::Tuple_2x64;
 
     macro_rules! libcall {
         (
@@ -145,7 +155,7 @@ pub mod raw {
         (@ty reference) => (*mut u8);
         (@ty pointer) => (*mut u8);
         (@ty vmctx) => (*mut VMContext);
-        (@ty switch_direction) => (SwitchDirection);
+        (@ty tuple_2x64) => (Tuple_2x64);
     }
 
     wasmtime_environ::foreach_builtin_function!(libcall);
@@ -793,14 +803,15 @@ fn tc_resume(
     instance: &mut Instance,
     contref: *mut u8,
     parent_stack_limits: *mut u8,
-    switch_direction : SwitchDirection
-) -> Result<SwitchDirection, TrapReason> {
+    switch_direction : Tuple_2x64,
+) -> Result<Tuple_2x64, TrapReason> {
+    let switch_direction = SwitchDirection::from(switch_direction);
     crate::continuation::resume(
         instance,
         contref.cast::<crate::continuation::VMContRef>(),
         parent_stack_limits.cast::<crate::continuation::StackLimits>(),
         switch_direction
-    )
+    ).map(SwitchDirection::into)
 }
 
 fn tc_suspend(instance: &mut Instance, tag_index: u32) -> Result<(), TrapReason> {
