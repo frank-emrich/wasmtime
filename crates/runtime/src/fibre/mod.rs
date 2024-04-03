@@ -8,7 +8,7 @@ use std::io;
 use std::ops::Range;
 use wasmtime_continuations::{SwitchDirection, SwitchDirectionEnum, TagId};
 
-use crate::{VMContext, VMFuncRef, ValRaw};
+use crate::{VMContext, VMFuncRef};
 
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
@@ -85,10 +85,8 @@ impl Fiber {
         stack: FiberStack,
         func_ref: *const VMFuncRef,
         caller_vmctx: *mut VMContext,
-        args_ptr: *mut ValRaw,
-        args_capacity: usize,
     ) -> io::Result<Self> {
-        let inner = imp::Fiber::new(&stack.0, func_ref, caller_vmctx, args_ptr, args_capacity)?;
+        let inner = imp::Fiber::new(&stack.0, func_ref, caller_vmctx)?;
 
         Ok(Self {
             stack,
@@ -112,12 +110,11 @@ impl Fiber {
     ///
     /// Note that if the fiber itself panics during execution then the panic
     /// will be propagated to this caller.
-    pub fn resume(&self) -> SwitchDirection {
+    pub fn resume(&self, direction: SwitchDirection) -> SwitchDirection {
         assert!(!self.done.replace(true), "cannot resume a finished fiber");
-        let reason = self.inner.resume(&self.stack.0);
+        let reason = self.inner.resume(&self.stack.0, direction);
         if let SwitchDirection {
-            discriminant: SwitchDirectionEnum::Suspend,
-            data: _,
+            discriminant: SwitchDirectionEnum::Suspend, ..
         } = reason
         {
             self.done.set(false)

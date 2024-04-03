@@ -321,6 +321,14 @@ pub(crate) mod typed_continuation_helpers {
         pointer_type: ir::Type,
     }
 
+    /// Compile-time representation of wasmtime_continuations::SwitchDirection,
+    /// packed into two I64 `ir::Value`s .
+    /// TODO(frank-emrich) This relies on little endian data layout!
+    pub struct SwitchDirection {
+        discriminant_and_data0: ir::Value,
+        data1: ir::Value,
+    }
+
     impl VMContRef {
         pub fn new(address: ir::Value, pointer_type: ir::Type) -> VMContRef {
             VMContRef {

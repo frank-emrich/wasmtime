@@ -162,6 +162,7 @@ pub type TagId = u32;
 
 /// See SwitchDirection below for overall use of this type.
 #[repr(u32)]
+#[derive(PartialEq, Eq, Debug)]
 pub enum SwitchDirectionEnum {
     // Used to indicate that the contination has returned normally.
     Return = 0,
@@ -196,7 +197,11 @@ impl SwitchDirectionEnum {
 ///      Suspend(u32) = 1,
 ///
 ///      // Indicates that we are resuming a continuation via resume.
-///      Resume = 2,
+///      // Second payload is `contref.args.data`, where `contref` is the
+///      // underlying `VMContRef` (i.e., the pointer to the data buffer
+///      // of the continuation's `args` object). The second argument its capacity
+///      // (i.e., contref.args.capacity).
+///      Resume(u32, *mut ValRaw) = 2,
 ///  }
 ///```
 ///
@@ -211,55 +216,76 @@ impl SwitchDirectionEnum {
 pub struct SwitchDirection {
     pub discriminant: SwitchDirectionEnum,
 
-    // Stores tag value if `discriminant` is `suspend`, 0 otherwise.
-    pub data: u32,
+    // Purpose differs based on value of `discriminant`:
+    // `Return`  : unused, value is 0
+    // `Suspend` : contains tag we suspend with
+    // `Resume`  : contains `contobj.args.capacity`, where `contobj` is the
+    //             active `ContinuationObject`
+    pub data0: u32,
+
+    // Purpose differs based on value of `discriminant`:
+    // `Return`  : unused, value is 0
+    // `Suspend` : unused, value is 0
+    // `Resume`  : contains `contobj.args.data`, where `contobj` is the
+    //             active `ContinuationObject
+    pub data1: u64,
 }
 
 impl SwitchDirection {
     pub fn return_() -> SwitchDirection {
         SwitchDirection {
             discriminant: SwitchDirectionEnum::Return,
-            data: 0,
+            data0: 0,
+            data1: 0,
         }
     }
 
-    pub fn resume() -> SwitchDirection {
+    /// `args` is actually a *mut wasmtime_runtime::ValRaw`, but we don't have
+    /// access to that type here.
+    pub fn resume(args: *mut u8, args_capacity: u32) -> SwitchDirection {
         SwitchDirection {
             discriminant: SwitchDirectionEnum::Resume,
-            data: 0,
+            data0: args_capacity,
+            data1: args as u64,
         }
     }
 
     pub fn suspend(tag: u32) -> SwitchDirection {
         SwitchDirection {
             discriminant: SwitchDirectionEnum::Suspend,
-            data: tag,
+            data0: tag,
+            data1: 0,
         }
     }
 }
 
-impl From<SwitchDirection> for u64 {
-    fn from(val: SwitchDirection) -> u64 {
+impl From<SwitchDirection> for [u64; 2] {
+    fn from(val: SwitchDirection) -> [u64; 2] {
         // TODO(frank-emrich) This assumes little endian data layout. Should
         // make this more explicit.
-        unsafe { std::mem::transmute::<SwitchDirection, u64>(val) }
+        unsafe { std::mem::transmute::<SwitchDirection, [u64; 2]>(val) }
     }
 }
 
-impl From<u64> for SwitchDirection {
-    fn from(val: u64) -> SwitchDirection {
+impl From<[u64; 2]> for SwitchDirection {
+    fn from(val: [u64; 2]) -> SwitchDirection {
         #[cfg(debug_assertions)]
         {
-            let discriminant = val as u32;
+            let discriminant = val[0] as u32;
             debug_assert!(discriminant <= 2);
-            if discriminant != SwitchDirectionEnum::Suspend.discriminant_val() {
-                let data = val >> 32;
-                debug_assert_eq!(data, 0);
+            let data0 = val[0] >> 32;
+            let data1 = val[1];
+
+            if discriminant == SwitchDirectionEnum::Return.discriminant_val() {
+                debug_assert_eq!(data0, 0);
+                debug_assert_eq!(data1, 0)
+            } else if discriminant == SwitchDirectionEnum::Suspend.discriminant_val() {
+                debug_assert_eq!(data1, 0)
             }
         }
         // TODO(frank-emrich) This assumes little endian data layout. Should
         // make this more explicit.
-        unsafe { std::mem::transmute::<u64, SwitchDirection>(val) }
+        unsafe { std::mem::transmute::<[u64; 2], SwitchDirection>(val) }
     }
 }
 

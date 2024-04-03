@@ -9,7 +9,7 @@ use wasmtime_asm_macros::asm_func;
 
 // fn(
 //    top_of_stack(rdi): *mut u8
-//    payload(rsi) : u64
+//    switch_direction(rsi + rdx) : SwitchDirection
 // )
 //
 // The payload (i.e., second argument) is return unchanged, allowing data to be
@@ -63,8 +63,10 @@ asm_func!(
         pop rbx
         pop rbp
 
-        // We return the payload (i.e., the second argument to this function)
+        // We return the SwitchDirection object unchanged
         mov rax, rsi
+        // second half of switch_direction already present in rdx
+
 
         ret
     ",
@@ -74,9 +76,7 @@ asm_func!(
 //    top_of_stack(rdi): *mut u8,
 //    func_ref(rsi): *const VMFuncRef,
 //    caller_vmctx(rdx): *mut VMContext
-//    args_ptr(rcx): *mut ValRaw
-//    args_capacity(r8) : u64
-//    wasmtime_fibre_switch_pc(r9): *mut u8,
+//    wasmtime_fibre_switch_pc(r8): *mut u8,
 // )
 //
 // This function installs the launchpad for the computation to run on the fiber,
@@ -100,8 +100,8 @@ asm_func!(
 //          -0x20   TOS - 0x10
 //          -0x28   func_ref
 //          -0x30   caller_vmctx
-//          -0x38   args_ptr
-//          -0x40   args_capacity
+//          -0x38   undefined
+//          -0x40   undefined
 //          -0x48   undefined
 #[rustfmt::skip]
 asm_func!(
@@ -113,7 +113,7 @@ asm_func!(
         // take over and understands which values are in which registers.
         //
         // Install wasmtime_fibre_switch_pc at TOS - 0x08:
-        mov -0x08[rdi], r9
+        mov -0x08[rdi], r8
 
         // Store TOS - 0x20 at TOS - 0x10
         // This is the resume frame pointer from which we calculate the new
@@ -137,8 +137,6 @@ asm_func!(
         // Install remaining arguments
         mov -0x28[rdi], rsi   // loaded into rbx during switch
         mov -0x30[rdi], rdx   // loaded into r12 during switch
-        mov -0x38[rdi], rcx   // loaded into r13 during switch
-        mov -0x40[rdi], r8    // loaded into r14 during switch
 
         ret
     ",
@@ -168,7 +166,8 @@ asm_func!(
 //
 // RSP: TOS - 0x18
 // RDI: TOS
-// RSI: irrelevant  (not read by wasmtime_fibre_start)
+// RSI: first half of switch_direction
+// RDX: second half of switch_direction
 // RAX: irrelevant  (not read by wasmtime_fibre_start)
 // RBP: TOS - 0x10
 // RBX: func_ref       (= VMFuncRef to execute)
@@ -259,22 +258,20 @@ asm_func!(
         // Note that `call` is used here to leave this frame on the stack so we
         // can use the dwarf info here for unwinding.
         //
-        // Note that the next 5 instructions amount to calling fiber_start
+        // Note that the next 3 instructions amount to calling fiber_start
         // with the following arguments:
         // 1. TOS
-        // 2. func_ref
+        // 2. switch_direction
+        // 3. func_ref
         // 3. caller_vmctx
-        // 4. args_ptr
-        // 5. args_capacity
         //
         // Note that fiber_start never returns: Instead, it // resume to the
         // parent FiberStack via wasmtime_fibre_switch.
 
         // TOS is already in RDI
-        mov rsi, rbx // func_ref
-        mov rdx, r12 // caller_vmctx
-        mov rcx, r13 // args_ptr
-        mov r8, r14  // args_capacity
+        // switch_direction os already in RSI + RDX
+        mov rcx, rbx // func_ref
+        mov r8, r12 // caller_vmctx
         call {fiber_start}
 
         // We should never get here and purposely emit an invalid instruction.

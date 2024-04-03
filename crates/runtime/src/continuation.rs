@@ -1,7 +1,7 @@
 //! Continuations TODO
 
 use crate::fibre::{Fiber, FiberStack};
-use crate::vmcontext::{VMFuncRef, ValRaw};
+use crate::vmcontext::VMFuncRef;
 use crate::{Instance, TrapReason};
 use std::cell::UnsafeCell;
 use std::cmp;
@@ -313,8 +313,6 @@ pub fn cont_new(
             stack,
             func.cast::<VMFuncRef>(),
             caller_vmctx,
-            payload.data as *mut ValRaw,
-            payload.capacity as usize,
         )
         .map_err(|error| TrapReason::user_without_backtrace(error.into()))?
     };
@@ -343,6 +341,7 @@ pub fn resume(
     instance: &mut Instance,
     contref: *mut VMContRef,
     parent_stack_limits: *mut StackLimits,
+    direction: SwitchDirection,
 ) -> Result<SwitchDirection, TrapReason> {
     let cont = unsafe {
         contref.as_ref().ok_or_else(|| {
@@ -395,7 +394,7 @@ pub fn resume(
         *runtime_limits.last_wasm_entry_sp.get() = (*contref).limits.last_wasm_entry_sp;
     }
 
-    Ok(cont.fiber.resume())
+    Ok(cont.fiber.resume(direction))
 }
 
 /// TODO

@@ -104,7 +104,7 @@ use std::alloc::{alloc, dealloc, Layout};
 use std::io;
 use std::ops::Range;
 use std::ptr;
-use wasmtime_continuations::SwitchDirection;
+use wasmtime_continuations::{SwitchDirection, SwitchDirectionEnum};
 
 use crate::{VMContext, VMFuncRef, VMOpaqueContext, ValRaw};
 
@@ -209,26 +209,38 @@ extern "C" {
         top_of_stack: *mut u8,
         func_ref: *const VMFuncRef,
         caller_vmctx: *mut VMContext,
-        args_ptr: *mut ValRaw,
-        args_capacity: usize,
         wasmtime_fibre_switch_pc: *const u8,
     );
-    fn wasmtime_fibre_switch(top_of_stack: *mut u8, payload: u64) -> u64;
+    fn wasmtime_fibre_switch(top_of_stack: *mut u8, switch_direction: SwitchDirection) -> SwitchDirection;
     #[allow(dead_code)] // only used in inline assembly for some platforms
     fn wasmtime_fibre_start();
 }
 
 /// This function is responsible for actually running a wasm function inside a
-/// continuation. It is only ever called from `wasmtime_fibre_start`. Hence, it
-/// must never return.
+/// continuation. It is only ever called from `wasmtime_fibre_start`.
+/// It must not panic, and returning from it indicates an error. Ordinary
+/// execution leaves this function by switching back to the parent fiber.
 extern "C" fn fiber_start(
     top_of_stack: *mut u8,
+    switch_direction: SwitchDirection,
     func_ref: *const VMFuncRef,
     caller_vmctx: *mut VMContext,
-    args_ptr: *mut ValRaw,
-    args_capacity: usize,
 ) {
     unsafe {
+
+        #[cfg(debug_assertions)]
+        // This is effectively an assertion, as returning from this function
+        // causes an SIGILL in wasmtime_fibre_start.
+        if switch_direction.discriminant != SwitchDirectionEnum::Resume {
+            return;
+        }
+
+
+        // The switch direction must be a `Resume`, in which case it gives us
+        // the payloads for the trampoline.
+        let args_capacity = switch_direction.data0 as usize;
+        let args_ptr = switch_direction.data1 as *mut ValRaw;
+
         let func_ref = &*func_ref;
         let array_call_trampoline = func_ref.array_call;
         let caller_vmxtx = VMOpaqueContext::from_vmcontext(caller_vmctx);
@@ -258,16 +270,13 @@ impl Fiber {
         stack: &FiberStack,
         func_ref: *const VMFuncRef,
         caller_vmctx: *mut VMContext,
-        args_ptr: *mut ValRaw,
-        args_capacity: usize,
+
     ) -> io::Result<Self> {
         unsafe {
             wasmtime_fibre_init(
                 stack.top,
                 func_ref,
                 caller_vmctx,
-                args_ptr,
-                args_capacity,
                 wasmtime_fibre_switch as *const u8,
             );
         }
@@ -275,10 +284,10 @@ impl Fiber {
         Ok(Self)
     }
 
-    pub(crate) fn resume(&self, stack: &FiberStack) -> SwitchDirection {
+    pub(crate) fn resume(&self, stack: &FiberStack, direction: SwitchDirection) -> SwitchDirection {
         unsafe {
-            let reason = SwitchDirection::resume().into();
-            SwitchDirection::from(wasmtime_fibre_switch(stack.top, reason))
+            debug_assert_eq!(direction.discriminant, SwitchDirectionEnum::Resume);
+            wasmtime_fibre_switch(stack.top, direction)
         }
     }
 }

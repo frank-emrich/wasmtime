@@ -67,7 +67,7 @@ use wasmtime_environ::{DataIndex, ElemIndex, FuncIndex, MemoryIndex, TableIndex,
 use wasmtime_wmemcheck::AccessError::{
     DoubleMalloc, InvalidFree, InvalidRead, InvalidWrite, OutOfBounds,
 };
-
+use wasmtime_continuations::SwitchDirection;
 /// Raw functions which are actually called from compiled code.
 ///
 /// Invocation of a builtin currently looks like:
@@ -88,6 +88,7 @@ pub mod raw {
     #![allow(unused_doc_comments, unused_attributes)]
 
     use crate::{Instance, TrapReason, VMContext};
+    use wasmtime_continuations::SwitchDirection;
 
     macro_rules! libcall {
         (
@@ -144,6 +145,7 @@ pub mod raw {
         (@ty reference) => (*mut u8);
         (@ty pointer) => (*mut u8);
         (@ty vmctx) => (*mut VMContext);
+        (@ty switch_direction) => (SwitchDirection);
     }
 
     wasmtime_environ::foreach_builtin_function!(libcall);
@@ -791,13 +793,14 @@ fn tc_resume(
     instance: &mut Instance,
     contref: *mut u8,
     parent_stack_limits: *mut u8,
-) -> Result<u64, TrapReason> {
+    switch_direction : SwitchDirection
+) -> Result<SwitchDirection, TrapReason> {
     crate::continuation::resume(
         instance,
         contref.cast::<crate::continuation::VMContRef>(),
         parent_stack_limits.cast::<crate::continuation::StackLimits>(),
+        switch_direction
     )
-    .map(|reason| reason.into())
 }
 
 fn tc_suspend(instance: &mut Instance, tag_index: u32) -> Result<(), TrapReason> {
