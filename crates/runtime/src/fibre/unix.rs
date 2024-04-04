@@ -106,6 +106,7 @@ use std::ops::Range;
 use std::ptr;
 use wasmtime_continuations::{SwitchDirection, SwitchDirectionEnum};
 
+use crate::continuation::VMContRef;
 use crate::{VMContext, VMFuncRef, VMOpaqueContext, ValRaw};
 
 #[derive(Debug)]
@@ -209,6 +210,7 @@ extern "C" {
         top_of_stack: *mut u8,
         func_ref: *const VMFuncRef,
         caller_vmctx: *mut VMContext,
+        contref: *mut VMContRef,
         wasmtime_fibre_switch_pc: *const u8,
     );
     fn wasmtime_fibre_switch(top_of_stack: *mut u8, switch_direction: SwitchDirection) -> SwitchDirection;
@@ -225,6 +227,7 @@ extern "C" fn fiber_start(
     switch_direction: SwitchDirection,
     func_ref: *const VMFuncRef,
     caller_vmctx: *mut VMContext,
+    contref: *mut VMContRef
 ) {
     unsafe {
 
@@ -236,10 +239,9 @@ extern "C" fn fiber_start(
         }
 
 
-        // The switch direction must be a `Resume`, in which case it gives us
-        // the payloads for the trampoline.
-        let args_capacity = switch_direction.data0 as usize;
-        let args_ptr = switch_direction.data1 as *mut ValRaw;
+        let contref = &*contref;
+        let args_capacity = contref.args.capacity as usize;
+        let args_ptr = contref.args.data as *mut ValRaw;
 
         let func_ref = &*func_ref;
         let array_call_trampoline = func_ref.array_call;
@@ -266,22 +268,21 @@ extern "C" fn fiber_start(
 }
 
 impl Fiber {
-    pub fn new(
+    pub fn initialize(
         stack: &FiberStack,
         func_ref: *const VMFuncRef,
         caller_vmctx: *mut VMContext,
-
-    ) -> io::Result<Self> {
+        contref: *mut VMContRef,
+    )  {
         unsafe {
             wasmtime_fibre_init(
                 stack.top,
                 func_ref,
                 caller_vmctx,
+                contref,
                 wasmtime_fibre_switch as *const u8,
             );
         }
-
-        Ok(Self)
     }
 
     pub(crate) fn resume(&self, stack: &FiberStack, direction: SwitchDirection) -> SwitchDirection {

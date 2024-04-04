@@ -75,7 +75,8 @@ asm_func!(
 // fn(
 //    top_of_stack(rdi): *mut u8,
 //    func_ref(rsi): *const VMFuncRef,
-//    caller_vmctx(rdx): *mut VMContext
+//    caller_vmctx(rdx): *mut VMContext,
+//    contef(rcx): *mut VMContRef,
 //    wasmtime_fibre_switch_pc(r8): *mut u8,
 // )
 //
@@ -100,7 +101,7 @@ asm_func!(
 //          -0x20   TOS - 0x10
 //          -0x28   func_ref
 //          -0x30   caller_vmctx
-//          -0x38   undefined
+//          -0x38   contref
 //          -0x40   undefined
 //          -0x48   undefined
 #[rustfmt::skip]
@@ -137,6 +138,7 @@ asm_func!(
         // Install remaining arguments
         mov -0x28[rdi], rsi   // loaded into rbx during switch
         mov -0x30[rdi], rdx   // loaded into r12 during switch
+        mov -0x38[rdi], rcx   // loaded into r13 during switch
 
         ret
     ",
@@ -172,8 +174,8 @@ asm_func!(
 // RBP: TOS - 0x10
 // RBX: func_ref       (= VMFuncRef to execute)
 // R12: caller_vmctx
-// R13: args_ptr       (used by array call trampoline)
-// R14: args_capacity  (used by array call trampoline)
+// R13: contref
+// R14: irrelevant  (not read by wasmtime_fibre_start)
 // R15: irrelevant  (not read by wasmtime_fibre_start)
 //
 // At this point in time, the stack layout is as follows:
@@ -258,12 +260,13 @@ asm_func!(
         // Note that `call` is used here to leave this frame on the stack so we
         // can use the dwarf info here for unwinding.
         //
-        // Note that the next 3 instructions amount to calling fiber_start
+        // Note that the next 4 instructions amount to calling fiber_start
         // with the following arguments:
         // 1. TOS
         // 2. switch_direction
         // 3. func_ref
         // 3. caller_vmctx
+        // 4. contref
         //
         // Note that fiber_start never returns: Instead, it // resume to the
         // parent FiberStack via wasmtime_fibre_switch.
@@ -272,6 +275,7 @@ asm_func!(
         // switch_direction os already in RSI + RDX
         mov rcx, rbx // func_ref
         mov r8, r12 // caller_vmctx
+        mov r9, r13
         call {fiber_start}
 
         // We should never get here and purposely emit an invalid instruction.

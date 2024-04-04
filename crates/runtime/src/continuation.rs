@@ -349,9 +349,7 @@ pub fn cont_new(
         let stack = FiberStack::malloc(stack_size)
             .map_err(|error| TrapReason::user_without_backtrace(error.into()))?;
         Fiber::new(
-            stack,
-            func.cast::<VMFuncRef>(),
-            caller_vmctx,
+            stack
         )
         .map_err(|error| TrapReason::user_without_backtrace(error.into()))?
     };
@@ -370,6 +368,10 @@ pub fn cont_new(
     // TODO(dhil): we need memory clean up of
     // continuation reference objects.
     let pointer = Box::into_raw(contref);
+    unsafe {
+        (&mut *pointer).fiber.initialize(func.cast::<VMFuncRef>(), caller_vmctx, pointer);
+    }
+
     debug_println!("Created contref @ {:p}", pointer);
     Ok(pointer)
 }

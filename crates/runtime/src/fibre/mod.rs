@@ -8,7 +8,7 @@ use std::io;
 use std::ops::Range;
 use wasmtime_continuations::{SwitchDirection, SwitchDirectionEnum, TagId};
 
-use crate::{VMContext, VMFuncRef};
+use crate::{continuation::VMContRef, VMContext, VMFuncRef};
 
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
@@ -76,23 +76,29 @@ pub struct Suspend {
 }
 
 impl Fiber {
-    /// Creates a new fiber which will execute `func` on the given stack.
+    /// Creates a new fiber with the given stack.
     ///
-    /// This function returns a `Fiber` which, when resumed, will execute `func`
-    /// to completion. When desired the `func` can suspend itself via
-    /// `Fiber::suspend`.
+    /// Must call `initialize` before actually being able to `resume` it.
     pub fn new(
         stack: FiberStack,
-        func_ref: *const VMFuncRef,
-        caller_vmctx: *mut VMContext,
+
     ) -> io::Result<Self> {
-        let inner = imp::Fiber::new(&stack.0, func_ref, caller_vmctx)?;
+        let inner = imp::Fiber;
 
         Ok(Self {
             stack,
             inner,
             done: Cell::new(false),
         })
+    }
+
+    pub fn initialize(
+        &mut self,
+        func_ref: *const VMFuncRef,
+        caller_vmctx: *mut VMContext,
+        contref: *mut VMContRef,
+    )  {
+        imp::Fiber::initialize(&self.stack.0, func_ref, caller_vmctx, contref);
     }
 
     /// Resumes execution of this fiber.

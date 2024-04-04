@@ -123,6 +123,10 @@ macro_rules! declare_function_sig {
                 self.pointer()
             }
 
+            fn tuple_2x64(&self) -> WasmValType {
+                unimplemented!();
+            }
+
             fn i32(&self) -> WasmValType {
                 WasmValType::I32
             }

@@ -333,18 +333,15 @@ pub(crate) mod typed_continuation_helpers {
         pub fn resume<'a>(
             _env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
-            args_ptr: ir::Value,
-            args_capacity: ir::Value,
         ) -> Self {
-            debug_assert_eq!(builder.func.dfg.value_type(args_ptr), I64);
-            debug_assert_eq!(builder.func.dfg.value_type(args_capacity), I32);
-
+            let zero32 = builder.ins().iconst(I32, 0);
+            let zero64 = builder.ins().iconst(I64, 0);
             Self {
                 discriminant: builder
                     .ins()
                     .iconst(I32, SwitchDirectionEnum::Resume.discriminant_val() as i64),
-                data0: args_capacity,
-                data1: args_ptr,
+                data0: zero32,
+                data1: zero64,
             }
         }
 
@@ -1369,11 +1366,9 @@ pub(crate) fn translate_resume<'a>(
         original_stack_chain.assert_not_absent(env, builder);
         let tc_contref = tc::VMContRef::new(resume_contref, env.pointer_type());
         tc_contref.set_parent_stack_chain(env, builder, &original_stack_chain);
-        let args_ptr = tc_contref.args().get_data(builder);
-        let args_capacity = tc_contref.args().get_capacity(builder);
+
         let switch_direction_tuple =
-            tc::SwitchDirection::resume(env, builder, args_ptr, args_capacity)
-                .into_tuple(env, builder);
+            tc::SwitchDirection::resume(env, builder).into_tuple(env, builder);
 
         builder.ins().jump(resume_block, &[]);
         (resume_contref, original_stack_chain, switch_direction_tuple)
