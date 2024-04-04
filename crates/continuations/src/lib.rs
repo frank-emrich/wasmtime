@@ -197,11 +197,8 @@ impl SwitchDirectionEnum {
 ///      Suspend(u32) = 1,
 ///
 ///      // Indicates that we are resuming a continuation via resume.
-///      // Second payload is `contref.args.data`, where `contref` is the
-///      // underlying `VMContRef` (i.e., the pointer to the data buffer
-///      // of the continuation's `args` object). The second argument its capacity
-///      // (i.e., contref.args.capacity).
-///      Resume(u32, *mut ValRaw) = 2,
+///      // The two payload fields are unused.
+///      Resume(u32, u64) = 2,
 ///  }
 ///```
 ///
@@ -219,15 +216,10 @@ pub struct SwitchDirection {
     // Purpose differs based on value of `discriminant`:
     // `Return`  : unused, value is 0
     // `Suspend` : contains tag we suspend with
-    // `Resume`  : contains `contobj.args.capacity`, where `contobj` is the
-    //             active `ContinuationObject`
+    // `Resume`  : unused, value is 0
     pub data0: u32,
 
-    // Purpose differs based on value of `discriminant`:
-    // `Return`  : unused, value is 0
-    // `Suspend` : unused, value is 0
-    // `Resume`  : contains `contobj.args.data`, where `contobj` is the
-    //             active `ContinuationObject
+    // Unused
     pub data1: u64,
 }
 
@@ -258,8 +250,6 @@ impl SwitchDirection {
         }
     }
 }
-
-
 
 /// Defines offsets of the fields in the continuation-related types
 pub mod offsets {

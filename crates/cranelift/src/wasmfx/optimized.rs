@@ -322,11 +322,14 @@ pub(crate) mod typed_continuation_helpers {
         pointer_type: ir::Type,
     }
 
-    /// Compile-time representation of `wasmtime_continuations::SwitchDirection`.
+    /// Compile-time representation of `wasmtime_continuations::SwitchDirection`
+    /// using a tuple of two i64 values. The conversion between SwitchDirection
+    /// and this tuple is supposed to be the same as the one between Tuple_2x64
+    /// and SwitchDirection, as documented in the `From` implementations between
+    /// these two in `crate::continuation`.
     pub struct SwitchDirection {
-        discriminant: ir::Value,
-        data0: ir::Value,
-        data1: ir::Value,
+        // Invariant: These must be I64 values
+        pub data: [ir::Value; 2],
     }
 
     impl SwitchDirection {
@@ -334,32 +337,13 @@ pub(crate) mod typed_continuation_helpers {
             _env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
         ) -> Self {
-            let zero32 = builder.ins().iconst(I32, 0);
-            let zero64 = builder.ins().iconst(I64, 0);
+            let data0 = builder
+                .ins()
+                .iconst(I64, SwitchDirectionEnum::Resume.discriminant_val() as i64);
+            let data1 = builder.ins().iconst(I64, 0);
             Self {
-                discriminant: builder
-                    .ins()
-                    .iconst(I32, SwitchDirectionEnum::Resume.discriminant_val() as i64),
-                data0: zero32,
-                data1: zero64,
+                data: [data0, data1],
             }
-        }
-
-        /// This performs the same conversion as the one between Tuple_2x64 and
-        /// SwitchDirection, as documented in the `From` implementations between
-        /// these two in `crate::continuation`.
-        pub fn into_tuple<'a>(
-            &self,
-            _env: &mut crate::func_environ::FuncEnvironment<'a>,
-            builder: &mut FunctionBuilder,
-        ) -> [ir::Value; 2] {
-            let discriminant = builder.ins().uextend(I64, self.discriminant);
-            let data0 = builder.ins().uextend(I64, self.data0);
-            let data0 = builder.ins().ushr_imm(data0, 32);
-            let tuple0 = builder.ins().bor(discriminant, data0);
-            let tuple1 = self.data1;
-
-            [tuple0, tuple1]
         }
     }
 
@@ -1350,7 +1334,7 @@ pub(crate) fn translate_resume<'a>(
 
     // Preamble: Part of previously active block
 
-    let (resume_contref, parent_stack_chain, switch_direction_tuple) = {
+    let (resume_contref, parent_stack_chain, switch_direction) = {
         let resume_contref =
             shared::typed_continuations_cont_obj_get_cont_ref(env, builder, contobj);
 
@@ -1367,11 +1351,10 @@ pub(crate) fn translate_resume<'a>(
         let tc_contref = tc::VMContRef::new(resume_contref, env.pointer_type());
         tc_contref.set_parent_stack_chain(env, builder, &original_stack_chain);
 
-        let switch_direction_tuple =
-            tc::SwitchDirection::resume(env, builder).into_tuple(env, builder);
+        let switch_direction = tc::SwitchDirection::resume(env, builder);
 
         builder.ins().jump(resume_block, &[]);
-        (resume_contref, original_stack_chain, switch_direction_tuple)
+        (resume_contref, original_stack_chain, switch_direction)
     };
 
     // Resume block: actually resume the fiber corresponding to the
@@ -1412,8 +1395,8 @@ pub(crate) fn translate_resume<'a>(
                 tc_resume(
                 resume_contref,
                 parent_stacks_limit_pointer,
-                    switch_direction_tuple[0],
-                    switch_direction_tuple[1]
+                    switch_direction.data[0],
+                    switch_direction.data[1]
                 )
         );
 
