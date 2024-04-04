@@ -305,7 +305,7 @@ pub(crate) mod typed_continuation_helpers {
 
     #[derive(Copy, Clone)]
     pub struct VMContext {
-        address: ir::Value,
+        pub address: ir::Value,
         pointer_type: ir::Type,
     }
 
@@ -333,7 +333,7 @@ pub(crate) mod typed_continuation_helpers {
     }
 
     impl SwitchDirection {
-        pub fn resume<'a>(
+        pub fn make_resume<'a>(
             _env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
         ) -> Self {
@@ -344,6 +344,70 @@ pub(crate) mod typed_continuation_helpers {
             Self {
                 data: [data0, data1],
             }
+        }
+
+        pub fn from_raw<'a>(
+            _env: &mut crate::func_environ::FuncEnvironment<'a>,
+            builder: &mut FunctionBuilder,
+            data: &[ir::Value],
+        ) -> Self {
+            assert_eq!(data.len(), 2);
+            assert_eq!(builder.func.dfg.value_type(data[0]), I64);
+            assert_eq!(builder.func.dfg.value_type(data[1]), I64);
+            Self {
+                data: [data[0].clone(), data[1].clone()],
+            }
+        }
+
+        pub fn is_suspend_or_resume(&self) -> ir::Value {
+            debug_assert_eq!(SwitchDirectionEnum::Return.discriminant_val(), 0);
+            // For a Return variant, the data0 payload is guaranteed to be 0,
+            // In total, this means that for Return the entire first word is 0.
+            self.data[0]
+        }
+
+        fn discriminant<'a>(
+            &self,
+            _env: &mut crate::func_environ::FuncEnvironment<'a>,
+            builder: &mut FunctionBuilder,
+        ) -> ir::Value {
+            builder.ins().ireduce(I32, self.data[0])
+        }
+
+        /// Returns what corresponds to the data0 field of the SwitchDirection struct.
+        fn data0<'a>(
+            &self,
+            _env: &mut crate::func_environ::FuncEnvironment<'a>,
+            builder: &mut FunctionBuilder,
+        ) -> ir::Value {
+            let shifted = builder.ins().ushr_imm(self.data[0], 32);
+            builder.ins().ireduce(I32, shifted)
+        }
+
+        #[allow(dead_code)]
+        /// Returns what corresponds to the data1 field of the SwitchDirection struct.
+        fn data1<'a>(
+            &self,
+            _env: &mut crate::func_environ::FuncEnvironment<'a>,
+            _builder: &mut FunctionBuilder,
+        ) -> ir::Value {
+            self.data[1]
+        }
+
+        /// Must only be called if this corresponds to a `Suspend` variant. Returns the tag.
+        pub fn suspend_tag<'a>(
+            &self,
+            env: &mut crate::func_environ::FuncEnvironment<'a>,
+            builder: &mut FunctionBuilder,
+        ) -> ir::Value {
+            if cfg!(debug_assertions) {
+                let suspend_discriminant =
+                    wasmtime_continuations::SwitchDirectionEnum::Suspend.discriminant_val();
+                let suspend_discriminant = builder.ins().iconst(I32, suspend_discriminant as i64);
+                let discriminant = self.discriminant(env, builder);
+                emit_debug_assert_eq!(env, builder, discriminant, suspend_discriminant);
+            }
+            self.data0(env, builder)
         }
     }
 
@@ -1334,7 +1398,7 @@ pub(crate) fn translate_resume<'a>(
 
     // Preamble: Part of previously active block
 
-    let (resume_contref, parent_stack_chain, switch_direction) = {
+    let (resume_contref, parent_stack_chain, outgoing_switch_direction) = {
         let resume_contref =
             shared::typed_continuations_cont_obj_get_cont_ref(env, builder, contobj);
 
@@ -1351,7 +1415,7 @@ pub(crate) fn translate_resume<'a>(
         let tc_contref = tc::VMContRef::new(resume_contref, env.pointer_type());
         tc_contref.set_parent_stack_chain(env, builder, &original_stack_chain);
 
-        let switch_direction = tc::SwitchDirection::resume(env, builder);
+        let switch_direction = tc::SwitchDirection::make_resume(env, builder);
 
         builder.ins().jump(resume_block, &[]);
         (resume_contref, original_stack_chain, switch_direction)
@@ -1363,7 +1427,7 @@ pub(crate) fn translate_resume<'a>(
     // to resume objects other than `original_contref`.
     // We make the `VMContRef` that was actually resumed available via
     // `resumed_contref`, so that subsequent blocks can refer to it.
-    let (resume_result, vm_runtime_limits_ptr) = {
+    let (incoming_switch_direction, vm_runtime_limits_ptr) = {
         builder.switch_to_block(resume_block);
 
         // We mark `resume_contref` as the currently running one
@@ -1388,62 +1452,35 @@ pub(crate) fn translate_resume<'a>(
         let co = tc::VMContRef::new(resume_contref, env.pointer_type());
         co.set_state(builder, wasmtime_continuations::State::Invoked);
 
-        call_builtin!(
-            builder,
-            env,
-            let result =
-                tc_resume(
+        let tc_resume = env.builtin_functions.tc_resume(builder.func);
+        let resume_call = builder.ins().call(
+            tc_resume,
+            &[
+                vmctx.address,
                 resume_contref,
                 parent_stacks_limit_pointer,
-                    switch_direction.data[0],
-                    switch_direction.data[1]
-                )
+                outgoing_switch_direction.data[0],
+                outgoing_switch_direction.data[1],
+            ],
         );
-
-        emit_debug_println!(
-            env,
-            builder,
-            "[resume] libcall finished, result is {:p}",
-            result
-        );
+        let results = builder.func.dfg.inst_results(resume_call).to_vec();
+        let incoming_switch_direction = tc::SwitchDirection::from_raw(env, builder, &results);
 
         // Now the parent contref (or main stack) is active again
         vmctx.store_stack_chain(env, builder, &parent_stack_chain);
 
-        // The `result` is a value of type wasmtime_continuations::SwitchDirection,
-        // using the encoding described at its definition.
-        // Thus, the first 32 bit encode the discriminant, and the
-        // subsequent 32 bit encode the tag if suspending, or 0 otherwise.
-        // Thus, when returning, the overall u64 should be zero.
-        let return_discriminant =
-            wasmtime_continuations::SwitchDirectionEnum::Return.discriminant_val();
-        debug_assert_eq!(return_discriminant, 0);
-
-        // If these two assumptions don't hold anymore, the code here becomes invalid.
-        debug_assert_eq!(
-            std::mem::size_of::<wasmtime_continuations::types::switch_reason::Discriminant>(),
-            4
-        );
-        debug_assert_eq!(
-            std::mem::size_of::<wasmtime_continuations::types::switch_reason::Data>(),
-            4
-        );
-
-        if cfg!(debug_assertions) {
-            let discriminant = builder.ins().ireduce(I32, result);
-            emit_debug_println!(env, builder, "[resume] discriminant is {}", discriminant);
-        }
+        // It cannot be `Resume`, so "is suspend or resume" is equivalent to "is
+        // suspend" here.
+        let is_suspend = incoming_switch_direction.is_suspend_or_resume();
 
         let vm_runtime_limits_ptr = vmctx.load_vm_runtime_limits_ptr(env, builder);
 
-        // Jump to the return block if the result is 0, otherwise jump to
-        // the suspend block.
         builder
             .ins()
-            .brif(result, suspend_block, &[], return_block, &[]);
+            .brif(is_suspend, suspend_block, &[], return_block, &[]);
 
         // We do not seal this block, yet, because the effect forwarding block has a back edge to it
-        (result, vm_runtime_limits_ptr)
+        (incoming_switch_direction, vm_runtime_limits_ptr)
     };
 
     // Suspend block.
@@ -1460,21 +1497,7 @@ pub(crate) fn translate_resume<'a>(
         // parent of the suspended continuation (which is now active).
         parent_stack_chain.write_limits_to_vmcontext(env, builder, vm_runtime_limits_ptr);
 
-        let discriminant = builder.ins().ireduce(I32, resume_result);
-        let discriminant_size_bytes =
-            std::mem::size_of::<wasmtime_continuations::types::switch_reason::Discriminant>();
-
-        if cfg!(debug_assertions) {
-            let suspend_discriminant =
-                wasmtime_continuations::SwitchDirectionEnum::Suspend.discriminant_val();
-            let suspend_discriminant = builder.ins().iconst(I32, suspend_discriminant as i64);
-            emit_debug_assert_eq!(env, builder, discriminant, suspend_discriminant);
-        }
-
-        let tag = builder
-            .ins()
-            .ushr_imm(resume_result, discriminant_size_bytes as i64 * 8);
-        let tag = builder.ins().ireduce(I32, tag);
+        let tag = incoming_switch_direction.suspend_tag(env, builder);
 
         emit_debug_println!(env, builder, "[resume] in suspend block, tag is {}", tag);
 
