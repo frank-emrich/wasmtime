@@ -100,8 +100,9 @@ macro_rules! foreach_builtin_function {
 
             // Creates a new continuation from a funcref.
             tc_cont_new(vmctx: vmctx, r: pointer, param_count: i32, result_count: i32) -> pointer;
-            // Resumes a continuation. The result value is of type
-            // wasmtime_continuations::SwitchDirection.
+            // Resumes a continuation. The `switch_direction parameter` and the
+            // result value are a wasmtime_continuations::SwitchDirection object
+            // encoded as two u64 values.
             tc_resume(vmctx: vmctx, contref: pointer, parent_stack_limits: pointer, switch_direction: tuple_2x64) -> tuple_2x64;
             // Suspends a continuation.
             tc_suspend(vmctx: vmctx, tag: i32);
