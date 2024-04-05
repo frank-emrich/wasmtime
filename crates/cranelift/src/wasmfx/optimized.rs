@@ -2,6 +2,7 @@ use super::shared;
 
 use crate::wasmfx::shared::call_builtin;
 use cranelift_codegen::ir;
+use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types::*;
 use cranelift_codegen::ir::InstBuilder;
 use cranelift_frontend::{FunctionBuilder, Switch};
@@ -9,6 +10,7 @@ use cranelift_wasm::FuncEnvironment;
 use cranelift_wasm::{FuncTranslationState, WasmResult, WasmValType};
 use shared::typed_continuations_cont_obj_get_cont_ref;
 use shared::typed_continuations_new_cont_obj;
+use wasmtime_continuations::SwitchDirectionEnum;
 use wasmtime_environ::PtrSize;
 
 #[macro_use]
@@ -391,7 +393,7 @@ pub(crate) mod typed_continuation_helpers {
                 .icmp_imm(IntCC::UnsignedGreaterThan, self.data[0], 1)
         }
 
-        fn discriminant<'a>(
+        pub fn discriminant<'a>(
             &self,
             _env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
@@ -409,7 +411,6 @@ pub(crate) mod typed_continuation_helpers {
             builder.ins().ireduce(I32, shifted)
         }
 
-        #[allow(dead_code)]
         /// Returns what corresponds to the data1 field of the SwitchDirection struct.
         fn data1<'a>(
             &self,
@@ -433,6 +434,23 @@ pub(crate) mod typed_continuation_helpers {
                 emit_debug_assert_eq!(env, builder, discriminant, suspend_discriminant);
             }
             self.data0(env, builder)
+        }
+
+        pub fn resume_fast_track_payload<'a>(
+            &self,
+            env: &mut crate::func_environ::FuncEnvironment<'a>,
+            builder: &mut FunctionBuilder,
+        ) -> ir::Value {
+            if cfg!(debug_assertions) {
+                let resume_fast_track_discriminant =
+                    wasmtime_continuations::SwitchDirectionEnum::ResumeFastTrack.discriminant_val();
+                let resume_fast_track_discriminant = builder
+                    .ins()
+                    .iconst(I32, resume_fast_track_discriminant as i64);
+                let discriminant = self.discriminant(env, builder);
+                emit_debug_assert_eq!(env, builder, discriminant, resume_fast_track_discriminant);
+            }
+            self.data1(env, builder)
         }
     }
 
@@ -1184,7 +1202,7 @@ mod payload_fast_track {
     };
     use cranelift_frontend::FunctionBuilder;
 
-    fn fast_trackable_types(types: &[ir::Type]) -> bool {
+    pub fn fast_trackable_types(types: &[ir::Type]) -> bool {
         types.len() <= 1 && types.first().map_or(true, |ty| *ty == I32 || *ty == I64)
     }
 
@@ -1228,6 +1246,23 @@ mod payload_fast_track {
             [I32] => builder.ins().uextend(I64, *resume_args.first().unwrap()),
             [I64] => *resume_args.first().unwrap(),
             _ => panic!("Unexpected resume argument types"),
+        }
+    }
+
+    // Assuming that the given `tag_return_types` are fast-trackable, stores them in
+    // a single I64.
+    pub fn fast_track_unpack_data<'a>(
+        _env: &mut crate::func_environ::FuncEnvironment<'a>,
+        builder: &mut FunctionBuilder,
+        switch_direction_payload: ir::Value,
+        tag_return_types: &[ir::Type],
+    ) -> ir::Value {
+        assert!(fast_trackable_types(tag_return_types));
+
+        match tag_return_types {
+            [I32] => builder.ins().ireduce(I32, switch_direction_payload),
+            [I64] => switch_direction_payload,
+            _ => panic!("Unexpected tag return types"),
         }
     }
 }
@@ -1901,14 +1936,80 @@ pub(crate) fn translate_suspend<'a>(
     suspend_args: &[ir::Value],
     tag_return_types: &[WasmValType],
 ) -> Vec<ir::Value> {
+    let tag_return_ir_types: Vec<ir::Type> = tag_return_types
+        .iter()
+        .map(|ty| crate::value_type(env.isa, *ty))
+        .collect();
+
     typed_continuations_store_payloads(env, builder, suspend_args);
 
-    call_builtin!(builder, env, tc_suspend(tag_index));
+    let vmctx = env.vmctx_val(&mut builder.cursor());
+    let tc_suspend = env.builtin_functions.tc_suspend(builder.func);
+    let suspend_call = builder.ins().call(tc_suspend, &[vmctx, tag_index]);
+    let results = builder.func.dfg.inst_results(suspend_call).to_vec();
+    let resume_switch_direction = tc::SwitchDirection::from_raw(env, builder, &results);
 
     let contref = typed_continuations_load_continuation_reference(env, builder);
 
-    let return_values =
-        typed_continuations_load_tag_return_values(env, builder, contref, tag_return_types);
+    if tag_return_types.is_empty() {
+        return vec![];
+    } else if payload_fast_track::fast_trackable_types(&tag_return_ir_types) {
+        let fast_track_block = builder.create_block();
+        let slow_track_block = builder.create_block();
+        let exit_block = builder.create_block();
 
-    return_values
+        // The types are fast-trackable and there is more than 0.
+        assert_eq!(tag_return_types.len(), 1);
+
+        let return_type = tag_return_ir_types[0];
+        builder.append_block_param(exit_block, return_type);
+
+        let resume_fast_track_discriminant =
+            SwitchDirectionEnum::ResumeFastTrack.discriminant_val();
+        let actual_discrimiannt = resume_switch_direction.discriminant(env, builder);
+        let is_fast_track = builder.ins().icmp_imm(
+            IntCC::Equal,
+            actual_discrimiannt,
+            resume_fast_track_discriminant as i64,
+        );
+        builder
+            .ins()
+            .brif(is_fast_track, fast_track_block, &[], slow_track_block, &[]);
+
+        {
+            builder.switch_to_block(fast_track_block);
+            builder.seal_block(fast_track_block);
+
+            let fast_tracked_payload =
+                resume_switch_direction.resume_fast_track_payload(env, builder);
+            let tag_return_value = payload_fast_track::fast_track_unpack_data(
+                env,
+                builder,
+                fast_tracked_payload,
+                &tag_return_ir_types,
+            );
+
+            builder.ins().jump(exit_block, &[tag_return_value]);
+        }
+
+        {
+            builder.switch_to_block(slow_track_block);
+            builder.seal_block(slow_track_block);
+
+            let tag_return_values =
+                typed_continuations_load_tag_return_values(env, builder, contref, tag_return_types);
+            assert_eq!(tag_return_values.len(), 1);
+            builder.ins().jump(exit_block, &tag_return_values);
+        }
+
+        {
+            builder.switch_to_block(exit_block);
+            builder.seal_block(exit_block);
+
+            let value = builder.block_params(exit_block)[0];
+            return vec![value];
+        }
+    } else {
+        return typed_continuations_load_tag_return_values(env, builder, contref, tag_return_types);
+    }
 }
