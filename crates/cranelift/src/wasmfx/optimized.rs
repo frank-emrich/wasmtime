@@ -2,7 +2,6 @@ use super::shared;
 
 use crate::wasmfx::shared::call_builtin;
 use cranelift_codegen::ir;
-use cranelift_codegen::ir::condcodes::*;
 use cranelift_codegen::ir::types::*;
 use cranelift_codegen::ir::InstBuilder;
 use cranelift_frontend::{FunctionBuilder, Switch};
@@ -346,6 +345,22 @@ pub(crate) mod typed_continuation_helpers {
             }
         }
 
+        pub fn make_resume_fast_track<'a>(
+            _env: &mut crate::func_environ::FuncEnvironment<'a>,
+            builder: &mut FunctionBuilder,
+            resume_arg: ir::Value,
+        ) -> Self {
+            assert_eq!(builder.func.dfg.value_type(resume_arg), I64);
+            let data0 = builder.ins().iconst(
+                I64,
+                SwitchDirectionEnum::ResumeFastTrack.discriminant_val() as i64,
+            );
+            let data1 = resume_arg;
+            Self {
+                data: [data0, data1],
+            }
+        }
+
         pub fn from_raw<'a>(
             _env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
@@ -362,12 +377,18 @@ pub(crate) mod typed_continuation_helpers {
         pub fn is_suspend_or_resume<'a>(
             &self,
             _env: &mut crate::func_environ::FuncEnvironment<'a>,
-            _builder: &mut FunctionBuilder,
+            builder: &mut FunctionBuilder,
         ) -> ir::Value {
             debug_assert_eq!(SwitchDirectionEnum::Return.discriminant_val(), 0);
-            // For a Return variant, the data0 payload is guaranteed to be 0,
-            // In total, this means that for Return the entire first word is 0.
-            self.data[0]
+            debug_assert_eq!(SwitchDirectionEnum::ReturnFastTrack.discriminant_val(), 1);
+            // For both Return variants (i.e., `Return` and `ReturnFastTrack`),
+            // the `data0` field in the corresponding SwitchDirection object is
+            // guaranteed to be 0. Thus, we don't need to extract the discrimant
+            // by shaving off the 32 MSBs, but can compare with the whole of the
+            // first word.
+            builder
+                .ins()
+                .icmp_imm(IntCC::UnsignedGreaterThan, self.data[0], 1)
         }
 
         fn discriminant<'a>(
@@ -1155,8 +1176,12 @@ pub(crate) mod typed_continuation_helpers {
 use typed_continuation_helpers as tc;
 
 mod payload_fast_track {
-    use super::tc;
-    use cranelift_codegen::ir::{self, condcodes::IntCC, types::*, InstBuilder};
+
+    use cranelift_codegen::ir::{
+        self,
+        types::{I32, I64},
+        InstBuilder,
+    };
     use cranelift_frontend::FunctionBuilder;
 
     fn fast_trackable_types(types: &[ir::Type]) -> bool {
@@ -1164,7 +1189,7 @@ mod payload_fast_track {
     }
 
     pub fn might_fast_track_resume<'a>(
-        env: &mut crate::func_environ::FuncEnvironment<'a>,
+        _env: &mut crate::func_environ::FuncEnvironment<'a>,
         builder: &mut FunctionBuilder,
         resume_args: &[ir::Value],
         continuation_return_types: &[ir::Type],
@@ -1183,14 +1208,36 @@ mod payload_fast_track {
 
         return true;
     }
+
+    // Assuming that the given `resume_args` are fast-trackable, stores them in
+    // a single I64.
+    pub fn fast_track_store_arguments<'a>(
+        _env: &mut crate::func_environ::FuncEnvironment<'a>,
+        builder: &mut FunctionBuilder,
+        resume_args: &[ir::Value],
+    ) -> ir::Value {
+        let arg_types: Vec<ir::Type> = resume_args
+            .iter()
+            .map(|v| builder.func.dfg.value_type(*v))
+            .collect();
+
+        assert!(fast_trackable_types(&arg_types));
+
+        match arg_types.as_slice() {
+            [] => builder.ins().iconst(I64, 0),
+            [I32] => builder.ins().uextend(I64, *resume_args.first().unwrap()),
+            [I64] => *resume_args.first().unwrap(),
+            _ => panic!("Unexpected resume argument types"),
+        }
+    }
 }
 
+// TODO: In the slow path, make sure we do nothing if resume_args.len() == 0
 fn prepare_resume_payloads<'a>(
     env: &mut crate::func_environ::FuncEnvironment<'a>,
     builder: &mut FunctionBuilder,
     resumee_contref: ir::Value,
     resume_args: &[ir::Value],
-    remaining_arg_count: ir::Value,
     continuation_return_types: &[ir::Type],
 ) -> tc::SwitchDirection {
     let might_fast_track = payload_fast_track::might_fast_track_resume(
@@ -1208,13 +1255,20 @@ fn prepare_resume_payloads<'a>(
     let slow_track_store_data_block = builder.create_block();
     let exit_block = builder.create_block();
 
+    // This block receives the pointer where to store data to
     builder.append_block_param(slow_track_store_data_block, env.pointer_type());
 
     // The exit block receives two I64 values, encoding the SwitchDirection
     builder.append_block_param(exit_block, I64);
     builder.append_block_param(exit_block, I64);
 
-    // Decision tree:
+    // Only mark the slow track blocks as cold if we have any chance of using
+    // the fast track.
+    if might_fast_track {
+        builder.set_cold_block(slow_track_initial_resume_block);
+        builder.set_cold_block(slow_track_subsequent_resume_block);
+        builder.set_cold_block(slow_track_store_data_block);
+    }
 
     let contref = tc::VMContRef::new(resumee_contref, env.pointer_type());
     let is_invoked = contref.is_invoked(builder);
@@ -1244,21 +1298,6 @@ fn prepare_resume_payloads<'a>(
             builder.ins().jump(slow_track_initial_resume_block, &[]);
         }
     }
-    let switch_direction = {
-        builder.switch_to_block(fast_track_store_data_block);
-
-        // FIXME Create SwitchDirection for fast track with values in there
-        //
-        let switch_direction = tc::SwitchDirection::make_resume(env, builder);
-        builder.ins().jump(exit_block, &switch_direction.data);
-    };
-
-    let result = {
-        builder.switch_to_block(exit_block);
-
-        let switch_direction_tuple = builder.block_params(exit_block).to_vec();
-        tc::SwitchDirection::from_raw(env, builder, &switch_direction_tuple)
-    };
 
     {
         builder.switch_to_block(slow_track_initial_resume_block);
@@ -1271,8 +1310,6 @@ fn prepare_resume_payloads<'a>(
 
     {
         builder.switch_to_block(subsequent_resume_block);
-
-        let tag_return_values = contref.tag_return_values();
 
         if might_fast_track {
             let payloads = contref.tag_return_values();
@@ -1298,6 +1335,7 @@ fn prepare_resume_payloads<'a>(
         // required capacity at the time of creation of the
         // `VMContRef`), tag return buffers are re-used and may
         // be too small.
+        let remaining_arg_count = builder.ins().iconst(I32, resume_args.len() as i64);
         tag_return_values.ensure_capacity(env, builder, remaining_arg_count);
 
         let ptr = tag_return_values.occupy_next_slots(env, builder, resume_args.len() as i32);
@@ -1320,6 +1358,23 @@ fn prepare_resume_payloads<'a>(
         let switch_direction = tc::SwitchDirection::make_resume(env, builder);
         builder.ins().jump(exit_block, &switch_direction.data);
     }
+    {
+        builder.switch_to_block(fast_track_store_data_block);
+
+        let fast_track_payload =
+            payload_fast_track::fast_track_store_arguments(env, builder, resume_args);
+
+        let switch_direction =
+            tc::SwitchDirection::make_resume_fast_track(env, builder, fast_track_payload);
+        builder.ins().jump(exit_block, &switch_direction.data);
+    };
+
+    let result = {
+        builder.switch_to_block(exit_block);
+
+        let switch_direction_tuple = builder.block_params(exit_block).to_vec();
+        tc::SwitchDirection::from_raw(env, builder, &switch_direction_tuple)
+    };
 
     let all_blocks = [
         initial_resume_block,
@@ -1595,11 +1650,14 @@ pub(crate) fn translate_resume<'a>(
         let resume_contref =
             shared::typed_continuations_cont_obj_get_cont_ref(env, builder, contobj);
 
-        if resume_args.len() > 0 {
-            // We store the arguments in the `VMContRef` to be resumed.
-            let count = builder.ins().iconst(I32, resume_args.len() as i64);
-            typed_continuations_store_resume_args(env, builder, resume_args, count, resume_contref);
-        }
+        // TODO: To support forwarding, must pass the switch direction as block arg
+        let switch_direction = prepare_resume_payloads(
+            env,
+            builder,
+            resume_contref,
+            resume_args,
+            &continuation_return_types,
+        );
 
         // Make the currently running continuation (if any) the parent of the one we are about to resume.
         let original_stack_chain =
@@ -1608,7 +1666,7 @@ pub(crate) fn translate_resume<'a>(
         let tc_contref = tc::VMContRef::new(resume_contref, env.pointer_type());
         tc_contref.set_parent_stack_chain(env, builder, &original_stack_chain);
 
-        let switch_direction = tc::SwitchDirection::make_resume(env, builder);
+        //let switch_direction = tc::SwitchDirection::make_resume(env, builder);
 
         builder.ins().jump(resume_block, &[]);
         (resume_contref, original_stack_chain, switch_direction)

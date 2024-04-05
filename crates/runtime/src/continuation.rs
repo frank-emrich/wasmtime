@@ -156,7 +156,6 @@ impl StackChainCell {
 unsafe impl Send for StackChainCell {}
 unsafe impl Sync for StackChainCell {}
 
-
 // The following two `From` implementations define the following translation
 // between `SwitchDirection` and `Tuple_2x64`: Let `s` be the `SwitchDirection`
 // object and let (x1, x2) be the corresponding tuple: Then `s.discriminant`
@@ -164,8 +163,6 @@ unsafe impl Sync for StackChainCell {}
 // s.data1`.
 impl From<Tuple_2x64> for SwitchDirection {
     fn from(val: Tuple_2x64) -> SwitchDirection {
-
-
         #[cfg(debug_assertions)]
         {
             let discriminant = val.0 as u32;
@@ -183,14 +180,13 @@ impl From<Tuple_2x64> for SwitchDirection {
 
         // TODO(frank-emrich) This implementation assumes little endian data layout.
         unsafe { std::mem::transmute::<Tuple_2x64, SwitchDirection>(val) }
-
     }
 }
 
 impl From<SwitchDirection> for Tuple_2x64 {
     fn from(val: SwitchDirection) -> Tuple_2x64 {
         // TODO(frank-emrich) This implementation assumes little endian data layout.
-        unsafe { std::mem::transmute::<SwitchDirection, Tuple_2x64, >(val) }
+        unsafe { std::mem::transmute::<SwitchDirection, Tuple_2x64>(val) }
     }
 }
 
@@ -348,10 +344,7 @@ pub fn cont_new(
     let fiber = {
         let stack = FiberStack::malloc(stack_size)
             .map_err(|error| TrapReason::user_without_backtrace(error.into()))?;
-        Fiber::new(
-            stack
-        )
-        .map_err(|error| TrapReason::user_without_backtrace(error.into()))?
+        Fiber::new(stack).map_err(|error| TrapReason::user_without_backtrace(error.into()))?
     };
 
     let tsp = fiber.stack().top().unwrap();
@@ -369,7 +362,9 @@ pub fn cont_new(
     // continuation reference objects.
     let pointer = Box::into_raw(contref);
     unsafe {
-        (&mut *pointer).fiber.initialize(func.cast::<VMFuncRef>(), caller_vmctx, pointer);
+        (&mut *pointer)
+            .fiber
+            .initialize(func.cast::<VMFuncRef>(), caller_vmctx, pointer);
     }
 
     debug_println!("Created contref @ {:p}", pointer);

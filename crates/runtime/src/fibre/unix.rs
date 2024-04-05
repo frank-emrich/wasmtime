@@ -101,13 +101,13 @@
 #![allow(unused_macros)]
 
 use std::alloc::{alloc, dealloc, Layout};
-use std::io;
+use std::{io, mem};
 use std::ops::Range;
-use std::ptr;
+use std::ptr::{self, NonNull};
 use wasmtime_continuations::{SwitchDirection, SwitchDirectionEnum};
 
 use crate::continuation::VMContRef;
-use crate::{VMContext, VMFuncRef, VMOpaqueContext, ValRaw};
+use crate::{VMContext, VMFuncRef, VMNativeCallFunction, VMOpaqueContext, ValRaw};
 
 #[derive(Debug)]
 pub struct FiberStack {
@@ -213,7 +213,10 @@ extern "C" {
         contref: *mut VMContRef,
         wasmtime_fibre_switch_pc: *const u8,
     );
-    fn wasmtime_fibre_switch(top_of_stack: *mut u8, switch_direction: SwitchDirection) -> SwitchDirection;
+    fn wasmtime_fibre_switch(
+        top_of_stack: *mut u8,
+        switch_direction: SwitchDirection,
+    ) -> SwitchDirection;
     #[allow(dead_code)] // only used in inline assembly for some platforms
     fn wasmtime_fibre_start();
 }
@@ -227,43 +230,60 @@ extern "C" fn fiber_start(
     switch_direction: SwitchDirection,
     func_ref: *const VMFuncRef,
     caller_vmctx: *mut VMContext,
-    contref: *mut VMContRef
+    contref: *mut VMContRef,
 ) {
     unsafe {
-
-        #[cfg(debug_assertions)]
-        // This is effectively an assertion, as returning from this function
-        // causes an SIGILL in wasmtime_fibre_start.
-        if switch_direction.discriminant != SwitchDirectionEnum::Resume {
-            return;
-        }
-
-
         let contref = &*contref;
-        let args_capacity = contref.args.capacity as usize;
-        let args_ptr = contref.args.data as *mut ValRaw;
-
         let func_ref = &*func_ref;
-        let array_call_trampoline = func_ref.array_call;
-        let caller_vmxtx = VMOpaqueContext::from_vmcontext(caller_vmctx);
-        let callee_vmxtx = func_ref.vmctx;
 
-        // NOTE(frank-emrich) The usage of the `caller_vmctx` is probably not
-        // 100% correct here. Currently, we determine the "caller" vmctx when
-        // initilizing the fiber stack/continuation (i.e. as part of
-        // `cont.new`). However, we may subsequenly `resume` the continuation
-        // from a different Wasm instance. The way to fix this would be to make
-        // the currently active `VMContext` an additional parameter of
-        // `wasmtime_fibre_switch` and pipe it through to this point. However,
-        // since the caller vmctx is only really used to access stuff in the
-        // underlying `Store`, it's fine to be slightly sloppy about the exact
-        // value we set.
-        array_call_trampoline(callee_vmxtx, caller_vmxtx, args_ptr, args_capacity);
+        let callee_vmctx = func_ref.vmctx;
+
+        let return_switch_direction = match switch_direction.discriminant {
+            SwitchDirectionEnum::ResumeFastTrack => {
+
+                let native_call_trampoline = func_ref.native_call;
+                let func = mem::transmute::<
+                        NonNull<VMNativeCallFunction>,
+                        extern "C" fn(*mut VMOpaqueContext, *mut VMContext, u64) -> u64,
+                    >(native_call_trampoline);
+
+                let argument = switch_direction.data1;
+                // NOTE(frank-emrich) Same issue regarding `caller_vmctx` as in case below.
+                let result = func(callee_vmctx, caller_vmctx, argument);
+                SwitchDirection::return_fast_track(result)
+
+            }
+            SwitchDirectionEnum::Resume => {
+                let args_capacity = contref.args.capacity as usize;
+                let args_ptr = contref.args.data as *mut ValRaw;
+
+                let caller_vmctx = VMOpaqueContext::from_vmcontext(caller_vmctx);
+                let array_call_trampoline = func_ref.array_call;
+
+                // NOTE(frank-emrich) The usage of the `caller_vmctx` is probably not
+                // 100% correct here. Currently, we determine the "caller" vmctx when
+                // initilizing the fiber stack/continuation (i.e. as part of
+                // `cont.new`). However, we may subsequenly `resume` the continuation
+                // from a different Wasm instance. The way to fix this would be to make
+                // the currently active `VMContext` an additional parameter of
+                // `wasmtime_fibre_switch` and pipe it through to this point. However,
+                // since the caller vmctx is only really used to access stuff in the
+                // underlying `Store`, it's fine to be slightly sloppy about the exact
+                // value we set.
+                array_call_trampoline(callee_vmctx, caller_vmctx, args_ptr, args_capacity);
+
+                // Return without "fast track": potential payloads have been stored in `args_ptr` buffer by trampoline.
+                SwitchDirection::return_()
+            }
+            _ => {
+                // We should never get here, return so that  wasmtime_fibre_start SIGILLs.
+                return
+            }
+        };
 
         // Switch back to parent, indicating that the continuation returned.
         let inner = Suspend(top_of_stack);
-        let reason = SwitchDirection::return_();
-        inner.switch(reason);
+        inner.switch(return_switch_direction);
     }
 }
 
@@ -273,7 +293,7 @@ impl Fiber {
         func_ref: *const VMFuncRef,
         caller_vmctx: *mut VMContext,
         contref: *mut VMContRef,
-    )  {
+    ) {
         unsafe {
             wasmtime_fibre_init(
                 stack.top,

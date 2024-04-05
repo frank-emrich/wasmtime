@@ -79,10 +79,7 @@ impl Fiber {
     /// Creates a new fiber with the given stack.
     ///
     /// Must call `initialize` before actually being able to `resume` it.
-    pub fn new(
-        stack: FiberStack,
-
-    ) -> io::Result<Self> {
+    pub fn new(stack: FiberStack) -> io::Result<Self> {
         let inner = imp::Fiber;
 
         Ok(Self {
@@ -97,7 +94,7 @@ impl Fiber {
         func_ref: *const VMFuncRef,
         caller_vmctx: *mut VMContext,
         contref: *mut VMContRef,
-    )  {
+    ) {
         imp::Fiber::initialize(&self.stack.0, func_ref, caller_vmctx, contref);
     }
 
@@ -120,7 +117,8 @@ impl Fiber {
         assert!(!self.done.replace(true), "cannot resume a finished fiber");
         let reason = self.inner.resume(&self.stack.0, direction);
         if let SwitchDirection {
-            discriminant: SwitchDirectionEnum::Suspend, ..
+            discriminant: SwitchDirectionEnum::Suspend,
+            ..
         } = reason
         {
             self.done.set(false)

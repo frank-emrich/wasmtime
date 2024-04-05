@@ -60,15 +60,14 @@ use crate::{Instance, TrapReason, VMGcRef};
 #[cfg(feature = "wmemcheck")]
 use anyhow::bail;
 use anyhow::Result;
-use wasmtime_continuations::SwitchDirection;
 #[cfg(feature = "threads")]
 use std::time::{Duration, Instant};
+use wasmtime_continuations::SwitchDirection;
 use wasmtime_environ::{DataIndex, ElemIndex, FuncIndex, MemoryIndex, TableIndex, Trap, Unsigned};
 #[cfg(feature = "wmemcheck")]
 use wasmtime_wmemcheck::AccessError::{
     DoubleMalloc, InvalidFree, InvalidRead, InvalidWrite, OutOfBounds,
 };
-
 
 /// This type exists in order to return tuples from libcalls, by using
 /// `tuple_2x64` as the type name in the libcall declaration `builtin.rs`.
@@ -97,8 +96,8 @@ pub mod raw {
     // between doc comments and `cfg`s.
     #![allow(unused_doc_comments, unused_attributes)]
 
-    use crate::{Instance, TrapReason, VMContext};
     use crate::libcalls::Tuple_2x64;
+    use crate::{Instance, TrapReason, VMContext};
 
     macro_rules! libcall {
         (
@@ -803,15 +802,16 @@ fn tc_resume(
     instance: &mut Instance,
     contref: *mut u8,
     parent_stack_limits: *mut u8,
-    switch_direction : Tuple_2x64,
+    switch_direction: Tuple_2x64,
 ) -> Result<Tuple_2x64, TrapReason> {
     let switch_direction = SwitchDirection::from(switch_direction);
     crate::continuation::resume(
         instance,
         contref.cast::<crate::continuation::VMContRef>(),
         parent_stack_limits.cast::<crate::continuation::StackLimits>(),
-        switch_direction
-    ).map(SwitchDirection::into)
+        switch_direction,
+    )
+    .map(SwitchDirection::into)
 }
 
 fn tc_suspend(instance: &mut Instance, tag_index: u32) -> Result<Tuple_2x64, TrapReason> {

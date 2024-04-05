@@ -165,14 +165,24 @@ pub type TagId = u32;
 #[derive(PartialEq, Eq, Debug)]
 pub enum SwitchDirectionEnum {
     // Used to indicate that the contination has returned normally.
+    // Return values (if any), will be provided out-of-band through memory.
     Return = 0,
+
+    // Used to indicate that the contination has returned normally.
+    // Payloads are provided in-band in the `SwitchDirection`
+    ReturnFastTrack = 1,
 
     // Indicates that we are suspendinga continuation due to invoking suspend.
     // The payload is the tag to suspend with
-    Suspend = 1,
+    Suspend = 2,
 
     // Indicates that we are resuming a continuation via resume.
-    Resume = 2,
+    // Payloads (if any) will be provided out-of-band through memory.
+    Resume = 3,
+
+    // Indicates that we are resuming a continuation via resume.
+    // Payloads are provided in-band in the `SwitchDirection`
+    ResumeFastTrack = 4,
 }
 
 impl SwitchDirectionEnum {
@@ -197,8 +207,13 @@ impl SwitchDirectionEnum {
 ///      Suspend(u32) = 1,
 ///
 ///      // Indicates that we are resuming a continuation via resume.
-///      // The two payload fields are unused.
-///      Resume(u32, u64) = 2,
+///      // Payloads (if any) will be provided out-of-band through memory.
+///      Resume = 2,
+///
+///      // Indicates that we are resuming a continuation via resume.
+///      // The `resume` arguments are transported in the u64 value,
+///      // the u32 field is unused.
+///      ResumeFastTrack(u32, u64) = 2,
 ///  }
 ///```
 ///
@@ -213,9 +228,13 @@ pub struct SwitchDirection {
     // `Return`  : unused, value is 0
     // `Suspend` : contains tag we suspend with
     // `Resume`  : unused, value is 0
+    // `ResumeFastTrack`  : unused, value is 0
     pub data0: u32,
 
-    // Unused
+    // `Return`  : unused, value is 0
+    // `Suspend` : unused, value is 0
+    // `Resume`  : unused, value is 0
+    // `ResumeFastTrack`  : contains `resume` argument
     pub data1: u64,
 }
 
@@ -225,6 +244,14 @@ impl SwitchDirection {
             discriminant: SwitchDirectionEnum::Return,
             data0: 0,
             data1: 0,
+        }
+    }
+
+    pub fn return_fast_track(return_value : u64) -> SwitchDirection {
+        SwitchDirection {
+            discriminant: SwitchDirectionEnum::ReturnFastTrack,
+            data0: 0,
+            data1: return_value,
         }
     }
 

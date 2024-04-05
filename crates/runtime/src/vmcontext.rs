@@ -4,6 +4,7 @@
 mod vm_host_func_context;
 
 use crate::{GcStore, VMGcRef};
+use crate::libcalls::Tuple_2x64;
 use sptr::Strict;
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
@@ -14,7 +15,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::u32;
 pub use vm_host_func_context::{VMArrayCallHostFuncContext, VMNativeCallHostFuncContext};
 use wasmtime_environ::{BuiltinFunctionIndex, DefinedMemoryIndex, Unsigned, VMCONTEXT_MAGIC};
-use crate::libcalls::Tuple_2x64;
 
 /// A function pointer that exposes the array calling convention.
 ///
