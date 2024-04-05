@@ -647,6 +647,7 @@ pub trait FuncEnvironment: TargetEnvironment {
         type_index: u32,
         contobj: ir::Value,
         resume_args: &[ir::Value],
+        continuation_return_types: &[wasmtime_types::WasmValType],
         resumetable: &[(u32, ir::Block)],
     ) -> Vec<ir::Value>;
 

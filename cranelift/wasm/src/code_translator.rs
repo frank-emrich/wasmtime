@@ -2571,11 +2571,13 @@ pub fn translate_operator<FE: FuncEnvironment + ?Sized>(
                 })
                 .collect::<Vec<(u32, ir::Block)>>();
 
-            let arity = environ.continuation_arguments(*type_index).len();
+            let continuation_arg_types = environ.continuation_arguments(*type_index);
+            let continuation_return_types = environ.continuation_returns(*type_index).to_vec();
+            let arity = continuation_arg_types.len();
             let (contobj, call_args) = state.peekn(arity + 1).split_last().unwrap();
 
             let cont_return_vals =
-                environ.translate_resume(builder, *type_index, *contobj, call_args, &resumetable);
+                environ.translate_resume(builder, *type_index, *contobj, call_args, &continuation_return_types, &resumetable);
 
             state.popn(arity + 1); // arguments + continuation
             state.pushn(&cont_return_vals);

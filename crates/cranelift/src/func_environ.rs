@@ -2615,9 +2615,18 @@ impl<'module_environment> cranelift_wasm::FuncEnvironment for FuncEnvironment<'m
         type_index: u32,
         contobj: ir::Value,
         resume_args: &[ir::Value],
+        continuation_return_types: &[WasmValType],
         resumetable: &[(u32, ir::Block)],
     ) -> Vec<ir::Value> {
-        wasmfx_impl::translate_resume(self, builder, type_index, contobj, resume_args, resumetable)
+        wasmfx_impl::translate_resume(
+            self,
+            builder,
+            type_index,
+            contobj,
+            resume_args,
+            continuation_return_types,
+            resumetable,
+        )
     }
 
     fn translate_resume_throw(

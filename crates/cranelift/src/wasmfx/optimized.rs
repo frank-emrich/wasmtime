@@ -558,7 +558,7 @@ pub(crate) mod typed_continuation_helpers {
             )
         }
 
-        fn get_length(&self, builder: &mut FunctionBuilder) -> ir::Value {
+        pub fn get_length(&self, builder: &mut FunctionBuilder) -> ir::Value {
             let ty = Type::int_with_byte_size(std::mem::size_of::<
                 wasmtime_continuations::types::payloads::Length,
             >() as u16)
@@ -1150,6 +1150,189 @@ pub(crate) mod typed_continuation_helpers {
 
 use typed_continuation_helpers as tc;
 
+mod payload_fast_track {
+    use super::tc;
+    use cranelift_codegen::ir::{self, condcodes::IntCC, types::*, InstBuilder};
+    use cranelift_frontend::FunctionBuilder;
+
+    fn fast_trackable_types(types: &[ir::Type]) -> bool {
+        types.len() <= 1 && types.first().map_or(true, |ty| *ty == I32 || *ty == I64)
+    }
+
+    pub fn might_fast_track_resume<'a>(
+        env: &mut crate::func_environ::FuncEnvironment<'a>,
+        builder: &mut FunctionBuilder,
+        resume_args: &[ir::Value],
+        continuation_return_types: &[ir::Type],
+    ) -> bool {
+        let arg_types: Vec<ir::Type> = resume_args
+            .iter()
+            .map(|v| builder.func.dfg.value_type(*v))
+            .collect();
+
+        // First, establish what we can check statically: If the params and
+        // return types of the continuation are not fast-trackable, we know that
+        // we cannot fast-track.
+        if !(fast_trackable_types(&arg_types) && fast_trackable_types(continuation_return_types)) {
+            return false;
+        }
+
+        return true;
+    }
+}
+
+fn prepare_resume_payloads<'a>(
+    env: &mut crate::func_environ::FuncEnvironment<'a>,
+    builder: &mut FunctionBuilder,
+    resumee_contref: ir::Value,
+    resume_args: &[ir::Value],
+    remaining_arg_count: ir::Value,
+    continuation_return_types: &[ir::Type],
+) -> tc::SwitchDirection {
+    let might_fast_track = payload_fast_track::might_fast_track_resume(
+        env,
+        builder,
+        resume_args,
+        continuation_return_types,
+    );
+
+    let initial_resume_block = builder.create_block();
+    let slow_track_initial_resume_block = builder.create_block();
+    let subsequent_resume_block = builder.create_block();
+    let slow_track_subsequent_resume_block = builder.create_block();
+    let fast_track_store_data_block = builder.create_block();
+    let slow_track_store_data_block = builder.create_block();
+    let exit_block = builder.create_block();
+
+    builder.append_block_param(slow_track_store_data_block, env.pointer_type());
+
+    // The exit block receives two I64 values, encoding the SwitchDirection
+    builder.append_block_param(exit_block, I64);
+    builder.append_block_param(exit_block, I64);
+
+    // Decision tree:
+
+    let contref = tc::VMContRef::new(resumee_contref, env.pointer_type());
+    let is_invoked = contref.is_invoked(builder);
+    builder.ins().brif(
+        is_invoked,
+        subsequent_resume_block,
+        &[],
+        initial_resume_block,
+        &[],
+    );
+
+    {
+        builder.switch_to_block(initial_resume_block);
+
+        if might_fast_track {
+            let payloads = contref.args();
+            let existing_resume_payload_count = payloads.get_length(builder);
+
+            builder.ins().brif(
+                existing_resume_payload_count,
+                slow_track_initial_resume_block,
+                &[],
+                fast_track_store_data_block,
+                &[],
+            );
+        } else {
+            builder.ins().jump(slow_track_initial_resume_block, &[]);
+        }
+    }
+    let switch_direction = {
+        builder.switch_to_block(fast_track_store_data_block);
+
+        // FIXME Create SwitchDirection for fast track with values in there
+        //
+        let switch_direction = tc::SwitchDirection::make_resume(env, builder);
+        builder.ins().jump(exit_block, &switch_direction.data);
+    };
+
+    let result = {
+        builder.switch_to_block(exit_block);
+
+        let switch_direction_tuple = builder.block_params(exit_block).to_vec();
+        tc::SwitchDirection::from_raw(env, builder, &switch_direction_tuple)
+    };
+
+    {
+        builder.switch_to_block(slow_track_initial_resume_block);
+
+        let args = contref.args();
+        let ptr = args.occupy_next_slots(env, builder, resume_args.len() as i32);
+
+        builder.ins().jump(slow_track_store_data_block, &[ptr]);
+    }
+
+    {
+        builder.switch_to_block(subsequent_resume_block);
+
+        let tag_return_values = contref.tag_return_values();
+
+        if might_fast_track {
+            let payloads = contref.tag_return_values();
+            let existing_resume_payload_count = payloads.get_length(builder);
+
+            builder.ins().brif(
+                existing_resume_payload_count,
+                slow_track_subsequent_resume_block,
+                &[],
+                fast_track_store_data_block,
+                &[],
+            );
+        } else {
+            builder.ins().jump(slow_track_subsequent_resume_block, &[]);
+        }
+    }
+
+    {
+        builder.switch_to_block(slow_track_subsequent_resume_block);
+
+        let tag_return_values = contref.tag_return_values();
+        // Unlike for the args buffer (where we know the maximum
+        // required capacity at the time of creation of the
+        // `VMContRef`), tag return buffers are re-used and may
+        // be too small.
+        tag_return_values.ensure_capacity(env, builder, remaining_arg_count);
+
+        let ptr = tag_return_values.occupy_next_slots(env, builder, resume_args.len() as i32);
+        builder.ins().jump(slow_track_store_data_block, &[ptr]);
+    }
+
+    {
+        builder.switch_to_block(slow_track_store_data_block);
+
+        let ptr = builder.block_params(slow_track_store_data_block)[0];
+
+        // Store the values.
+        let memflags = ir::MemFlags::trusted();
+        let mut offset = 0;
+        for value in resume_args {
+            builder.ins().store(memflags, *value, ptr, offset);
+            offset += env.offsets.ptr.maximum_value_size() as i32;
+        }
+
+        let switch_direction = tc::SwitchDirection::make_resume(env, builder);
+        builder.ins().jump(exit_block, &switch_direction.data);
+    }
+
+    let all_blocks = [
+        initial_resume_block,
+        slow_track_initial_resume_block,
+        subsequent_resume_block,
+        slow_track_subsequent_resume_block,
+        fast_track_store_data_block,
+        slow_track_store_data_block,
+        exit_block,
+    ];
+    for b in all_blocks {
+        builder.seal_block(b);
+    }
+
+    result
+}
+
 fn typed_continuations_load_return_values<'a>(
     env: &mut crate::func_environ::FuncEnvironment<'a>,
     builder: &mut FunctionBuilder,
@@ -1386,6 +1569,7 @@ pub(crate) fn translate_resume<'a>(
     type_index: u32,
     contobj: ir::Value,
     resume_args: &[ir::Value],
+    continuation_return_types: &[WasmValType],
     resumetable: &[(u32, ir::Block)],
 ) -> Vec<ir::Value> {
     let resume_block = builder.create_block();
@@ -1393,6 +1577,11 @@ pub(crate) fn translate_resume<'a>(
     let suspend_block = builder.create_block();
     let switch_block = builder.create_block();
     let forwarding_block = builder.create_block();
+
+    let continuation_return_types: Vec<ir::Type> = continuation_return_types
+        .iter()
+        .map(|ty| crate::value_type(env.isa, *ty))
+        .collect();
 
     let vmctx = env.vmctx_val(&mut builder.cursor());
 
