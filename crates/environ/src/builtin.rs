@@ -104,8 +104,10 @@ macro_rules! foreach_builtin_function {
             // result value are a wasmtime_continuations::SwitchDirection object
             // encoded as two u64 values.
             tc_resume(vmctx: vmctx, contref: pointer, parent_stack_limits: pointer, switch_direction: tuple_2x64) -> tuple_2x64;
-            // Suspends a continuation.
-            tc_suspend(vmctx: vmctx, tag: i32);
+            // Suspends a continuation. The result value are a
+            // wasmtime_continuations::SwitchDirection object encoded as two u64
+            // values.
+            tc_suspend(vmctx: vmctx, tag: i32) -> tuple_2x64;
             // Returns the continuation reference corresponding to the given continuation object.
             tc_cont_obj_get_cont_ref(vmctx: vmctx, contobj: pointer) -> pointer;
             // Drops the given continuation reference. Currently unused.

@@ -440,7 +440,7 @@ pub fn resume(
 
 /// TODO
 #[inline(always)]
-pub fn suspend(instance: &mut Instance, tag_index: u32) -> Result<(), TrapReason> {
+pub fn suspend(instance: &mut Instance, tag_index: u32) -> Result<SwitchDirection, TrapReason> {
     let chain_ptr = instance.typed_continuations_stack_chain();
 
     // TODO(dhil): This should be handled in generated code.

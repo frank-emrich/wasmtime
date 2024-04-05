@@ -814,8 +814,8 @@ fn tc_resume(
     ).map(SwitchDirection::into)
 }
 
-fn tc_suspend(instance: &mut Instance, tag_index: u32) -> Result<(), TrapReason> {
-    crate::continuation::suspend(instance, tag_index)
+fn tc_suspend(instance: &mut Instance, tag_index: u32) -> Result<Tuple_2x64, TrapReason> {
+    crate::continuation::suspend(instance, tag_index).map(SwitchDirection::into)
 }
 
 fn tc_new_cont_obj(_instance: &mut Instance, contref: *mut u8) -> *mut u8 {

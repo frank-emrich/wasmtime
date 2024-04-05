@@ -294,10 +294,10 @@ impl Fiber {
 }
 
 impl Suspend {
-    pub fn switch(&self, payload: SwitchDirection) {
+    pub fn switch(&self, payload: SwitchDirection) -> SwitchDirection {
         unsafe {
             let arg = payload.into();
-            wasmtime_fibre_switch(self.0, arg);
+            wasmtime_fibre_switch(self.0, arg)
         }
     }
 
