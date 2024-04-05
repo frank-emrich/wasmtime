@@ -359,7 +359,11 @@ pub(crate) mod typed_continuation_helpers {
             }
         }
 
-        pub fn is_suspend_or_resume(&self) -> ir::Value {
+        pub fn is_suspend_or_resume<'a>(
+            &self,
+            _env: &mut crate::func_environ::FuncEnvironment<'a>,
+            _builder: &mut FunctionBuilder,
+        ) -> ir::Value {
             debug_assert_eq!(SwitchDirectionEnum::Return.discriminant_val(), 0);
             // For a Return variant, the data0 payload is guaranteed to be 0,
             // In total, this means that for Return the entire first word is 0.
@@ -1660,7 +1664,7 @@ pub(crate) fn translate_resume<'a>(
 
         // It cannot be `Resume`, so "is suspend or resume" is equivalent to "is
         // suspend" here.
-        let is_suspend = incoming_switch_direction.is_suspend_or_resume();
+        let is_suspend = incoming_switch_direction.is_suspend_or_resume(env, builder);
 
         let vm_runtime_limits_ptr = vmctx.load_vm_runtime_limits_ptr(env, builder);
 
