@@ -202,13 +202,9 @@ impl SwitchDirectionEnum {
 ///  }
 ///```
 ///
-/// However, we want to convert values of type `SwitchDirection` to and from u64
-/// easily, which is why we need to ensure that it contains no uninitialised
-/// memory, to avoid undefined behavior.
-///
-/// We allow converting values of this type to and from u64.
-/// In that representation, bits 0 to 31 (where 0 is the LSB) contain the
-/// discriminant (as u32), while bits 32 to 63 contain the `data`.
+/// However, we want to convert values of type `SwitchDirection` to and from a
+/// tuple of two u64 values easily, which is why we need to ensure that it
+/// contains no uninitialised memory, to avoid undefined behavior.
 #[repr(C)]
 pub struct SwitchDirection {
     pub discriminant: SwitchDirectionEnum,
