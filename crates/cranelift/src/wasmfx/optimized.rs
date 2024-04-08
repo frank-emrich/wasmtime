@@ -1918,6 +1918,7 @@ pub(crate) fn translate_resume<'a>(
 
         // Load and push the results.
         let returns = env.continuation_returns(type_index).to_vec();
+        // FIXME: THis needs to deal with fast-tracked returns
         let values = typed_continuations_load_return_values(env, builder, &returns, resume_contref);
 
         // The continuation has returned and all `VMContObjs`
