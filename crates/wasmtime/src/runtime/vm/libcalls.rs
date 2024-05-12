@@ -914,6 +914,7 @@ fn tc_cont_new(
     Ok(ans.cast::<u8>())
 }
 
+#[allow(dead_code)]
 fn tc_resume(
     instance: &mut Instance,
     contref: *mut u8,

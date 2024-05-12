@@ -24,6 +24,7 @@ cfg_if::cfg_if! {
 
         /// Represents an execution stack to use for a fiber.
         #[derive(Debug)]
+        #[repr(transparent)]
         pub struct FiberStack(imp::FiberStack);
 
         impl FiberStack {
