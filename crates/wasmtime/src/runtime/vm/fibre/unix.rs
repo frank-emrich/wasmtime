@@ -116,6 +116,7 @@ pub enum Allocator {
 }
 
 #[derive(Debug)]
+#[repr(C)]
 pub struct FiberStack {
     // The top of the stack; for stacks allocated by the fiber implementation itself,
     // the base address of the allocation will be `top.sub(len.unwrap())`

@@ -8,6 +8,7 @@ use cranelift_codegen::ir::InstBuilder;
 use cranelift_frontend::{FunctionBuilder, Switch};
 use cranelift_wasm::FuncEnvironment;
 use cranelift_wasm::{FuncTranslationState, WasmResult, WasmValType};
+use wasmtime_continuations::SwitchDirection;
 use wasmtime_environ::PtrSize;
 
 #[cfg_attr(feature = "wasmfx_baseline", allow(unused_imports))]
@@ -467,6 +468,17 @@ pub(crate) mod typed_continuation_helpers {
                 }
                 revision_plus1
             }
+        }
+
+        pub fn get_fiber_stack_tos<'a>(
+            &self,
+            _env: &mut crate::func_environ::FuncEnvironment<'a>,
+            builder: &mut FunctionBuilder,
+        ) -> ir::Value {
+            let mem_flags = ir::MemFlags::trusted();
+            // The FiberStack is at offset 0 of the Fiber, which in turn contains the TOS pointer at offset 0.
+            let offset = wasmtime_continuations::offsets::vm_cont_ref::FIBER as i32;
+            builder.ins().load(I64, mem_flags, self.address, offset)
         }
     }
 
@@ -1506,13 +1518,31 @@ pub(crate) fn translate_resume<'a>(
             tc::StackChain::from_continuation(builder, resume_contref, env.pointer_type());
         resume_stackchain.write_limits_to_vmcontext(env, builder, vm_runtime_limits_ptr);
 
-        call_builtin!(
-            builder,
+        // call_builtin!(
+        //     builder,
+        //     env,
+        //     let result =
+        //         tc_resume(
+        //         resume_contref)
+        // );
+
+        let fiber_stack_tos = co.get_fiber_stack_tos(env, builder);
+        // The resume frame pointer is 16 byte below the top of stack.
+        let resume_ptr_loc = builder.ins().iadd_imm(fiber_stack_tos, -0x10);
+        let resume_payload: u64 = SwitchDirection::resume().into();
+        let resume_payload = builder.ins().iconst(I64, resume_payload as i64);
+
+        emit_debug_println!(
             env,
-            let result =
-                tc_resume(
-                resume_contref)
+            builder,
+            "[resume] fiber_stack_tos is {:p}, resume_ptr_loc is {:p}",
+            fiber_stack_tos,
+            resume_ptr_loc
         );
+
+        let result = builder
+            .ins()
+            .stack_switch(resume_ptr_loc, resume_ptr_loc, resume_payload);
 
         emit_debug_println!(
             env,
@@ -1755,12 +1785,25 @@ pub(crate) fn translate_suspend<'a>(
 ) -> Vec<ir::Value> {
     typed_continuations_store_payloads(env, builder, suspend_args);
 
-    call_builtin!(builder, env, tc_suspend(tag_index));
+    let suspend_contref = typed_continuations_load_continuation_reference(env, builder);
+    // TODO: Trap if this is null
+    let cref = tc::VMContRef::new(suspend_contref, env.pointer_type());
 
-    let contref = typed_continuations_load_continuation_reference(env, builder);
+    let fiber_stack_tos = cref.get_fiber_stack_tos(env, builder);
+    // The resume frame pointer is 16 byte below the top of stack.
+    let target_rbp_loc = builder.ins().iadd_imm(fiber_stack_tos, -0x10);
+
+    // TODO: Do this in a SwitchDirection helper object
+    let suspend_payload = builder.ins().uextend(I64, tag_index);
+    let suspend_payload = builder.ins().ishl_imm(suspend_payload, 32);
+    let suspend_payload = builder.ins().bor_imm(suspend_payload, 1);
+
+    builder
+        .ins()
+        .stack_switch(target_rbp_loc, target_rbp_loc, suspend_payload);
 
     let return_values =
-        typed_continuations_load_tag_return_values(env, builder, contref, tag_return_types);
+        typed_continuations_load_tag_return_values(env, builder, suspend_contref, tag_return_types);
 
     return_values
 }

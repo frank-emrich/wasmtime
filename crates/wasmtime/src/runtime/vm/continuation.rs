@@ -239,6 +239,7 @@ pub mod optimized {
 
     /// TODO
     #[inline(always)]
+    #[allow(dead_code)]
     pub fn resume(
         instance: &mut Instance,
         contref: *mut VMContRef,
