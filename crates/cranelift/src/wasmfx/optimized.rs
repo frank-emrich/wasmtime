@@ -468,6 +468,17 @@ pub(crate) mod typed_continuation_helpers {
                 revision_plus1
             }
         }
+
+        pub fn get_fiber_stack_tos<'a>(
+            &self,
+            _env: &mut crate::func_environ::FuncEnvironment<'a>,
+            builder: &mut FunctionBuilder,
+        ) -> ir::Value {
+            let mem_flags = ir::MemFlags::trusted();
+            // The top of stack field is stored is at offset 0 of the `FiberStack`.
+            let offset = wasmtime_continuations::offsets::vm_cont_ref::STACK as i32;
+            builder.ins().load(I64, mem_flags, self.address, offset)
+        }
     }
 
     impl Payloads {
@@ -1576,13 +1587,31 @@ pub(crate) fn translate_resume<'a>(
             tc::StackChain::from_continuation(builder, resume_contref, env.pointer_type());
         resume_stackchain.write_limits_to_vmcontext(env, builder, vm_runtime_limits_ptr);
 
-        call_builtin!(
-            builder,
+        // call_builtin!(
+        //     builder,
+        //     env,
+        //     let result =
+        //         tc_resume(
+        //         resume_contref)
+        // );
+
+        let fiber_stack_tos = co.get_fiber_stack_tos(env, builder);
+        // The context is stored 32 byte below the top of stack.
+        let resume_ptr_loc = builder.ins().iadd_imm(fiber_stack_tos, -0x20);
+        let resume_payload: u64 = wasmtime_continuations::ControlEffect::resume().into();
+        let resume_payload = builder.ins().iconst(I64, resume_payload as i64);
+
+        emit_debug_println!(
             env,
-            let result =
-                tc_resume(
-                resume_contref)
+            builder,
+            "[resume] fiber_stack_tos is {:p}, resume_ptr_loc is {:p}",
+            fiber_stack_tos,
+            resume_ptr_loc
         );
+
+        let result = builder
+            .ins()
+            .stack_switch(resume_ptr_loc, resume_ptr_loc, resume_payload);
 
         emit_debug_println!(
             env,
@@ -1661,11 +1690,20 @@ pub(crate) fn translate_resume<'a>(
             ir::TrapCode::UnhandledTag,
         );
 
-        // We suspend, thus deferring handling to the parent.  We do
-        // nothing about tag *parameters*, these remain unchanged
-        // within the payload buffer associated with the whole
-        // VMContext.
-        call_builtin!(builder, env, tc_suspend(suspend_tag_addr));
+        // TODO: Refactor this
+        let cref = tc::VMContRef::new(parent_contref, env.pointer_type());
+        let fiber_stack_tos = cref.get_fiber_stack_tos(env, builder);
+        // The resume context is 32 byte below the top of stack.
+        let target_context_loc = builder.ins().iadd_imm(fiber_stack_tos, -0x20);
+        let suspend_payload = resume_result.0 .0;
+
+        // FIXME(frank-emrich) should we use `suspend_tag_addr` as payload instead?
+        // We suspend, thus deferring handling to the parent.
+        // We do nothing about tag *parameters*, these remain unchanged within the
+        // payload buffer associated with the whole VMContext.
+        builder
+            .ins()
+            .stack_switch(target_context_loc, target_context_loc, suspend_payload);
 
         // "Tag return values" (i.e., values provided by cont.bind or
         // resume to the continuation) are actually stored in
@@ -1795,12 +1833,23 @@ pub(crate) fn translate_suspend<'a>(
 
     let tag_addr = shared::tag_address(env, builder, tag_index);
     emit_debug_println!(env, builder, "[suspend] suspending with tag {:p}", tag_addr);
-    call_builtin!(builder, env, tc_suspend(tag_addr));
 
-    let contref = typed_continuations_load_continuation_reference(env, builder);
+    let suspend_contref = typed_continuations_load_continuation_reference(env, builder);
+    // TODO: Trap if this is null
+    let cref = tc::VMContRef::new(suspend_contref, env.pointer_type());
+
+    let fiber_stack_tos = cref.get_fiber_stack_tos(env, builder);
+    // The resume context pointer is 32 byte below the top of stack.
+    let target_context_loc = builder.ins().iadd_imm(fiber_stack_tos, -0x20);
+
+    let suspend_payload = ControlEffect::make_suspend(env, builder, tag_addr).0 .0;
+
+    builder
+        .ins()
+        .stack_switch(target_context_loc, target_context_loc, suspend_payload);
 
     let return_values =
-        typed_continuations_load_tag_return_values(env, builder, contref, tag_return_types);
+        typed_continuations_load_tag_return_values(env, builder, suspend_contref, tag_return_types);
 
     return_values
 }

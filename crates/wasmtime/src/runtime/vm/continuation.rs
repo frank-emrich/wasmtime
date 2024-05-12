@@ -295,6 +295,7 @@ pub mod optimized {
 
     /// TODO
     #[inline(always)]
+    #[allow(dead_code)]
     pub fn resume(
         instance: &mut Instance,
         contref: *mut VMContRef,
@@ -339,6 +340,7 @@ pub mod optimized {
 
     /// TODO
     #[inline(always)]
+    #[allow(dead_code)]
     pub fn suspend(instance: &mut Instance, tag_addr: *mut u8) -> Result<(), TrapReason> {
         let chain_ptr = instance.typed_continuations_stack_chain();
 

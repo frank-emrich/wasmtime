@@ -931,6 +931,7 @@ fn tc_cont_new(
     Ok(ans.cast::<u8>())
 }
 
+#[allow(dead_code)]
 fn tc_resume(instance: &mut Instance, contref: *mut u8) -> Result<*mut u8, TrapReason> {
     crate::vm::continuation::optimized::resume(
         instance,
@@ -939,6 +940,7 @@ fn tc_resume(instance: &mut Instance, contref: *mut u8) -> Result<*mut u8, TrapR
     .map(|reason| reason.into())
 }
 
+#[allow(dead_code)]
 fn tc_suspend(instance: &mut Instance, tag_addr: *mut u8) -> Result<(), TrapReason> {
     crate::vm::continuation::optimized::suspend(instance, tag_addr)
 }
