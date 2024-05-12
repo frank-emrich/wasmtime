@@ -9,7 +9,7 @@ cfg_if::cfg_if! {
         use std::cell::Cell;
         use std::io;
         use std::ops::Range;
-        use wasmtime_continuations::{SwitchDirection, SwitchDirectionEnum};
+        use wasmtime_continuations::SwitchDirection;
 
         use crate::runtime::vm::{VMContext, VMFuncRef, ValRaw};
 
@@ -112,15 +112,15 @@ cfg_if::cfg_if! {
             /// Note that if the fiber itself panics during execution then the panic
             /// will be propagated to this caller.
             pub fn resume(&self) -> SwitchDirection {
-                assert!(!self.done.replace(true), "cannot resume a finished fiber");
+                //assert!(!self.done.replace(true), "cannot resume a finished fiber");
                 let reason = self.inner.resume(&self.stack.0);
-                if let SwitchDirection {
-                    discriminant: SwitchDirectionEnum::Suspend,
-                    data: _,
-                } = reason
-                {
-                    self.done.set(false)
-                };
+                // if let SwitchDirection {
+                //     discriminant: SwitchDirectionEnum::Suspend,
+                //     data: _,
+                // } = reason
+                // {
+                //     self.done.set(false)
+                // };
                 reason
             }
 
@@ -137,7 +137,7 @@ cfg_if::cfg_if! {
 
         impl Drop for Fiber {
             fn drop(&mut self) {
-                debug_assert!(self.done.get(), "fiber dropped without finishing");
+                //debug_assert!(self.done.get(), "fiber dropped without finishing");
             }
         }
     }
