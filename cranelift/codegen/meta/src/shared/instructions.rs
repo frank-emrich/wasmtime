@@ -1330,6 +1330,26 @@ pub(crate) fn define(
         .operands_out(vec![Operand::new("addr", iAddr)]),
     );
 
+    // TODO(frank-emrich)
+    // This is a workaround while our cross-continuation implementation of
+    // backtraces is built around the assumption that we "exit" Wasm on resume.
+    // We conservatively give it all kinds of side-effects to avoid it being
+    // moved around too much.
+    ig.push(
+        Inst::new(
+            "get_pc",
+            r#"
+        Get some PC within the current function.
+
+        "#,
+            &formats.nullary,
+        )
+        .operands_out(vec![Operand::new("addr", iAddr)])
+        .other_side_effects()
+        .can_load()
+        .can_store(),
+    );
+
     ig.push(
         Inst::new(
             "iconst",

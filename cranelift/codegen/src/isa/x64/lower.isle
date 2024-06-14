@@ -3379,6 +3379,11 @@
                 (Amode.ImmReg 8 (x64_rbp) (mem_flags_trusted))
                 (ExtKind.None)))
 
+(rule (lower (get_pc))
+      (let ((dst WritableGpr (temp_writable_gpr))
+            (_ Unit (emit (MInst.GetPc dst))))
+        (value_reg dst)))
+
 ;; Rules for `jump` ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (rule (lower_branch (jump _) (single_target target))
