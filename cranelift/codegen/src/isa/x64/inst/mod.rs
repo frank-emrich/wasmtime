@@ -150,6 +150,7 @@ impl Inst {
             | Inst::CoffTlsGetAddr { .. }
             | Inst::Unwind { .. }
             | Inst::DummyUse { .. }
+            | Inst::GetPc { .. }
             | Inst::StackSwitch { .. }
             | Inst::AluConstOp { .. } => smallvec![],
 
@@ -1878,6 +1879,10 @@ impl PrettyPrint for Inst {
                 format!("dummy_use {reg}")
             }
 
+            Inst::GetPc { .. } => {
+                format!("get_pc")
+            }
+
             Inst::StackSwitch { .. } => {
                 format!("stack_switch")
             }
@@ -2526,6 +2531,10 @@ fn x64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
 
         Inst::DummyUse { reg } => {
             collector.reg_use(reg);
+        }
+
+        Inst::GetPc { dst } => {
+            collector.reg_def(dst);
         }
     }
 }

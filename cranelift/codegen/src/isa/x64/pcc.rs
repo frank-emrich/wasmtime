@@ -902,6 +902,10 @@ pub(crate) fn check(
 
         Inst::Unwind { .. } | Inst::DummyUse { .. } => Ok(()),
 
+        Inst::GetPc { .. } => {
+            todo!("todo")
+        }
+
         Inst::StackSwitch { .. } => {
             todo!("todo")
         }
