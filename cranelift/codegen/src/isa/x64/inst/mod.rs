@@ -150,6 +150,7 @@ impl Inst {
             | Inst::CoffTlsGetAddr { .. }
             | Inst::Unwind { .. }
             | Inst::DummyUse { .. }
+            | Inst::StackSwitch { .. }
             | Inst::AluConstOp { .. } => smallvec![],
 
             Inst::AluRmRVex { op, .. } => op.available_from(),
@@ -1876,6 +1877,10 @@ impl PrettyPrint for Inst {
                 let reg = pretty_print_reg(*reg, 8);
                 format!("dummy_use {reg}")
             }
+
+            Inst::StackSwitch { .. } => {
+                format!("stack_switch")
+            }
         }
     }
 }
@@ -2372,6 +2377,24 @@ fn x64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
                 collector.reg_fixed_def(vreg, *preg);
             }
             collector.reg_clobbers(*clobbers);
+        }
+        Inst::StackSwitch {
+            save_stack_ptr_addr,
+            target_stack_ptr,
+            in_payload0,
+            out_payload0,
+        } => {
+            // We pick registers for the payloads roughyl compatible with wasmtime_fibre_switch
+            collector.reg_fixed_use(save_stack_ptr_addr, regs::rdi());
+            collector.reg_fixed_use(target_stack_ptr, regs::rsi());
+            collector.reg_fixed_use(in_payload0, regs::r8());
+            collector.reg_fixed_def(&mut Writable::from_reg(out_payload0), regs::rax());
+
+            // TODO: Eventually, these should include all registers
+            let mut clobbers = crate::isa::x64::abi::SYSV_CLOBBERS;
+            // The return reg must not be included in the clobber set
+            clobbers.remove(regs::rax().to_real_reg().unwrap().into());
+            collector.reg_clobbers(clobbers);
         }
 
         Inst::ReturnCallKnown { callee, info } => {

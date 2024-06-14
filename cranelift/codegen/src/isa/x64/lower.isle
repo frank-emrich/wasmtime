@@ -3279,6 +3279,9 @@
 (rule (lower (call_indirect sig_ref val inputs))
       (gen_call_indirect sig_ref val inputs))
 
+(rule (lower (stack_switch save_stack_ptr_addr target_stack_ptr payload0))
+      (gen_stack_switch save_stack_ptr_addr target_stack_ptr payload0))
+
 ;;;; Rules for `return_call` and `return_call_indirect` ;;;;;;;;;;;;;;;;;;;;;;;;
 
 (rule (lower (return_call (func_ref_data sig_ref extname dist) args))

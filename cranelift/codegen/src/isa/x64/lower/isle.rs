@@ -72,6 +72,29 @@ impl Context for IsleContext<'_, '_, MInst, X64Backend> {
     isle_lower_prelude_methods!();
     isle_prelude_caller_methods!(X64ABIMachineSpec, X64CallSite);
 
+    fn gen_stack_switch(
+        &mut self,
+        target_stack_ptr: Value,
+        save_stack_ptr_addr: Value,
+        in_payload0: Value,
+    ) -> InstOutput {
+        let target_stack_ptr = self.put_in_reg(target_stack_ptr);
+        let save_stack_ptr_addr = self.put_in_reg(save_stack_ptr_addr);
+        let in_payload0 = self.put_in_reg(in_payload0);
+        let out_payload0 = self.temp_writable_reg(I64).to_reg();
+        self.lower_ctx.emit(MInst::StackSwitch {
+            save_stack_ptr_addr,
+            target_stack_ptr,
+            in_payload0,
+            out_payload0,
+        });
+
+        let mut output = InstOutput::new();
+        output.push(ValueRegs::one(out_payload0));
+        //output.push(ValueRegs::one(regs::rax()));
+        output
+    }
+
     fn gen_return_call_indirect(
         &mut self,
         callee_sig: SigRef,

@@ -39,6 +39,7 @@ pub(crate) struct Formats {
     pub(crate) unary_ieee32: Rc<InstructionFormat>,
     pub(crate) unary_ieee64: Rc<InstructionFormat>,
     pub(crate) unary_imm: Rc<InstructionFormat>,
+    // pub(crate) stack_switch: Rc<InstructionFormat>,
 }
 
 impl Formats {
@@ -130,6 +131,11 @@ impl Formats {
                 .varargs()
                 .build(),
 
+            // stack_switch: Builder::new("StackSwitch")
+            //     .value()
+            //     .value()
+            //     .value()
+            //     .build(),
             func_addr: Builder::new("FuncAddr").imm(&entities.func_ref).build(),
 
             atomic_rmw: Builder::new("AtomicRmw")

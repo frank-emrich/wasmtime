@@ -944,6 +944,29 @@ pub(crate) fn define(
         ])
         .can_store(),
     );
+    let I64 = &TypeVar::new(
+        "I64",
+        "Exactly 64 bit scalar",
+        TypeSetBuilder::new().ints(64..64).build(),
+    );
+    ig.push(
+        Inst::new(
+            "stack_switch",
+            r#"
+        stack_switch
+        "#,
+            &formats.ternary,
+        )
+        .operands_in(vec![
+            Operand::new("save_stack_ptr_addr", iAddr),
+            Operand::new("target_stack_ptr", iAddr),
+            Operand::new("in_payload0", I64),
+        ])
+        .operands_out(vec![Operand::new("out_payload0", I64)])
+        .other_side_effects()
+        .can_load()
+        .can_store(),
+    );
 
     let I16x8 = &TypeVar::new(
         "I16x8",

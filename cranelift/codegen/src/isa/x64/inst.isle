@@ -548,6 +548,12 @@
        (ReturnCallUnknown (callee Reg)
                           (info BoxReturnCallInfo))
 
+       ;; Stack switch
+       (StackSwitch (save_stack_ptr_addr Reg)
+                    (target_stack_ptr Reg)
+                    (in_payload0 Reg)
+                    (out_payload0 Reg))
+
        ;; A pseudo-instruction that captures register arguments in vregs.
        (Args
         (args VecArgPair))
@@ -2259,6 +2265,9 @@
 
 (decl gen_call_indirect (SigRef Value ValueSlice) InstOutput)
 (extern constructor gen_call_indirect gen_call_indirect)
+
+(decl gen_stack_switch (Value Value Value) InstOutput)
+(extern constructor gen_stack_switch gen_stack_switch)
 
 ;;;; Helpers for Emitting Loads ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
