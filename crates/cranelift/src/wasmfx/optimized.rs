@@ -1083,6 +1083,9 @@ pub(crate) mod typed_continuation_helpers {
             env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
             vmruntime_limits_ptr: ir::Value,
+            load_stack_limit: bool,
+            wasm_exit_fp: Option<ir::Value>,
+            wasm_exit_pc: Option<ir::Value>,
         ) {
             use wasmtime_continuations::offsets as o;
 
@@ -1091,18 +1094,49 @@ pub(crate) mod typed_continuation_helpers {
             let memflags = ir::MemFlags::trusted();
             let pointer_size = self.pointer_type.bytes() as u8;
 
-            let last_wasm_entry_sp = builder.ins().load(
-                self.pointer_type,
-                memflags,
-                vmruntime_limits_ptr,
+            let mut copy = |runtime_limits_offset, stack_limits_offset| {
+                let from_vm_runtime_limits = builder.ins().load(
+                    self.pointer_type,
+                    memflags,
+                    vmruntime_limits_ptr,
+                    runtime_limits_offset,
+                );
+                builder.ins().store(
+                    memflags,
+                    from_vm_runtime_limits,
+                    stack_limits_ptr,
+                    stack_limits_offset as i32,
+                );
+            };
+            copy(
                 pointer_size.vmruntime_limits_last_wasm_entry_sp(),
+                o::stack_limits::LAST_WASM_ENTRY_SP,
             );
-            builder.ins().store(
-                memflags,
-                last_wasm_entry_sp,
-                stack_limits_ptr,
-                o::stack_limits::LAST_WASM_ENTRY_SP as i32,
-            );
+
+            if load_stack_limit {
+                copy(
+                    pointer_size.vmruntime_limits_stack_limit(),
+                    o::stack_limits::STACK_LIMIT,
+                );
+            }
+
+            wasm_exit_fp.inspect(|wasm_exit_fp| {
+                builder.ins().store(
+                    memflags,
+                    *wasm_exit_fp,
+                    stack_limits_ptr,
+                    o::stack_limits::LAST_WASM_EXIT_FP as i32,
+                );
+            });
+
+            wasm_exit_pc.inspect(|wasm_exit_pc| {
+                builder.ins().store(
+                    memflags,
+                    *wasm_exit_pc,
+                    stack_limits_ptr,
+                    o::stack_limits::LAST_WASM_EXIT_PC as i32,
+                );
+            });
         }
     }
 }
@@ -1444,19 +1478,40 @@ pub(crate) fn translate_resume<'a>(
         // See the comment on `wasmtime_continuations::StackChain` for a
         // description of the invariants that we maintain for the various stack
         // limits.
-        let parent_stacks_limit_pointer = parent_stack_chain.get_stack_limits_ptr(env, builder);
 
         // We mark `resume_contref` to be invoked
         let co = tc::VMContRef::new(resume_contref, env.pointer_type());
         co.set_state(builder, wasmtime_continuations::State::Invoked);
+
+        // We update the `StackLimits` of the parent of the continuation to be resumed
+        // as well as the `VMRuntimeLimits`.
+        // See the comment on `wasmtime_continuations::StackChain` for a description
+        // of the invariants that we maintain for the various stack limits.
+        // NOTE(frank-emrich) Note that we use an arbitrary PC within the
+        // translation of this resume instruction as the last_wasm_exit_pc to be
+        // written into the parent `StackLimits`. That's good enough for the
+        // purposes of building a Wasm Backtrace.
+        let vm_runtime_limits_ptr = vmctx.load_vm_runtime_limits_ptr(env, builder);
+        let last_wasm_exit_fp = builder.ins().get_frame_pointer(env.pointer_type());
+        let last_wasm_exit_pc = builder.ins().get_pc(env.pointer_type());
+        parent_stack_chain.load_limits_from_vmcontext(
+            env,
+            builder,
+            vm_runtime_limits_ptr,
+            true,
+            Some(last_wasm_exit_fp),
+            Some(last_wasm_exit_pc),
+        );
+        let resume_stackchain =
+            tc::StackChain::from_continuation(builder, resume_contref, env.pointer_type());
+        resume_stackchain.write_limits_to_vmcontext(env, builder, vm_runtime_limits_ptr);
 
         call_builtin!(
             builder,
             env,
             let result =
                 tc_resume(
-                resume_contref,
-                parent_stacks_limit_pointer)
+                resume_contref)
         );
 
         emit_debug_println!(
@@ -1493,8 +1548,6 @@ pub(crate) fn translate_resume<'a>(
             emit_debug_println!(env, builder, "[resume] discriminant is {}", discriminant);
         }
 
-        let vm_runtime_limits_ptr = vmctx.load_vm_runtime_limits_ptr(env, builder);
-
         // Jump to the return block if the result is 0, otherwise jump to
         // the suspend block.
         builder
@@ -1513,7 +1566,14 @@ pub(crate) fn translate_resume<'a>(
         // We store parts of the VMRuntimeLimits into the continuation that just suspended.
         let suspended_chain =
             tc::StackChain::from_continuation(builder, resume_contref, env.pointer_type());
-        suspended_chain.load_limits_from_vmcontext(env, builder, vm_runtime_limits_ptr);
+        suspended_chain.load_limits_from_vmcontext(
+            env,
+            builder,
+            vm_runtime_limits_ptr,
+            false,
+            None,
+            None,
+        );
 
         // Afterwards (!), restore parts of the VMRuntimeLimits from the
         // parent of the suspended continuation (which is now active).
