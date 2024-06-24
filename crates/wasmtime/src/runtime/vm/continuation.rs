@@ -284,6 +284,7 @@ pub mod optimized {
 
     /// TODO
     #[inline(always)]
+    #[allow(dead_code)]
     pub fn suspend(instance: &mut Instance, tag_index: u32) -> Result<(), TrapReason> {
         let chain_ptr = instance.typed_continuations_stack_chain();
 

@@ -1715,10 +1715,22 @@ pub(crate) fn translate_resume<'a>(
             ir::TrapCode::UnhandledTag,
         );
 
+        // TODO: Refactor this
+        let cref = tc::VMContRef::new(parent_contref, env.pointer_type());
+        let fiber_stack_tos = cref.get_fiber_stack_tos(env, builder);
+        // The resume frame pointer is 16 byte below the top of stack.
+        let target_rbp_loc = builder.ins().iadd_imm(fiber_stack_tos, -0x10);
+        let suspend_payload = builder.ins().uextend(I64, tag);
+        let suspend_payload = builder.ins().ishl_imm(suspend_payload, 32);
+        let suspend_payload = builder.ins().bor_imm(suspend_payload, 1);
+
         // We suspend, thus deferring handling to the parent.
         // We do nothing about tag *parameters*, these remain unchanged within the
         // payload buffer associated with the whole VMContext.
-        call_builtin!(builder, env, tc_suspend(tag));
+        builder
+            .ins()
+            .stack_switch(target_rbp_loc, target_rbp_loc, suspend_payload);
+
 
         // "Tag return values" (i.e., values provided by cont.bind or
         // resume to the continuation) are actually stored in

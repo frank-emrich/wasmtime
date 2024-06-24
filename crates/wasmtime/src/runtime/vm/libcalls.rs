@@ -925,6 +925,7 @@ fn tc_resume(
     .map(|reason| reason.into())
 }
 
+#[allow(dead_code)]
 fn tc_suspend(instance: &mut Instance, tag_index: u32) -> Result<(), TrapReason> {
     crate::vm::continuation::optimized::suspend(instance, tag_index)
 }

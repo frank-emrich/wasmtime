@@ -100,8 +100,6 @@ macro_rules! foreach_builtin_function {
 
             // Creates a new continuation from a funcref.
             tc_cont_new(vmctx: vmctx, r: pointer, param_count: i32, result_count: i32) -> pointer;
-            // Suspends a continuation.
-            tc_suspend(vmctx: vmctx, tag: i32);
 
             // Sets the tag return values of `child_contref` to those of `parent_contref`.
             // This is implemented by exchanging the pointers to the underlying buffers.
