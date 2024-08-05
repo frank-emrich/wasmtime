@@ -1527,8 +1527,8 @@ pub(crate) fn translate_resume<'a>(
         // );
 
         let fiber_stack_tos = co.get_fiber_stack_tos(env, builder);
-        // The resume frame pointer is 16 byte below the top of stack.
-        let resume_ptr_loc = builder.ins().iadd_imm(fiber_stack_tos, -0x10);
+        // The context is stored 32 byte below the top of stack.
+        let resume_ptr_loc = builder.ins().iadd_imm(fiber_stack_tos, -0x20);
         let resume_payload: u64 = SwitchDirection::resume().into();
         let resume_payload = builder.ins().iconst(I64, resume_payload as i64);
 
@@ -1718,8 +1718,8 @@ pub(crate) fn translate_resume<'a>(
         // TODO: Refactor this
         let cref = tc::VMContRef::new(parent_contref, env.pointer_type());
         let fiber_stack_tos = cref.get_fiber_stack_tos(env, builder);
-        // The resume frame pointer is 16 byte below the top of stack.
-        let target_rbp_loc = builder.ins().iadd_imm(fiber_stack_tos, -0x10);
+        // The resume contez is 32 byte below the top of stack.
+        let target_context_loc = builder.ins().iadd_imm(fiber_stack_tos, -0x20);
         let suspend_payload = builder.ins().uextend(I64, tag);
         let suspend_payload = builder.ins().ishl_imm(suspend_payload, 32);
         let suspend_payload = builder.ins().bor_imm(suspend_payload, 1);
@@ -1729,8 +1729,7 @@ pub(crate) fn translate_resume<'a>(
         // payload buffer associated with the whole VMContext.
         builder
             .ins()
-            .stack_switch(target_rbp_loc, target_rbp_loc, suspend_payload);
-
+            .stack_switch(target_context_loc, target_context_loc, suspend_payload);
 
         // "Tag return values" (i.e., values provided by cont.bind or
         // resume to the continuation) are actually stored in
@@ -1802,8 +1801,8 @@ pub(crate) fn translate_suspend<'a>(
     let cref = tc::VMContRef::new(suspend_contref, env.pointer_type());
 
     let fiber_stack_tos = cref.get_fiber_stack_tos(env, builder);
-    // The resume frame pointer is 16 byte below the top of stack.
-    let target_rbp_loc = builder.ins().iadd_imm(fiber_stack_tos, -0x10);
+    // The resume context pointer is 32 byte below the top of stack.
+    let target_context_loc = builder.ins().iadd_imm(fiber_stack_tos, -0x20);
 
     // TODO: Do this in a SwitchDirection helper object
     let suspend_payload = builder.ins().uextend(I64, tag_index);
@@ -1812,7 +1811,7 @@ pub(crate) fn translate_suspend<'a>(
 
     builder
         .ins()
-        .stack_switch(target_rbp_loc, target_rbp_loc, suspend_payload);
+        .stack_switch(target_context_loc, target_context_loc, suspend_payload);
 
     let return_values =
         typed_continuations_load_tag_return_values(env, builder, suspend_contref, tag_return_types);

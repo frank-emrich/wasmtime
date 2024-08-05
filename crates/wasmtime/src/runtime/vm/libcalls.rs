@@ -914,10 +914,7 @@ fn tc_cont_new(
 }
 
 #[allow(dead_code)]
-fn tc_resume(
-    instance: &mut Instance,
-    contref: *mut u8,
-) -> Result<u64, TrapReason> {
+fn tc_resume(instance: &mut Instance, contref: *mut u8) -> Result<u64, TrapReason> {
     crate::vm::continuation::optimized::resume(
         instance,
         contref.cast::<crate::vm::continuation::optimized::VMContRef>(),
