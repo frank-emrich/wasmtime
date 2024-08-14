@@ -1739,7 +1739,7 @@ pub(crate) fn emit(
             sink.put2(u16::try_from(*stack_bytes_to_pop).unwrap());
         }
 
-        Inst::StackSwitch {
+        Inst::StackSwitchPlain {
             store_context_ptr,
             load_context_ptr,
             in_payload0,

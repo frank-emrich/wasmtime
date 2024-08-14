@@ -138,7 +138,7 @@ impl Inst {
             | Inst::Setcc { .. }
             | Inst::ShiftR { .. }
             | Inst::SignExtendData { .. }
-            | Inst::StackSwitch { .. }
+            | Inst::StackSwitchPlain { .. }
             | Inst::TrapIf { .. }
             | Inst::TrapIfAnd { .. }
             | Inst::TrapIfOr { .. }
@@ -1735,7 +1735,7 @@ impl PrettyPrint for Inst {
                 s
             }
 
-            Inst::StackSwitch {
+            Inst::StackSwitchPlain {
                 store_context_ptr,
                 load_context_ptr,
                 in_payload0,
@@ -1745,7 +1745,7 @@ impl PrettyPrint for Inst {
                 let load_context_ptr = pretty_print_reg(**load_context_ptr, 8);
                 let in_payload0 = pretty_print_reg(**in_payload0, 8);
                 let out_payload0 = pretty_print_reg(*out_payload0.to_reg(), 8);
-                format!("{out_payload0} = stack_switch {store_context_ptr}, {load_context_ptr}, {in_payload0}")
+                format!("{out_payload0} = stack_switch_plain {store_context_ptr}, {load_context_ptr}, {in_payload0}")
             }
 
             Inst::JmpKnown { dst } => {
@@ -2387,7 +2387,7 @@ fn x64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
             }
             collector.reg_clobbers(*clobbers);
         }
-        Inst::StackSwitch {
+        Inst::StackSwitchPlain {
             store_context_ptr,
             load_context_ptr,
             in_payload0,
