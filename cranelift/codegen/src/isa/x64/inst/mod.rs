@@ -1739,6 +1739,7 @@ impl PrettyPrint for Inst {
                 load_context_ptr,
                 in_payload0,
                 out_payload0,
+                ..
             } => {
                 let store_context_ptr = pretty_print_reg(**store_context_ptr, 8);
                 let load_context_ptr = pretty_print_reg(**load_context_ptr, 8);
@@ -2391,11 +2392,16 @@ fn x64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
             load_context_ptr,
             in_payload0,
             out_payload0,
+            tmp1,
+            tmp2
         } => {
             collector.reg_use(load_context_ptr);
             collector.reg_use(store_context_ptr);
             collector.reg_fixed_use(in_payload0, stack_switch::payload_register());
             collector.reg_fixed_def(out_payload0, stack_switch::payload_register());
+
+            collector.reg_early_def(tmp1);
+            collector.reg_early_def(tmp2);
 
             let mut clobbers = crate::isa::x64::abi::ALL_CLOBBERS;
             // The return/payload reg must not be included in the clobber set

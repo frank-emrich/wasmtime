@@ -1732,8 +1732,10 @@ pub(crate) fn emit(
         Inst::StackSwitchBasic {
             store_context_ptr,
             load_context_ptr,
-            in_payload0,
-            out_payload0,
+            in_payload0: _,
+            out_payload0: _,
+            tmp1,
+            tmp2
         } => {
             // Note that we do not emit anything for preserving and restoring
             // ordinary registers here: That's taken care of by regalloc for us,
@@ -1743,33 +1745,7 @@ pub(crate) fn emit(
             // value: We've informed regalloc that it is sent and received via
             // the fixed register given by [stack_switch::payload_register]
 
-            let (tmp1, tmp2) = {
-                // Ideally we would just ask regalloc for two temporary registers.
-                // However, adding any early defs to the constraints on StackSwitch
-                // causes TooManyLiveRegs. Fortunately, we can manually find tmp
-                // registers without regalloc: Since our instruction clobbers all
-                // registers, we can simply pick any register that is not assigned
-                // to the operands.
-
-                let all = crate::isa::x64::abi::ALL_CLOBBERS;
-
-                let used_regs = [
-                    **load_context_ptr,
-                    **store_context_ptr,
-                    **in_payload0,
-                    *out_payload0.to_reg(),
-                ];
-
-                let mut tmps = all.into_iter().filter_map(|preg| {
-                    let reg: Reg = preg.into();
-                    if !used_regs.contains(&reg) {
-                        WritableGpr::from_writable_reg(isle::WritableReg::from_reg(reg))
-                    } else {
-                        None
-                    }
-                });
-                (tmps.next().unwrap(), tmps.next().unwrap())
-            };
+            let (tmp1, tmp2)  = (*tmp1, *tmp2);
 
             let layout = stack_switch::control_context_layout();
             let rsp_offset = layout.stack_pointer_offset as i32;

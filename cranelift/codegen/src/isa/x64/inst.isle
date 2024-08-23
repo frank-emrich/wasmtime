@@ -561,7 +561,9 @@
        (StackSwitchBasic (store_context_ptr Gpr)
                          (load_context_ptr Gpr)
                          (in_payload0 Gpr)
-                         (out_payload0 WritableGpr))
+                         (out_payload0 WritableGpr)
+                         (tmp1 WritableGpr)
+                         (tmp2 WritableGpr))
 
        ;; Jump to a known target: jmp simm32.
        (JmpKnown (dst MachLabel))
@@ -2299,10 +2301,14 @@
 (decl x64_stack_switch_basic (Gpr Gpr Gpr) Gpr)
 (rule (x64_stack_switch_basic store_context_ptr load_context_ptr in_payload0)
       (let ((out_payload0 WritableGpr (temp_writable_gpr))
+            (tmp1 WritableGpr (temp_writable_gpr))
+            (tmp2 WritableGpr (temp_writable_gpr))
             (_ Unit (emit (MInst.StackSwitchBasic store_context_ptr
                                                   load_context_ptr
                                                   in_payload0
-                                                  out_payload0))))
+                                                  out_payload0
+                                                  tmp1
+                                                  tmp2))))
         out_payload0))
 
 ;;;; Helpers for Emitting Loads ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
