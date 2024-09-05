@@ -77,37 +77,19 @@ jobs:
         path: |
           benchfx/tools/external/binaryen/build
           benchfx/tools/external/wasmtime1/target
+          benchfx/tools/external/wasmtime2/target
 
     - name: Inspect caches
       run: |
         echo "cache hit: ${{ steps.cache.outputs.cache-hit }}"
         ls -la benchfx/tools/external/binaryen
         ls -la benchfx/tools/external/wasmtime1
+        ls -la benchfx/tools/external/wasmtime2
 
-    # The next two steps could be combined into one since the second invocation
-    # of the harness subsumes the first one.
-    # However, that would perform two separate builds of wasmtime (and its cargo
-    # dependencies) from scratch. Since Github Actions runners are so slow, we
-    # perform the following trick instead:
-    # We first build the the base revision of Wasmtime from scratch. In the
-    # second step, we then copy the build artifacts from that over to the folder
-    # where the second revsion will be built. This effectively means that for
-    # the second Wasmtime revision we perform an incremental build on top of the
-    # base revision.
-    #
-    - name: Prepare benchmarking, part 1 (binaryen, first wasmtime revision)
+    - name: Prepare benchmarking (build binaryen, wasmtime revs, benchmarks)
       shell: bash
       working-directory: ./benchfx
       run: |
-        ./harness.py -v run --prepare-only \
-          --wasmtime-cargo-build-args="--features=$wasmtime_features" \
-          "${GITHUB_SHA}^1"
-
-    - name: Prepare benchmarking, part 2 (second wasmtime revision)
-      shell: bash
-      working-directory: ./benchfx
-      run: |
-        cp -pr tools/external/wasmtime1/target tools/external/wasmtime2/
         ./harness.py -v compare-revs --prepare-only \
           --rev1-wasmtime-cargo-build-args="--features=$wasmtime_features" \
           --rev2-wasmtime-cargo-build-args="--features=$wasmtime_features" \
