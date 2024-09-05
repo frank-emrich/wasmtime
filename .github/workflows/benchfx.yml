@@ -1,0 +1,22 @@
+name: "Check for performance regressions"
+
+on:
+  pull_request:
+
+
+# Env variables
+env:
+  BENCHFX_COMMIT: d2e11e97178263ffeee8433c02ab32ab7ff2165a
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: 'wasmfx/benchfx'
+        ref: $BENCHFX_COMMIT
+        submodules: true
+        path: benchfx
+    - uses: ./.github/actions/install-rust
