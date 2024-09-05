@@ -64,7 +64,7 @@ jobs:
     # the second Wasmtime revision we perform an incremental build on top of the
     # base revision.
     #
-    - name: Prepare benchmarking: compile binaryen, first wasmtime revision
+    - name: Prepare benchmarking, part 1 (binaryen, first wasmtime revision)
       shell: bash
       working-directory: ./benchfx
       run: |
@@ -72,7 +72,7 @@ jobs:
           ---wasmtime-cargo-build-args="--features=$wasmtime_features" \
           "origin/$GITHUB_BASE_REF"
 
-    - name: Prepare benchmarking: second wasmtime revision
+    - name: Prepare benchmarking, part 2 (second wasmtime revision)
       shell: bash
       working-directory: ./benchfx
       run: |
