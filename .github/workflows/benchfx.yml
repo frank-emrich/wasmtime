@@ -9,8 +9,8 @@ env:
   benchfx_rev: max-allowed-regression
 
 jobs:
-  setup:
-    name: Build
+  setup-env:
+    name: Setup infrastructure
     runs-on: ubuntu-latest
     steps:
     - name: Checkout wasmtime
@@ -40,8 +40,19 @@ jobs:
         cargo --version
         rustc --version
     - name: Initialize benchfx
-      run: ./harness.py setup --wasmtime-create-worktree-from-development-repo=$GITHUB_WORKSPACE/wasmtime
+      run: ./harness.py -v setup --wasmtime-create-worktree-from-development-repo=$GITHUB_WORKSPACE/wasmtime
       working-directory: ./benchfx
+
+  prepare-benchmarks:
+    name: Prepare/compile benchmarks
+    runs-on: ubuntu-latest
+    needs: setup-env
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./benchfx
+    steps:
+    - run: ./harness.py compare-revs --prepare-only ${{ github.base_ref }} ${{ github.head_ref }}
 
 #
 
