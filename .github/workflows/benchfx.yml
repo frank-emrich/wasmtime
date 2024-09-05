@@ -27,9 +27,19 @@ jobs:
         submodules: true
         path: benchfx
         fetch-depth: 0
-    - name: Install Rust
-      uses: ./wasmtime/.github/actions/install-rust
-      working-directory: ./wasmtime
+    - name: Install hyperfine
+      run: cargo install hyperfine
+    - name: Install other deps
+      run: sudo apt-get install cmake ocaml dune menhir libmenhir-ocaml-dev
+    - name: Initialize benchfx
+      working-directory: ./benchfx
+      run: |
+        ./harness.py setup --wasmtime-create-worktree-from-development-repo=../wasmtime
+
+
+    # - name: Install Rust
+    #   uses: ./wasmtime/.github/actions/install-rust
+    #   working-directory: ./wasmtime
 
   # build:
   #   name: Build
