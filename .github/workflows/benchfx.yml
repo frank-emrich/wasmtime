@@ -69,7 +69,7 @@ jobs:
       working-directory: ./benchfx
       run: |
         ./harness.py -v run --prepare-only \
-          ---wasmtime-cargo-build-args="--features=$wasmtime_features" \
+          --wasmtime-cargo-build-args="--features=$wasmtime_features" \
           "origin/$GITHUB_BASE_REF"
 
     - name: Prepare benchmarking, part 2 (second wasmtime revision)
