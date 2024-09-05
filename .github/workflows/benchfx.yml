@@ -62,7 +62,7 @@ jobs:
     - name: Restore build artifacts from cache
       uses: actions/cache@v4
       with:
-        key: benchfx-${{benchfx_rev}}
+        key: benchfx-${{ env.benchfx_rev }}
         path: |
           benchfx/tools/external/binaryen/build
           benchfx/tools/external/wasmtime1/target
