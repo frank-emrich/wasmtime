@@ -45,7 +45,9 @@ jobs:
     - name: Install other deps
       run: sudo apt-get install cmake ocaml dune menhir libmenhir-ocaml-dev
 
+# FIXME the last git show must be removed for commits to main
     - name: Show context info
+      working-directory: ./benchfx
       run: |
         echo "$GITHUB_WORKSPACE"
         ls -l "$GITHUB_WORKSPACE"
@@ -53,11 +55,14 @@ jobs:
         ls -l "$GITHUB_WORKSPACE/benchfx"
         cargo --version
         rustc --version
+        echo "benchmark_filters: $benchmark_filters"
         echo "GITHUB_BASE_REF: $GITHUB_BASE_REF"
         echo "GITHUB_HEAD_REF: $GITHUB_HEAD_REF"
         echo "GITHUB_SHA: $GITHUB_SHA"
         echo "GITHUB_SHA^1: ${GITHUB_SHA}^1"
-        echo "benchmark_filters: $benchmark_filters"
+        git show --oneline "${GITHUB_SHA}"
+        git show --oneline "${GITHUB_SHA}^1"
+        git show --oneline "${GITHUB_SHA}^2"
 
     - name: Initialize benchfx
 
