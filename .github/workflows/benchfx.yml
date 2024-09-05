@@ -6,7 +6,7 @@ on:
 
 # Env variables
 env:
-  BENCHFX_COMMIT: d2e11e97178263ffeee8433c02ab32ab7ff2165a
+  benchfx_commit: d2e11e97178263ffeee8433c02ab32ab7ff2165a
 
 jobs:
   build:
@@ -16,7 +16,7 @@ jobs:
     - uses: actions/checkout@v4
       with:
         repository: 'wasmfx/benchfx'
-        ref: $BENCHFX_COMMIT
+        ref: ${{ env.benchfx_commit }}$
         submodules: true
         path: benchfx
     - uses: ./.github/actions/install-rust
