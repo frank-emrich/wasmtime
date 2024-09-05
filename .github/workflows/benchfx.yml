@@ -41,6 +41,7 @@ jobs:
         rustc --version
     - name: Initialize benchfx
       run: ./harness.py setup --wasmtime-create-worktree-from-development-repo=$GITHUB_WORKSPACE/wasmtime
+      working-directory: ./benchfx
 
 #
 
