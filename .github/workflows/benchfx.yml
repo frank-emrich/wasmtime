@@ -101,6 +101,11 @@ jobs:
       shell: bash
       working-directory: ./benchfx
       run: |
+        # The cache preserves mtimes, but we need to convince cmake/make that
+        # these files don't need to be recompiled. Cmake is good enough at
+        # detecting external changes (e.g., changed compiler or libc version).
+        find tools/external/binaryen/build -exec touch {} \; || true
+
         ./harness.py -v compare-revs --prepare-only \
           --rev1-wasmtime-cargo-build-args="--features=$wasmtime_features" \
           --rev2-wasmtime-cargo-build-args="--features=$wasmtime_features" \
