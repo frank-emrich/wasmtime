@@ -64,9 +64,21 @@ jobs:
         #git show --oneline "${GITHUB_SHA}^2"
 
     - name: Initialize benchfx
-
-      run: ./harness.py -v setup --wasmtime-create-worktree-from-development-repo=$GITHUB_WORKSPACE/wasmtime
       working-directory: ./benchfx
+      shell: bash
+      run: |
+        ./harness.py -v setup \
+          --wasmtime-create-worktree-from-development-repo=$GITHUB_WORKSPACE/wasmtime
+
+        # The following is only necessary because we are about to restore the
+        # build directory inside the binaryen repo inside benchfx from the
+        # cache. But the binaryen repo is currently a bare repo and doesn't have
+        # the .gitignore file with an entry for "build", yet.
+        # The harness will check out the actual binaryen commit that it wants.
+        pushd tools/external/binaryen
+        git switch --detach --recurse-submodules webassembly/main
+        popd
+
 
     - name: Restore build artifacts from cache
       uses: actions/cache@v4
