@@ -6,7 +6,8 @@ on:
 
 # Env variables
 env:
-  benchfx_rev: max-allowed-regression
+  # TODO turn this into a fixed commit eventually (and delete hacking branch)
+  benchfx_rev: wasmtime_ci_hacking
   wasmtime_features: unsafe_wasmfx_stacks
 
 jobs:
