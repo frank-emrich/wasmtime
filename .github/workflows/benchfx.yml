@@ -46,7 +46,7 @@ jobs:
         echo "base_ref: ${{ github.base_ref }}"
         echo "head_ref: ${{ github.head_ref }}"
 
-   - name: Initialize benchfx
+    - name: Initialize benchfx
       run: ./harness.py -v setup --wasmtime-create-worktree-from-development-repo=$GITHUB_WORKSPACE/wasmtime
       working-directory: ./benchfx
 
