@@ -9,7 +9,7 @@ env:
   benchfx_rev: max-allowed-regression
 
 jobs:
-  build:
+  setup:
     name: Build
     runs-on: ubuntu-latest
     steps:
@@ -27,4 +27,11 @@ jobs:
         submodules: true
         path: benchfx
         fetch-depth: 0
-    - uses: ./wasmtime/.github/actions/install-rust
+    - name: Install Rust
+      uses: ./wasmtime/.github/actions/install-rust
+      working-directory: ./wasmtime
+
+  # build:
+  #   name: Build
+  #   runs-on: ubuntu-latest
+  #   needs: setup
