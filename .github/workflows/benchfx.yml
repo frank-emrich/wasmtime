@@ -49,6 +49,7 @@ jobs:
         echo "GITHUB_BASE_REF: $GITHUB_BASE_REF"
         echo "GITHUB_HEAD_REF: $GITHUB_HEAD_REF"
         echo "GITHUB_SHA: $GITHUB_SHA"
+        echo "benchmark_filters: $benchmark_filters"
 
     - name: Initialize benchfx
       run: ./harness.py -v setup --wasmtime-create-worktree-from-development-repo=$GITHUB_WORKSPACE/wasmtime
