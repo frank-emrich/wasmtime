@@ -45,8 +45,9 @@ jobs:
         ls -l "$GITHUB_WORKSPACE/benchfx"
         cargo --version
         rustc --version
-        echo "base_ref: ${{ github.base_ref }}"
-        echo "head_ref: ${{ github.head_ref }}"
+        echo "GITHUB_BASE_REF: $GITHUB_BASE_REF"
+        echo "GITHUB_HEAD_REF: $GITHUB_HEAD_REF"
+        echo "GITHUB_SHA: $GITHUB_SHA"
 
     - name: Initialize benchfx
       run: ./harness.py -v setup --wasmtime-create-worktree-from-development-repo=$GITHUB_WORKSPACE/wasmtime
@@ -62,4 +63,4 @@ jobs:
         ./harness.py -v compare-revs --prepare-only \
           --rev1-wasmtime-cargo-build-args="--features=$wasmtime_features" \
           --rev2-wasmtime-cargo-build-args="--features=$wasmtime_features" \
-          "origin/$GITHUB_BASE_REF" "origin/$GITHUB_HEAD_REF"
+          "origin/$GITHUB_BASE_REF" "$GITHUB_SHA"
