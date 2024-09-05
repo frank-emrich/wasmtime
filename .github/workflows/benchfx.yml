@@ -76,7 +76,7 @@ jobs:
         # the .gitignore file with an entry for "build", yet.
         # The harness will check out the actual binaryen commit that it wants.
         pushd tools/external/binaryen
-        git switch --detach --recurse-submodules webassembly/main
+        git switch --detach --recurse-submodules 3386e642c76028438fc783bf97089115ea9a900f
         popd
 
 
