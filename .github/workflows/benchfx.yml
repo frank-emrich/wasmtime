@@ -9,8 +9,8 @@ env:
   benchfx_rev: max-allowed-regression
 
 jobs:
-  setup-env:
-    name: Setup infrastructure
+  bench:
+    name: Setup environment, prepare & run benchmarks
     runs-on: ubuntu-latest
     steps:
     - name: Checkout wasmtime
@@ -19,6 +19,7 @@ jobs:
         submodules: true
         path: wasmtime
         fetch-depth: 0
+
     - name: Checkout benchfx
       uses: actions/checkout@v4
       with:
@@ -27,10 +28,13 @@ jobs:
         submodules: true
         path: benchfx
         fetch-depth: 0
+
     - name: Install hyperfine
       run: cargo install hyperfine
+
     - name: Install other deps
       run: sudo apt-get install cmake ocaml dune menhir libmenhir-ocaml-dev
+
     - name: Show context info
       run: |
         echo "$GITHUB_WORKSPACE"
@@ -39,28 +43,13 @@ jobs:
         ls -l "$GITHUB_WORKSPACE/benchfx"
         cargo --version
         rustc --version
-    - name: Initialize benchfx
+        echo "base_ref: ${{ github.base_ref }}"
+        echo "head_ref: ${{ github.head_ref }}"
+
+   - name: Initialize benchfx
       run: ./harness.py -v setup --wasmtime-create-worktree-from-development-repo=$GITHUB_WORKSPACE/wasmtime
       working-directory: ./benchfx
 
-  prepare-benchmarks:
-    name: Prepare/compile benchmarks
-    runs-on: ubuntu-latest
-    needs: setup-env
-    defaults:
-      run:
-        shell: bash
-        working-directory: ./benchfx
-    steps:
-    - run: ./harness.py compare-revs --prepare-only ${{ github.base_ref }} ${{ github.head_ref }}
-
-#
-
-    # - name: Install Rust
-    #   uses: ./wasmtime/.github/actions/install-rust
-    #   working-directory: ./wasmtime
-
-  # build:
-  #   name: Build
-  #   runs-on: ubuntu-latest
-  #   needs: setup
+    - name: Prepare benchmarks
+      run: ./harness.py compare-revs --prepare-only ${{ github.base_ref }} ${{ github.head_ref }}
+      working-directory: ./benchfx
