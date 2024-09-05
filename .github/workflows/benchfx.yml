@@ -3,6 +3,10 @@ name: "Check for performance regressions"
 on:
   pull_request:
 
+  push:
+    branches:
+      - main
+
 
 # Env variables
 env:
@@ -52,6 +56,7 @@ jobs:
         echo "GITHUB_BASE_REF: $GITHUB_BASE_REF"
         echo "GITHUB_HEAD_REF: $GITHUB_HEAD_REF"
         echo "GITHUB_SHA: $GITHUB_SHA"
+        echo "GITHUB_SHA^1: ${GITHUB_SHA}^1"
         echo "benchmark_filters: $benchmark_filters"
 
     - name: Initialize benchfx
@@ -91,7 +96,7 @@ jobs:
       run: |
         ./harness.py -v run --prepare-only \
           --wasmtime-cargo-build-args="--features=$wasmtime_features" \
-          "origin/$GITHUB_BASE_REF"
+          "${GITHUB_SHA}^1"
 
     - name: Prepare benchmarking, part 2 (second wasmtime revision)
       shell: bash
@@ -101,7 +106,7 @@ jobs:
         ./harness.py -v compare-revs --prepare-only \
           --rev1-wasmtime-cargo-build-args="--features=$wasmtime_features" \
           --rev2-wasmtime-cargo-build-args="--features=$wasmtime_features" \
-          "origin/$GITHUB_BASE_REF" "$GITHUB_SHA"
+          "${GITHUB_SHA}^1" "$GITHUB_SHA"
 
     - name: Run benchmarks
       shell: bash
@@ -112,4 +117,4 @@ jobs:
           --max-allowed-regression=$max_allowed_regression \
           --rev1-wasmtime-cargo-build-args="--features=$wasmtime_features" \
           --rev2-wasmtime-cargo-build-args="--features=$wasmtime_features" \
-          "origin/$GITHUB_BASE_REF" "$GITHUB_SHA"
+          "${GITHUB_SHA}^1" "$GITHUB_SHA"
