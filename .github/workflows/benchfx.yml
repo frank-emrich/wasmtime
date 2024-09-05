@@ -76,7 +76,7 @@ jobs:
       shell: bash
       working-directory: ./benchfx
       run: |
-        cp -r tools/external/wasmtime1/target tools/external/wasmtime2/
+        cp -pr tools/external/wasmtime1/target tools/external/wasmtime2/
         ./harness.py -v compare-revs --prepare-only \
           --rev1-wasmtime-cargo-build-args="--features=$wasmtime_features" \
           --rev2-wasmtime-cargo-build-args="--features=$wasmtime_features" \
