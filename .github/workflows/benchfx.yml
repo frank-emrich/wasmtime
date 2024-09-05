@@ -53,13 +53,30 @@ jobs:
       run: ./harness.py -v setup --wasmtime-create-worktree-from-development-repo=$GITHUB_WORKSPACE/wasmtime
       working-directory: ./benchfx
 
-    - name: Prepare benchmarks
+    # The next two steps could be combined into one since the second invocation
+    # of the harness subsumes the first one.
+    # However, that would perform two separate builds of wasmtime (and its cargo
+    # dependencies) from scratch. Since Github Actions runners are so slow, we
+    # perform the following trick instead:
+    # We first build the the base revision of Wasmtime from scratch. In the
+    # second step, we then copy the build artifacts from that over to the folder
+    # where the second revsion will be built. This effectively means that for
+    # the second Wasmtime revision we perform an incremental build on top of the
+    # base revision.
+    #
+    - name: Prepare benchmarking: compile binaryen, first wasmtime revision
       shell: bash
       working-directory: ./benchfx
       run: |
-        pushd tools/external/wasmtime1
-        git show-ref
-        popd
+        ./harness.py -v run --prepare-only \
+          ---wasmtime-cargo-build-args="--features=$wasmtime_features" \
+          "origin/$GITHUB_BASE_REF"
+
+    - name: Prepare benchmarking: second wasmtime revision
+      shell: bash
+      working-directory: ./benchfx
+      run: |
+        cp -r tools/external/wasmtime1/target tools/external/wasmtime2/
         ./harness.py -v compare-revs --prepare-only \
           --rev1-wasmtime-cargo-build-args="--features=$wasmtime_features" \
           --rev2-wasmtime-cargo-build-args="--features=$wasmtime_features" \
