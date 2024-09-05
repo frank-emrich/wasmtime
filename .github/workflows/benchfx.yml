@@ -47,7 +47,7 @@ jobs:
 
 # FIXME the last git show must be removed for commits to main
     - name: Show context info
-      working-directory: ./benchfx
+      working-directory: ./wasmtime
       run: |
         echo "$GITHUB_WORKSPACE"
         ls -l "$GITHUB_WORKSPACE"
