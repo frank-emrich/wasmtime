@@ -34,8 +34,11 @@ jobs:
     - name: Initialize benchfx
       working-directory: ./benchfx
       run: |
-        ./harness.py setup --wasmtime-create-worktree-from-development-repo=../wasmtime
+        echo "$GITHUB_WORKSPACE"
+        ls -l "$GITHUB_WORKSPACE/wasmtime"
+        ls -l "$GITHUB_WORKSPACE/benchfx"
 
+#./harness.py setup --wasmtime-create-worktree-from-development-repo=../wasmtime
 
     # - name: Install Rust
     #   uses: ./wasmtime/.github/actions/install-rust
