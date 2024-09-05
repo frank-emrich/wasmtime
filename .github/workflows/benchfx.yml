@@ -10,6 +10,9 @@ env:
   benchfx_rev: wasmtime_ci_hacking
   wasmtime_features: unsafe_wasmfx_stacks
   benchmark_filters: "--filter=**/*_wasmfx --filter=**/*_asyncify"
+  # Maximum allowed performance regression of any benchmark in percent.
+  # FIXME set this to a reasonable value
+  max_allowed_regression=1
 
 jobs:
   bench:
@@ -90,6 +93,7 @@ jobs:
       run: |
         ./harness.py -v compare-revs \
           $benchmark_filters \
+          --max-allowed-regression=$max_allowed_regression \
           --rev1-wasmtime-cargo-build-args="--features=$wasmtime_features" \
           --rev2-wasmtime-cargo-build-args="--features=$wasmtime_features" \
           "origin/$GITHUB_BASE_REF" "$GITHUB_SHA"
