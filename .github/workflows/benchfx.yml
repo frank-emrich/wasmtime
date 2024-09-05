@@ -71,8 +71,8 @@ jobs:
     - name: Inspect caches
       run: |
         echo "cache hit: ${{ steps.cache.outputs.cache-hit }}"
-        # ls -la benchfx/tools/external/binaryen/build
-        # ls -la benchfx/tools/external/wasmtime1/target
+        ls -la benchfx/tools/external/binaryen
+        ls -la benchfx/tools/external/wasmtime1
 
     # The next two steps could be combined into one since the second invocation
     # of the harness subsumes the first one.
