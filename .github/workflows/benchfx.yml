@@ -51,5 +51,10 @@ jobs:
       working-directory: ./benchfx
 
     - name: Prepare benchmarks
-      run: ./harness.py -v compare-revs --prepare-only origin/${{ github.base_ref }} origin/${{ github.head_ref }}
+      shell: bash
+      run: |
+        pushd tools/external/wasmtime1
+        git show-ref
+        popd
+        ./harness.py -v compare-revs --prepare-only origin/${{ github.base_ref }} origin/${{ github.head_ref }}
       working-directory: ./benchfx
