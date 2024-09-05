@@ -61,4 +61,4 @@ jobs:
         ./harness.py -v compare-revs --prepare-only \
           --rev1-wasmtime-cargo-build-args="--features=$wasmtime_features" \
           --rev2-wasmtime-cargo-build-args="--features=$wasmtime_features" \
-          origin/${{ github.base_ref }} origin/${{ github.head_ref }}
+          "origin/$GITHUB_BASE_REF" "origin/$GITHUB_HEAD_REF"
