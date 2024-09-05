@@ -31,14 +31,18 @@ jobs:
       run: cargo install hyperfine
     - name: Install other deps
       run: sudo apt-get install cmake ocaml dune menhir libmenhir-ocaml-dev
-    - name: Initialize benchfx
-      working-directory: ./benchfx
+    - name: Show context info
       run: |
         echo "$GITHUB_WORKSPACE"
+        ls -l "$GITHUB_WORKSPACE"
         ls -l "$GITHUB_WORKSPACE/wasmtime"
         ls -l "$GITHUB_WORKSPACE/benchfx"
+        cargo --version
+        rustc --version
+    - name: Initialize benchfx
+      run: ./harness.py setup --wasmtime-create-worktree-from-development-repo=$GITHUB_WORKSPACE/wasmtime
 
-#./harness.py setup --wasmtime-create-worktree-from-development-repo=../wasmtime
+#
 
     # - name: Install Rust
     #   uses: ./wasmtime/.github/actions/install-rust
