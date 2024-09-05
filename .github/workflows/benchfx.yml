@@ -27,4 +27,4 @@ jobs:
         submodules: true
         path: benchfx
         fetch-depth: 0
-    - uses: wasmtime/.github/actions/install-rust
+    - uses: ./wasmtime/.github/actions/install-rust
