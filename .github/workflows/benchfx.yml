@@ -6,7 +6,7 @@ on:
 
 # Env variables
 env:
-  benchfx_commit: d2e11e97178263ffeee8433c02ab32ab7ff2165a
+  benchfx_rev: max-allowed-regression
 
 jobs:
   build:
@@ -16,7 +16,7 @@ jobs:
     - uses: actions/checkout@v4
       with:
         repository: 'wasmfx/benchfx'
-        ref: ${{ env.benchfx_commit }}$
+        ref: ${{ env.benchfx_rev }}$
         submodules: true
         path: benchfx
         fetch-depth: 0
