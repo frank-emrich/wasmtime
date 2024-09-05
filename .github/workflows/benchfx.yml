@@ -13,9 +13,8 @@ env:
   # TODO turn this into a fixed commit eventually (and delete hacking branch)
   benchfx_rev: wasmtime_ci_hacking
   wasmtime_features: unsafe_wasmfx_stacks
-  benchmark_filters: "--filter=**/*_wasmfx --filter=**/*_asyncify"
+  benchmark_filters: "--filter=**/*_wasmfx --filter=**/*_wasmfx_fiber --filter=**/*_asyncify"
   # Maximum allowed performance regression of any benchmark in percent.
-  # FIXME set this to a reasonable value
   max_allowed_regression: 7
 
 jobs:
@@ -60,9 +59,9 @@ jobs:
         echo "GITHUB_HEAD_REF: $GITHUB_HEAD_REF"
         echo "GITHUB_SHA: $GITHUB_SHA"
         echo "GITHUB_SHA^1: ${GITHUB_SHA}^1"
-        git show --oneline "${GITHUB_SHA}"
-        git show --oneline "${GITHUB_SHA}^1"
-        git show --oneline "${GITHUB_SHA}^2"
+        #git show --oneline "${GITHUB_SHA}"
+        #git show --oneline "${GITHUB_SHA}^1"
+        #git show --oneline "${GITHUB_SHA}^2"
 
     - name: Initialize benchfx
 
