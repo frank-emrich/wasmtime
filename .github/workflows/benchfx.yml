@@ -55,25 +55,24 @@ jobs:
         echo "benchmark_filters: $benchmark_filters"
 
     - name: Initialize benchfx
-      id: cache
+
       run: ./harness.py -v setup --wasmtime-create-worktree-from-development-repo=$GITHUB_WORKSPACE/wasmtime
       working-directory: ./benchfx
 
     - name: Restore build artifacts from cache
       uses: actions/cache@v4
+      id: cache
       with:
         key: benchfx-${{ env.benchfx_rev }}
         path: |
           benchfx/tools/external/binaryen/build
           benchfx/tools/external/wasmtime1/target
-          benchfx/tools/external/wasmtime2/target
 
     - name: Inspect caches
       run: |
         echo "cache hit: ${{ steps.cache.outputs.cache-hit }}"
-        ls -la benchfx/tools/external/binaryen/build
-        ls -la benchfx/tools/external/wasmtime1/target
-        ls -la benchfx/tools/external/wasmtime2/target
+        # ls -la benchfx/tools/external/binaryen/build
+        # ls -la benchfx/tools/external/wasmtime1/target
 
     # The next two steps could be combined into one since the second invocation
     # of the harness subsumes the first one.
