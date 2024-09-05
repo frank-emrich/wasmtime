@@ -12,7 +12,7 @@ env:
   benchmark_filters: "--filter=**/*_wasmfx --filter=**/*_asyncify"
   # Maximum allowed performance regression of any benchmark in percent.
   # FIXME set this to a reasonable value
-  max_allowed_regression=1
+  max_allowed_regression: 1
 
 jobs:
   bench:
