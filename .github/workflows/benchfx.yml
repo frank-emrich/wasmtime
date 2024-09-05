@@ -13,11 +13,18 @@ jobs:
     name: Build
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout wasmtime
+      uses: actions/checkout@v4
+      with:
+        submodules: true
+        path: wasmtime
+        fetch-depth: 0
+    - name: Checkout benchfx
+      uses: actions/checkout@v4
       with:
         repository: 'wasmfx/benchfx'
         ref: ${{ env.benchfx_rev }}
         submodules: true
         path: benchfx
         fetch-depth: 0
-    - uses: ./.github/actions/install-rust
+    - uses: wasmtime/.github/actions/install-rust
