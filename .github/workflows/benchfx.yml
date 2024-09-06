@@ -61,7 +61,7 @@ jobs:
       working-directory: ./benchfx
       shell: bash
       run: |
-        ./harness.py -v setup \
+        ./harness.py --verbose setup \
           --wasmtime-create-worktree-from-development-repo=$GITHUB_WORKSPACE/wasmtime
 
         # The following is only necessary because we are about to restore the
@@ -114,7 +114,7 @@ jobs:
         # cached build files (e.g., compiler/stdlib update, ...).
         find tools/external/binaryen/build -exec touch {} \; || true
 
-        ./harness.py -v compare-revs --prepare-only \
+        ./harness.py --verbose compare-revs --prepare-only \
           --rev1-wasmtime-cargo-build-args="--features=$wasmtime_features" \
           --rev2-wasmtime-cargo-build-args="--features=$wasmtime_features" \
           "${GITHUB_SHA}^1" "$GITHUB_SHA"
@@ -123,7 +123,7 @@ jobs:
       shell: bash
       working-directory: ./benchfx
       run: |
-        ./harness.py -v compare-revs \
+        ./harness.py compare-revs \
           $benchmark_filters \
           --max-allowed-regression=$max_allowed_regression \
           --rev1-wasmtime-cargo-build-args="--features=$wasmtime_features" \
