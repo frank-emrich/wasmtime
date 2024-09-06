@@ -44,24 +44,18 @@ jobs:
     - name: Install other deps
       run: sudo apt-get install cmake ocaml dune menhir libmenhir-ocaml-dev
 
-# FIXME the last git show must be removed for commits to main
-    - name: Show context info
+    - name: Show some context info
       working-directory: ./wasmtime
       run: |
-        echo "$GITHUB_WORKSPACE"
-        ls -l "$GITHUB_WORKSPACE"
-        ls -l "$GITHUB_WORKSPACE/wasmtime"
-        ls -l "$GITHUB_WORKSPACE/benchfx"
-        cargo --version
-        rustc --version
-        echo "benchmark_filters: $benchmark_filters"
-        echo "GITHUB_BASE_REF: $GITHUB_BASE_REF"
-        echo "GITHUB_HEAD_REF: $GITHUB_HEAD_REF"
-        echo "GITHUB_SHA: $GITHUB_SHA"
-        echo "GITHUB_SHA^1: ${GITHUB_SHA}^1"
-        #git show --oneline "${GITHUB_SHA}"
-        #git show --oneline "${GITHUB_SHA}^1"
-        #git show --oneline "${GITHUB_SHA}^2"
+        echo "cargo --version: $(cargo --version)"
+        echo "rustc --version: $(rustc --version)"
+        echo "GITHUB_SHA:"
+        echo "$GITHUB_SHA"
+        git show --no-patch --oneline $GITHUB_SHA
+        echo "Will compare against following commit:"
+        echo "GITHUB_SHA^1:"
+        git rev-parse "${GITHUB_SHA}^1"
+        git show --no-patch --oneline "${GITHUB_SHA}^1"
 
     - name: Initialize benchfx
       working-directory: ./benchfx
@@ -96,14 +90,18 @@ jobs:
           benchfx/tools/external/wasmtime1/target
           benchfx/tools/external/wasmtime2/target
 
+    # This is basically just a smoke test to make sure that the caching still
+    # does something sensible. If the internal folder structure that the harness
+    # uses ever changes, we would notice that here because the expected folders
+    # are not created anymore.
     - name: Inspect caches
+      if: ${{ steps.cache.outputs.cache-hit }}
       run: |
-        echo "cache hit: ${{ steps.cache.outputs.cache-hit }}"
-        ls -la benchfx/tools/external/binaryen
-        ls -la benchfx/tools/external/wasmtime1
-        ls -la benchfx/tools/external/wasmtime2
+        ls -la benchfx/tools/external/binaryen/build
+        ls -la benchfx/tools/external/wasmtime1/target
+        ls -la benchfx/tools/external/wasmtime2/target
 
-    - name: Prepare benchmarking (build binaryen, wasmtime revs, benchmarks)
+    - name: Prepare benchmarking (build binaryen, Wasmtime revs, benchmarks)
       shell: bash
       working-directory: ./benchfx
       run: |
@@ -113,7 +111,7 @@ jobs:
         # artifcats are for exactly the binaryen version we want. Thus, we make
         # them eligible for re-use by making them look sufficiently new. Note
         # that cmake would detect any external changes that invalidate the
-        # cached build files (e.g., compiler, stdlib update, ...).
+        # cached build files (e.g., compiler/stdlib update, ...).
         find tools/external/binaryen/build -exec touch {} \; || true
 
         ./harness.py -v compare-revs --prepare-only \
