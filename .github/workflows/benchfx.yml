@@ -56,6 +56,7 @@ jobs:
         echo "GITHUB_SHA^1:"
         git rev-parse "${GITHUB_SHA}^1"
         git show --no-patch --oneline "${GITHUB_SHA}^1"
+        echo "parent_github_sha=$(git rev-parse ${GITHUB_SHA}^1)" >> $GITHUB_ENV
 
     - name: Initialize benchfx
       working-directory: ./benchfx
@@ -80,11 +81,19 @@ jobs:
         popd
 
 
+    # We include the SHA of the base/parent commit in the cache key. This
+    # ensures that new cache entries are generated frequently instead of reusing
+    # an old version of the build artifacts. If no matching cache entry is
+    # found, the restore-keys value is chosen so that we may fall back to using
+    # cached data from a different Wasmtime commit. We always include the
+    # benchfx commit in all of the cache keys, meaning that updating benchfx
+    # itself effectively nukes the cache.
     - name: Restore build artifacts from cache
       uses: actions/cache@v4
       id: cache
       with:
-        key: benchfx-${{ env.benchfx_commit }}
+        key: benchfx-${{ env.benchfx_commit }}-wasmtime-${{ env.parent_github_sha }}
+        restore-keys: benchfx-${{ env.benchfx_commit }}
         path: |
           benchfx/tools/external/binaryen/build
           benchfx/tools/external/wasmtime1/target
