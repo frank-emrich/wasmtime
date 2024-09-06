@@ -22,7 +22,7 @@ env:
 
 jobs:
   bench:
-    name: Setup environment, prepare & run benchmarks
+    name: Setup and run benchmarks
     runs-on: ubuntu-latest
     steps:
     - name: Checkout wasmtime
