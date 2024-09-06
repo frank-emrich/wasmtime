@@ -77,10 +77,10 @@ jobs:
         # checking out any revision to get the .gitignore file, we check out the
         # revision that the harness wants to use. This way, the harness will not
         # "modify" any of the binaryen source files by switching to a different
-        # revision. This helps with caching.
+        # revision later. This helps with caching.
         pushd tools/external/binaryen
         git switch --detach --recurse-submodules \
-          "$(./harness print-config  | jq .BINARYEN_REVISION)"
+          "$(./harness.py print-config  | jq .BINARYEN_REVISION)"
         popd
 
 
