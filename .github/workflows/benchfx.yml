@@ -8,12 +8,15 @@ on:
       - main
 
 
-# Env variables
+# Configuration
 env:
   # benchfx main as of September 6, 2024
   benchfx_commit: db338e74ff9bc6c4c22b54c169c05dd592429cf0
+
   wasmtime_features: unsafe_wasmfx_stacks
+
   benchmark_filters: "--filter=**/*_wasmfx --filter=**/*_asyncify --filter=micro/**/*"
+
   # Maximum allowed performance regression of any benchmark in percent.
   max_allowed_regression: 7
 
