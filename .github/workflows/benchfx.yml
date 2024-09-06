@@ -73,14 +73,16 @@ jobs:
         # The following is only necessary because we are about to restore the
         # build directory inside the binaryen repo inside benchfx from the
         # cache. But the binaryen repo is currently a bare repo and doesn't have
-        # the .gitignore file with an entry for "build", yet. Instead of
-        # checking out any revision to get the .gitignore file, we check out the
-        # revision that the harness wants to use. This way, the harness will not
-        # "modify" any of the binaryen source files by switching to a different
-        # revision later. This helps with caching.
-        BINARYEN_REVISION="$(./harness.py print-config | jq .BINARYEN_REVISION)"
+        # the .gitignore file with an entry for "build", yet. But the harness
+        # refuses to work on anything other than a clean repo!
+        # Instead of checking out any revision to get just a proper .gitignore
+        # file, we check out the revision that the harness actually wants to
+        # use. This way, the harness will not "modify" any of the binaryen
+        # source files by switching to a different binaryen revision later. This
+        # helps with reusing the cached binaryen build artifacts.
+        BINARYEN_REVISION="$(./harness.py print-config | jq -r .BINARYEN_REVISION)"
         pushd tools/external/binaryen
-        git switch --detach --recurse-submodules $BINARYEN_REVISION
+        git switch --detach --recurse-submodules "$BINARYEN_REVISION"
         popd
 
 
@@ -107,10 +109,11 @@ jobs:
       run: |
         # The cache preserves mtimes, meaning that (the Makefile created by)
         # cmake would consider all files from the cache as outdated. Since the
-        # harness fixes the binaryen commit, we know exactly that the binaryen
-        # build artifcats are for binaryen version we want. Thus, we make them
-        # eligible for re-use by making them look sufficiently new. Note that
-        # cmake would detect any external changes that invalidate the cached
+        # harness fixes the binaryen commit, we know that the binaryen build
+        # artifcats are for exactly the binaryen version we want. Thus, we make
+        # them eligible for re-use by making them look sufficiently new. Note
+        # that cmake would detect any external changes that invalidate the
+        # cached build files (e.g., compiler, stdlib update, ...).
         find tools/external/binaryen/build -exec touch {} \; || true
 
         ./harness.py -v compare-revs --prepare-only \
