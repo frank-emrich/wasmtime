@@ -78,9 +78,9 @@ jobs:
         # revision that the harness wants to use. This way, the harness will not
         # "modify" any of the binaryen source files by switching to a different
         # revision later. This helps with caching.
+        BINARYEN_REVISION="$(./harness.py print-config | jq .BINARYEN_REVISION)"
         pushd tools/external/binaryen
-        git switch --detach --recurse-submodules \
-          "$(./harness.py print-config  | jq .BINARYEN_REVISION)"
+        git switch --detach --recurse-submodules $BINARYEN_REVISION
         popd
 
 
