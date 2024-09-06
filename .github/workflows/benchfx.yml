@@ -13,7 +13,7 @@ env:
   # TODO turn this into a fixed commit eventually (and delete hacking branch)
   benchfx_rev: wasmtime_ci_hacking
   wasmtime_features: unsafe_wasmfx_stacks
-  benchmark_filters: "--filter=**/*_wasmfx --filter=**/*_wasmfx_fiber --filter=**/*_asyncify"
+  benchmark_filters: "--filter=**/*_wasmfx --filter=**/*_asyncify --filter=micro/*"
   # Maximum allowed performance regression of any benchmark in percent.
   max_allowed_regression: 7
 
