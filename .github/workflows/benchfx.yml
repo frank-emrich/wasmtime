@@ -108,7 +108,7 @@ jobs:
         # The cache preserves mtimes, meaning that (the Makefile created by)
         # cmake would consider all files from the cache as outdated. Since the
         # harness fixes the binaryen commit, we know that the binaryen build
-        # artifcats are for exactly the binaryen version we want. Thus, we make
+        # artifacts are for the exact binaryen commit we want. Thus, we make
         # them eligible for re-use by making them look sufficiently new. Note
         # that cmake would detect any external changes that invalidate the
         # cached build files (e.g., compiler/stdlib update, ...).
