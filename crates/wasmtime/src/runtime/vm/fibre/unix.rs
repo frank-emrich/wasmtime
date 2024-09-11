@@ -3,15 +3,15 @@
 //!
 //! ```text
 //! 0xB000 +-----------------------+   <- top of stack (TOS)
-//!        | *const u8             |   <- "dummy return PC"
-//! 0xAff8 +-----------------------+
 //!        | saved PC              |
-//! 0xAff0 +-----------------------+
+//! 0xAff8 +-----------------------+
 //!        | saved RBP             |
-//! 0xAfe8 +-----------------------+
+//! 0xAff0 +-----------------------+
 //!        | saved RSP             |
-//! 0xAfe0 +-----------------------+  <- beginning of "control context",
-//!        |                       |     16-byte aligned
+//! 0xAfe8 +-----------------------+   <- beginning of "control context",
+//!        | 0                     |
+//! 0xAfe0 +-----------------------+   <- beginning of usable stack space
+//!        |                       |      (16-byte aligned)
 //!        |                       |
 //!        ~        ...            ~   <- actual native stack space to use
 //!        |                       |
@@ -20,42 +20,28 @@
 //! 0x0000 +-----------------------+
 //! ```
 //!
-//! The meaning of the fields is as follows:
+//! The "control context" indicates how to resume a computation. The layout is
+//! determined by Cranelift's stack_switch instruction, which reads and writes
+//! these fields. The fields used as follows, where we distinguish two cases:
 //!
-//! 1. "control context"  (starting at at TOS - 0x20, 0xAfe0 above):
-//!
-//! These values indicate how to resume computation.
-//! We  distinguish two cases
-//!
-//! 1.1
+//! 1
 //! If the continuation is currently active (i.e., running directly, or ancestor
 //! of the running continuation), it stores the PC, RSP, and RBP of the *parent* of
 //! the running continuation.
 //!
-//! 1.2 If the first picture shows a suspended computation, then store the PC,
+//! 2 If the picture shows a suspended computation, then store the PC,
 //! RSP, and RBP at the time of the suspension.
 //!
-//! 2. Dummy return PC (at TOS - 0x10, 0xAff0 above):
-//! The goal of the layout described in the previous two pictures is to ensure
-//! the following: Whenever a continuation is active, the values at TOS - 0x08
-//! and TOS - 0x10 together look like the beginning of an ordinary stack frame:
-//! Address TOS - 0x10 (called 0xAff0 in first picutre) denotes its frame
-//! pointer, and in turn contains the frame pointer of its "caller". Here, the
-//! "caller" is supposed to be the parent continuation,
-//!  In order to make sure that things
-//! indeed look like a valid stack, we need to put a return PC above the frame
-//! pointer. Thus, at TOS - 0x08 (called 0xAff8 in first picture), we store a PC
-//! that's inside wasmtime_fibre_switch. Note that this PC is never used to
-//! execute an actual ret instruction, but it ensures that any external tool
-//! walking the frame pointer chain to construct a backtrace sees that the
-//! "calling" function is wasmtime_fibre_switch, and the latter's caller is the
-//! function that invoked `resume`.
-//!
 //! Note that this design ensures that external tools can construct backtraces
-//! in the presence of stack switching by using frame pointers only. Wasmtime's
-//! own mechanism for constructing back traces also relies on frame pointer
-//! chains. However, it understands continuations and does not rely on the
-//! trickery outlined here to go from the frames in one continuation to the
+//! in the presence of stack switching by using frame pointers only:
+//! The wasmtime_fibre_start trampoline uses the address of the RBP field in the
+//! control context (0xAff0) as its frame pointer. This means that when passing
+//! the wasmtime_fibre_start frame while doing frame pointer walking, the parent
+//! of that frame is the last frame in the parent of this continuation.
+//!
+//! Wasmtime's own mechanism for constructing backtraces also relies on frame
+//! pointer chains. However, it understands continuations and does not rely on
+//! the trickery outlined here to go from the frames in one continuation to the
 //! parent.
 
 #![allow(unused_macros)]
@@ -184,7 +170,6 @@ impl FiberStack {
                 caller_vmctx,
                 args_ptr,
                 args_capacity,
-                wasmtime_fibre_switch as *const u8,
             );
         }
     }
@@ -238,7 +223,6 @@ extern "C" {
         caller_vmctx: *mut VMContext,
         args_ptr: *mut ValRaw,
         args_capacity: usize,
-        wasmtime_fibre_switch_pc: *const u8,
     );
     fn wasmtime_fibre_switch(top_of_stack: *mut u8, payload: u64) -> u64;
     #[allow(dead_code)] // only used in inline assembly for some platforms

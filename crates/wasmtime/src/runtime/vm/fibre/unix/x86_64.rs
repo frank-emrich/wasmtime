@@ -20,16 +20,15 @@ use wasmtime_asm_macros::asm_func;
 asm_func!(
     "wasmtime_fibre_switch",
     "
-        mov rbp, -0x18[rdi]
-        mov rsp, -0x20[rdi]
+        mov rbp, -0x10[rdi]
+        mov rsp, -0x18[rdi]
 
-        // We return the payload (i.e., the second argument to this function)
-        // This must be compatible with the stack_switch instruction,
-        // which uses RDI for the payload
-        mov r8, rdi
-        mov rdi, rsi
+        // We pass the payload (i.e., the second argument to this function) to
+        // the parent stack. The stack_switch instruction uses RDI for this
+        // purpose.
+        xchg rdi, rsi
 
-        jmp -0x10[r8]
+        jmp -0x08[rsi]
     ",
 );
 
@@ -39,7 +38,6 @@ asm_func!(
 //    caller_vmctx(rdx): *mut VMContext
 //    args_ptr(rcx): *mut ValRaw
 //    args_capacity(r8) : u64
-//    wasmtime_fibre_switch_pc(r9): *mut u8,
 // )
 //
 // This function installs the launchpad for the computation to run on the fiber,
@@ -57,10 +55,10 @@ asm_func!(
 //  Offset from    |
 //       TOS       | Contents
 //  ---------------|-----------------------------------------------------------
-//          -0x08   wasmtime_fibre_switch_pc
-//          -0x10   address of wasmtime_fibre_start function
-//          -0x18   TOS - 0x18
-//          -0x20   TOS - 0x40
+//          -0x08   address of wasmtime_fibre_start function (future PC)
+//          -0x10   TOS - 0x10 (future RBP)
+//          -0x18   TOS - 0x40 (future RSP)
+//          -0x20   0
 //          -0x28   func_ref
 //          -0x30   caller_vmctx
 //          -0x38   args_ptr
@@ -70,27 +68,28 @@ asm_func!(
 asm_func!(
     "wasmtime_fibre_init",
     "
-        // Here we're going to set up a stack frame as expected by
-        // `wasmtime_fibre_switch`. The values we store here will get restored into
+        // Here we're going to set up a control context  as expected by
+        // `stack_switch` instruction. The values we store here will get restored into
         // registers by that function and the `wasmtime_fibre_start` function will
         // take over and understands which values are in which registers.
         //
-        // Install wasmtime_fibre_switch_pc at TOS - 0x08:
+
+        // Install wasmtime_fibre_start PC at TOS - 0x08
+        lea r9, {start}[rip]
         mov -0x08[rdi], r9
 
-        // Install wasmtime_fibre_start PC at TOS - 0x10
-        lea r9, {start}[rip]
-        mov -0x10[rdi], r9
-
-        // Store TOS - 0x18 at TOS - 0x18
+        // Store TOS - 0x10 at TOS - 0x10
         // This is the frame pointer used in the bottommost frame within the stack
-        lea rax, -0x18[rdi]
-        mov -0x18[rdi], rax
+        lea rax, -0x10[rdi]
+        mov -0x10[rdi], rax
 
-        // Store TOS - 0x40 at TOS - 0x20
+        // Store TOS - 0x40 at TOS - 0x18
         // This is the stack pointer for the bottommost frame within the stack
         lea rax, -0x40[rdi]
-        mov -0x20[rdi], rax
+        mov -0x18[rdi], rax
+
+        // Alignment (and makes sure that wasmtime_fibre_start cannot return)
+        mov qword ptr -0x20[rdi], 0
 
         // Install remaining arguments
         mov -0x28[rdi], rsi
@@ -116,19 +115,16 @@ asm_func!(
 // If you're curious a decent introduction to CFI things and unwinding is at
 // https://www.imperialviolet.org/2017/01/18/cfi.html
 //
-// Note that this function is never called directly. It is only ever entered via
-// the return instruction in wasmtime_fibre_switch, with a stack that
-// was prepared by wasmtime_fibre_init before calling wasmtime_fibre_switch.
+// Note that this function is never called directly. It is only ever entered
+// when a `stack_switch` instruction loads its address when switching to a stack
+// prepared by `wasmtime_fibre_init`.
 //
-// This execution of wasmtime_fibre_switch on a stack as described in the
-// comment on wasmtime_fibre_init leads to the following values in various
-// registers at the right before the RET instruction of the former is executed:
+// Executing `stack_switch` on a stack prepared by `wasmtime_fibre_init`  as described in the
+// comment on `wasmtime_fibre_init` leads to the following values in various
+// registers when execution of wasmtime_fibre_start begins::
 //
 // RSP: TOS - 0x40
-// RBP: TOS - 0x18
-
-// Note that after executing the RET instruction in wasmtime_fibre_switch,
-// we then start executing wasmtime_fibre_start with RSP = TOS - 0x10.
+// RBP: TOS - 0x10
 asm_func!(
     "wasmtime_fibre_start",
     "
@@ -198,7 +194,7 @@ asm_func!(
         // Note that fiber_start never returns: Instead, it // resume to the
         // parent FiberStack via wasmtime_fibre_switch.
 
-        pop r8 // args_capacity
+        pop r8  // args_capacity
         pop rcx // args_ptr
         pop rdx // caller_vmctx
         pop rsi // func_ref

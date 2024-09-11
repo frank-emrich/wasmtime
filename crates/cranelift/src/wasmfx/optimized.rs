@@ -1596,8 +1596,8 @@ pub(crate) fn translate_resume<'a>(
         // );
 
         let fiber_stack_tos = co.get_fiber_stack_tos(env, builder);
-        // The context is stored 32 byte below the top of stack.
-        let resume_ptr_loc = builder.ins().iadd_imm(fiber_stack_tos, -0x20);
+        // The context is stored 24 bytes below the top of stack.
+        let resume_ptr_loc = builder.ins().iadd_imm(fiber_stack_tos, -0x18);
         let resume_payload: u64 = wasmtime_continuations::ControlEffect::resume().into();
         let resume_payload = builder.ins().iconst(I64, resume_payload as i64);
 
@@ -1693,8 +1693,8 @@ pub(crate) fn translate_resume<'a>(
         // TODO: Refactor this
         let cref = tc::VMContRef::new(parent_contref, env.pointer_type());
         let fiber_stack_tos = cref.get_fiber_stack_tos(env, builder);
-        // The resume context is 32 byte below the top of stack.
-        let target_context_loc = builder.ins().iadd_imm(fiber_stack_tos, -0x20);
+        // The control context is stored 24 bytes below the top of stack.
+        let target_context_loc = builder.ins().iadd_imm(fiber_stack_tos, -0x18);
         let suspend_payload = resume_result.0 .0;
 
         // FIXME(frank-emrich) should we use `suspend_tag_addr` as payload instead?
@@ -1839,8 +1839,8 @@ pub(crate) fn translate_suspend<'a>(
     let cref = tc::VMContRef::new(suspend_contref, env.pointer_type());
 
     let fiber_stack_tos = cref.get_fiber_stack_tos(env, builder);
-    // The resume context pointer is 32 byte below the top of stack.
-    let target_context_loc = builder.ins().iadd_imm(fiber_stack_tos, -0x20);
+    // The control context is stored 24 bytes below the top of stack.
+    let target_context_loc = builder.ins().iadd_imm(fiber_stack_tos, -0x18);
 
     let suspend_payload = ControlEffect::make_suspend(env, builder, tag_addr).0 .0;
 
