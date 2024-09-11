@@ -215,22 +215,11 @@ impl FiberStack {
 
     }
 
-    pub(crate) fn resume(&self) -> ControlEffect {
-        unsafe {
-            let reason = ControlEffect::resume().into();
-            ControlEffect::from(wasmtime_fibre_switch(self.top, reason))
-        }
-    }
-
-    pub fn suspend(&self, payload: ControlEffect) {
-        suspend_fiber(self.top, payload)
-    }
 }
 
-pub fn suspend_fiber(top_of_stack: *mut u8, payload: ControlEffect) {
+pub fn switch_to_parent(top_of_stack: *mut u8) {
     unsafe {
-        let arg = payload.into();
-        wasmtime_fibre_switch(top_of_stack, arg);
+        wasmtime_fibre_switch_to_parent(top_of_stack);
     }
 }
 
@@ -253,7 +242,7 @@ impl Drop for FiberStack {
 }
 
 extern "C" {
-    fn wasmtime_fibre_switch(top_of_stack: *mut u8, payload: u64) -> u64;
+    fn wasmtime_fibre_switch_to_parent(top_of_stack: *mut u8);
     #[allow(dead_code)] // only used in inline assembly for some platforms
     fn wasmtime_fibre_start();
 }
@@ -287,8 +276,7 @@ extern "C" fn fiber_start(
         array_call_trampoline(callee_vmxtx, caller_vmxtx, args_ptr, args_capacity);
 
         // Switch back to parent, indicating that the continuation returned.
-        let reason = ControlEffect::return_();
-        suspend_fiber(top_of_stack, reason)
+        switch_to_parent(top_of_stack);
     }
 }
 

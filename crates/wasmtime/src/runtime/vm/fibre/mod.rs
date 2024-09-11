@@ -83,15 +83,6 @@ cfg_if::cfg_if! {
                 self.0.range()
             }
 
-            /// Resumes execution of this fiber.
-            pub fn resume(&self) -> ControlEffect {
-                self.0.resume()
-            }
-
-            pub fn suspend(&self, payload: ControlEffect) {
-                self.0.suspend(payload)
-            }
-
             pub fn initialize(
                 &self,
                 func_ref: *const VMFuncRef,

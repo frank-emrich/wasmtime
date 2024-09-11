@@ -9,24 +9,26 @@ use wasmtime_asm_macros::asm_func;
 
 // fn(
 //    top_of_stack(rdi): *mut u8
-//    payload(rsi) : u64
 // )
 //
-// The payload (i.e., second argument) is return unchanged, allowing data to be
-// passed from the continuation that calls `wasmtime_fibre_switch` to the one
-// that subsequently runs.
-//
-// This function is only used to return to the parent stack.
+// Switches to the parent of the stack identified by `top_of_stack`. This
+// functions is only intended for the case where we have finished execution on
+// the current stack and are returning to the parent.
+// Thus, this function never returns.
 asm_func!(
-    "wasmtime_fibre_switch",
+    "wasmtime_fibre_switch_to_parent",
     "
-        mov rbp, -0x10[rdi]
-        mov rsp, -0x18[rdi]
+        // We need rdi later on, use RSI for top of stack instead.
+        mov rsi, rdi
 
-        // We pass the payload (i.e., the second argument to this function) to
-        // the parent stack. The stack_switch instruction uses RDI for this
-        // purpose.
-        xchg rdi, rsi
+        mov rbp, -0x10[rsi]
+        mov rsp, -0x18[rsi]
+
+        // The stack_switch instruction uses register RDI for the payload.
+        // Here, the payload indicates that we are returning (value 0).
+        // See the test case at the end of this file to keep this in sync with
+        // ControlEffect::return_()
+        mov rdi, 0
 
         jmp -0x08[rsi]
     ",
@@ -138,3 +140,10 @@ asm_func!(
     ",
     fiber_start = sym super::fiber_start,
 );
+
+
+#[test]
+fn test_return_payload() {
+  // The following assumption is baked into `wasmtime_fibre_switch_to_parent`.
+  assert_eq!(u64::from(wasmtime_continuations::ControlEffect::return_()), 0);
+}
