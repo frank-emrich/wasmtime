@@ -156,6 +156,30 @@ impl FiberStack {
         Some(base..base + self.len)
     }
 
+    /// This function installs the launchpad for the computation to run on the
+    /// fiber, such that executing a `stack_switch` instruction on the stack
+    /// actually runs the desired computation.
+    ///
+    /// Concretely, switching to the stack prepared by this function
+    /// causes that we enter `wasmtime_fibre_start`, which then in turn
+    /// calls `fiber_start` with  the following arguments:
+    /// func_ref, caller_vmctx, args_ptr, args_capacity
+    ///
+    /// The layout of the FiberStack near the top of stack (TOS) *after* running
+    /// this function is as follows:
+    ///
+    ///  Offset from    |
+    ///       TOS       | Contents
+    ///  ---------------|-------------------------------------------------------
+    ///          -0x08   address of wasmtime_fibre_start function (future PC)
+    ///          -0x10   TOS - 0x10 (future RBP)
+    ///          -0x18   TOS - 0x40 (future RSP)
+    ///          -0x20   0 (alignment and wasmtime_fibre_start can't return)
+    ///          -0x28   func_ref
+    ///          -0x30   caller_vmctx
+    ///          -0x38   args_ptr
+    ///          -0x40   args_capacity
+    ///          -0x48   undefined
     pub fn initialize(
         &self,
         func_ref: *const VMFuncRef,
@@ -163,15 +187,32 @@ impl FiberStack {
         args_ptr: *mut ValRaw,
         args_capacity: usize,
     ) {
+        let tos = self.top;
+
         unsafe {
-            wasmtime_fibre_init(
-                self.top,
-                func_ref,
-                caller_vmctx,
-                args_ptr,
-                args_capacity,
-            );
+            let store = |tos_neg_offset, value| {
+                let target = tos.sub(tos_neg_offset) as *mut usize;
+                target.write(value)
+            };
+
+            // Yes, these offsets are technically redundant, but they make
+            // things more readable.
+            let to_store = [
+                (0x08, wasmtime_fibre_start as usize),
+                (0x10, tos.sub(0x10) as usize),
+                (0x18, tos.sub(0x40) as usize),
+                (0x20, 0),
+                (0x28, func_ref as usize),
+                (0x30, caller_vmctx as usize),
+                (0x38, args_ptr as usize),
+                (0x40, args_capacity),
+            ];
+
+            for (offset, data) in to_store {
+                store(offset, data);
+            }
         }
+
     }
 
     pub(crate) fn resume(&self) -> ControlEffect {
@@ -212,18 +253,6 @@ impl Drop for FiberStack {
 }
 
 extern "C" {
-    // We allow "improper ctypes" here (i.e., passing values as parameters in an
-    // extern C function that Rust deems non FFI-safe): The two problematic
-    // parameters, namely `func_ref` and `args_ptr`, are piped through into
-    // `fiber_start` (a Rust function), and not accessed in between.
-    #[allow(improper_ctypes)]
-    fn wasmtime_fibre_init(
-        top_of_stack: *mut u8,
-        func_ref: *const VMFuncRef,
-        caller_vmctx: *mut VMContext,
-        args_ptr: *mut ValRaw,
-        args_capacity: usize,
-    );
     fn wasmtime_fibre_switch(top_of_stack: *mut u8, payload: u64) -> u64;
     #[allow(dead_code)] // only used in inline assembly for some platforms
     fn wasmtime_fibre_start();
