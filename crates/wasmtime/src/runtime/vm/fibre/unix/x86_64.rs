@@ -52,9 +52,9 @@ asm_func!(
 // when a `stack_switch` instruction loads its address when switching to a stack
 // prepared by `wasmtime_fibre_init`.
 //
-// Executing `stack_switch` on a stack prepared by `wasmtime_fibre_init`  as described in the
-// comment on `wasmtime_fibre_init` leads to the following values in various
-// registers when execution of wasmtime_fibre_start begins::
+// Executing `stack_switch` on a stack prepared by `wasmtime_fibre_init` as
+// described in the comment on `wasmtime_fibre_init` leads to the following
+// values in various registers when execution of wasmtime_fibre_start begins:
 //
 // RSP: TOS - 0x40
 // RBP: TOS - 0x10
@@ -64,57 +64,10 @@ asm_func!(
         // Use the `simple` directive on the startproc here which indicates that
         // some default settings for the platform are omitted, since this
         // function is so nonstandard
-        //.cfi_startproc simple
-        //.cfi_def_cfa_offset 0
+        .cfi_startproc simple
 
-        // This is where things get special, we're specifying a custom dwarf
-        // expression for how to calculate the CFA. The goal here is that we
-        // need to load the parent's stack pointer just before the call it made
-        // into `wasmtime_fibre_switch`. Note that the CFA value changes over
-        // time as well because a fiber may be resumed multiple times from
-        // different points on the original stack. This means that our custom
-        // CFA directive involves `DW_OP_deref`, which loads data from memory.
-        //
-        // The expression we're encoding here is that the CFA, the stack pointer
-        // of whatever performed `stack_switch`, is:
-        //
-        //        *$rsp + 0x10
-        //
-        // $rsp is the stack pointer of `wasmtime_fibre_start` at the time the
-        // next instruction after the `.cfi_escape` is executed. Our $rsp at the
-        // start of this function is 16 bytes below the top of the stack (0xAff0
-        // in the diagram in unix.rs). The $rsp of our
-        // parent invocation is stored at that location, so we dereference the
-        // stack pointer to load it.
-        //
-        // After dereferencing, though, we have the $rsp value after performing
-        // `stack_switch` instruction in the parent, thus we have the stored
-        // RIP and RBP on the stack first.
-        // Hence we offset another 0x10 bytes.
-        // .cfi_escape 0x0f, /* DW_CFA_def_cfa_expression */ \
-        //     4,            /* the byte length of this expression */ \
-        //     0x57,         /* DW_OP_reg7 (rsp) */ \
-        //     0x06,         /* DW_OP_deref */ \
-        //     0x23, 0x10    /* DW_OP_plus_uconst 0x10 */
+        // TODO(frank-emrich): Restore DWARF information for this function
 
-        // And now after we've indicated where our CFA is for our parent
-        // function, we can define that where all of the saved registers are
-        // located. This uses standard `.cfi` directives which indicate that
-        // these registers are all stored relative to the CFA. Note that this
-        // order is kept in sync with the above register spills in
-        // `wasmtime_fibre_switch`.
-        //.cfi_rel_offset rip, -8
-        //.cfi_rel_offset rbp, -16
-
-
-        // The body of this function is pretty similar. All our parameters are
-        // already loaded into registers by the switch function. The
-        // `wasmtime_fibre_init` routine arranged the various values to be
-        // materialized into the registers used here. Our job is to then move
-        // the values into the ABI-defined registers and call the entry-point
-        // (i.e., the fiber_start function).
-        // Note that `call` is used here to leave this frame on the stack so we
-        // can use the dwarf info here for unwinding.
         //
         // Note that the next 5 instructions amount to calling fiber_start
         // with the following arguments:
@@ -124,8 +77,8 @@ asm_func!(
         // 4. args_ptr
         // 5. args_capacity
         //
-        // Note that fiber_start never returns: Instead, it // resume to the
-        // parent FiberStack via wasmtime_fibre_switch.
+        // Note that `fiber_start` never returns: Instead, it resume to the
+        // parent using `wasmtime_fibre_switch_to_parent`.
 
         pop r8  // args_capacity
         pop rcx // args_ptr
@@ -136,7 +89,7 @@ asm_func!(
 
         // We should never get here and purposely emit an invalid instruction.
         ud2
-        //.cfi_endproc
+       .cfi_endproc
     ",
     fiber_start = sym super::fiber_start,
 );
