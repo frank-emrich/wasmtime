@@ -79,7 +79,7 @@ pub mod optimized {
     };
     use core::cmp;
     use core::mem;
-    use wasmtime_continuations::{debug_println, ControlEffect, ENABLE_DEBUG_PRINTING};
+    use wasmtime_continuations::{debug_println, ENABLE_DEBUG_PRINTING};
     pub use wasmtime_continuations::{Payloads, StackLimits, State};
 
     /// Fibers used for continuations
