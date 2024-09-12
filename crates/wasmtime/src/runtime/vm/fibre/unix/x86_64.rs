@@ -50,10 +50,10 @@ asm_func!(
 //
 // Note that this function is never called directly. It is only ever entered
 // when a `stack_switch` instruction loads its address when switching to a stack
-// prepared by `wasmtime_fibre_init`.
+// prepared by `FiberStack::initialize`.
 //
-// Executing `stack_switch` on a stack prepared by `wasmtime_fibre_init` as
-// described in the comment on `wasmtime_fibre_init` leads to the following
+// Executing `stack_switch` on a stack prepared by `FiberStack::initialize` as
+// described in the comment on `FiberStack::initialize` leads to the following
 // values in various registers when execution of wasmtime_fibre_start begins:
 //
 // RSP: TOS - 0x40
