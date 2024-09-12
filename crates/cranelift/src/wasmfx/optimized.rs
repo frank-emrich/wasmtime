@@ -1726,9 +1726,10 @@ pub(crate) fn translate_resume<'a>(
         // We pass on the previosuly received ControlEffect value as is.
         let suspend_payload = resume_result.0 .0;
 
-        // We suspend, thus deferring handling to the parent.
-        // We do nothing about tag *parameters*, these remain unchanged within the
-        // payload buffer associated with the whole VMContext.
+        // We suspend, thus deferring handling to the parent.  We do
+        // nothing about tag *parameters*, these remain unchanged
+        // within the payload buffer associated with the whole
+        // VMContext.
         builder
             .ins()
             .stack_switch(control_context_ptr, control_context_ptr, suspend_payload);
