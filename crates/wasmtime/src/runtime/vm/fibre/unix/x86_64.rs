@@ -61,12 +61,9 @@ asm_func!(
 asm_func!(
     "wasmtime_fibre_start",
     "
-        // Use the `simple` directive on the startproc here which indicates that
-        // some default settings for the platform are omitted, since this
-        // function is so nonstandard
-        .cfi_startproc simple
+        // TODO(frank-emrich): Restore DWARF information for this function. In
+        // the meantime, debugging is possible using frame pointer walking.
 
-        // TODO(frank-emrich): Restore DWARF information for this function
 
         //
         // Note that the next 5 instructions amount to calling fiber_start
@@ -89,7 +86,6 @@ asm_func!(
 
         // We should never get here and purposely emit an invalid instruction.
         ud2
-       .cfi_endproc
     ",
     fiber_start = sym super::fiber_start,
 );
