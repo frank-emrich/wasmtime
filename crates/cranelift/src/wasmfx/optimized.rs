@@ -1645,7 +1645,7 @@ pub(crate) fn translate_resume<'a>(
         emit_debug_println!(
             env,
             builder,
-            "[resume] libcall finished, result is {:p}",
+            "[resume] continuing after stack_switch, result is {:p}",
             result
         );
 
