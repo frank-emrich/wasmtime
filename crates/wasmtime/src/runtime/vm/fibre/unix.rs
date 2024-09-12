@@ -162,7 +162,7 @@ impl FiberStack {
     /// Concretely, switching to the stack prepared by this function
     /// causes that we enter `wasmtime_fibre_start`, which then in turn
     /// calls `fiber_start` with  the following arguments:
-    /// func_ref, caller_vmctx, args_ptr, args_capacity
+    /// TOS, func_ref, caller_vmctx, args_ptr, args_capacity
     ///
     /// The layout of the FiberStack near the top of stack (TOS) *after* running
     /// this function is as follows:
