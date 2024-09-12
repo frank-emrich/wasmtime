@@ -8,7 +8,6 @@ cfg_if::cfg_if! {
 
         use std::io;
         use std::ops::Range;
-        use wasmtime_continuations::ControlEffect;
 
         use crate::runtime::vm::{VMContext, VMFuncRef, ValRaw};
 

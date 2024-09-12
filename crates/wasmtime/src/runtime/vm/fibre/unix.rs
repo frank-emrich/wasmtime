@@ -50,7 +50,6 @@ use std::alloc::{alloc, dealloc, Layout};
 use std::io;
 use std::ops::Range;
 use std::ptr;
-use wasmtime_continuations::ControlEffect;
 
 use crate::runtime::vm::{VMContext, VMFuncRef, VMOpaqueContext, ValRaw};
 
