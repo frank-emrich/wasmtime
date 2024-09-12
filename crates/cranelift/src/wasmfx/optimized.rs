@@ -1864,8 +1864,8 @@ pub(crate) fn translate_suspend<'a>(
     emit_debug_println!(env, builder, "[suspend] suspending with tag {:p}", tag_addr);
 
     // This traps with an unhandled tag code if we are on the main stack.
-    let suspend_contref = typed_continuations_load_continuation_reference(env, builder);
-    let cref = tc::VMContRef::new(suspend_contref, env.pointer_type());
+    let contref = typed_continuations_load_continuation_reference(env, builder);
+    let cref = tc::VMContRef::new(contref, env.pointer_type());
 
     let fiber_stack = cref.get_fiber_stack(env, builder);
     let control_context_ptr = fiber_stack.load_control_context(env, builder);
@@ -1877,7 +1877,7 @@ pub(crate) fn translate_suspend<'a>(
         .stack_switch(control_context_ptr, control_context_ptr, suspend_payload);
 
     let return_values =
-        typed_continuations_load_tag_return_values(env, builder, suspend_contref, tag_return_types);
+        typed_continuations_load_tag_return_values(env, builder, contref, tag_return_types);
 
     return_values
 }
