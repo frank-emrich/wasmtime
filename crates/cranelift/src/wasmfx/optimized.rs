@@ -1383,6 +1383,9 @@ pub(crate) fn typed_continuations_store_payloads<'a>(
     }
 }
 
+/// We only use this when we want to get the current continuation for the
+/// purpose of suspending. Thus, if there is no such continuation (because we
+/// are on the main stack), we trap with an unhandled tag error.
 pub(crate) fn typed_continuations_load_continuation_reference<'a>(
     env: &mut crate::func_environ::FuncEnvironment<'a>,
     builder: &mut FunctionBuilder,
@@ -1390,11 +1393,7 @@ pub(crate) fn typed_continuations_load_continuation_reference<'a>(
     let vmctx = env.vmctx_val(&mut builder.cursor());
     let vmctx = tc::VMContext::new(vmctx, env.pointer_type());
     let active_stack_chain = vmctx.load_stack_chain(env, builder);
-    active_stack_chain.unwrap_continuation_or_trap(
-        env,
-        builder,
-        ir::TrapCode::User(crate::DEBUG_ASSERT_TRAP_CODE),
-    )
+    active_stack_chain.unwrap_continuation_or_trap(env, builder, ir::TrapCode::UnhandledTag)
 }
 
 pub(crate) fn translate_cont_bind<'a>(
@@ -1625,14 +1624,6 @@ pub(crate) fn translate_resume<'a>(
             tc::StackChain::from_continuation(builder, resume_contref, env.pointer_type());
         resume_stackchain.write_limits_to_vmcontext(env, builder, vm_runtime_limits_ptr);
 
-        // call_builtin!(
-        //     builder,
-        //     env,
-        //     let result =
-        //         tc_resume(
-        //         resume_contref)
-        // );
-
         let fiber_stack = co.get_fiber_stack(env, builder);
         let control_context_ptr = fiber_stack.load_control_context(env, builder);
 
@@ -1728,14 +1719,13 @@ pub(crate) fn translate_resume<'a>(
             ir::TrapCode::UnhandledTag,
         );
 
-        // TODO: Refactor this
         let cref = tc::VMContRef::new(parent_contref, env.pointer_type());
         let fiber_stack = cref.get_fiber_stack(env, builder);
         let control_context_ptr = fiber_stack.load_control_context(env, builder);
 
+        // We pass on the previosuly received ControlEffect value as is.
         let suspend_payload = resume_result.0 .0;
 
-        // FIXME(frank-emrich) should we use `suspend_tag_addr` as payload instead?
         // We suspend, thus deferring handling to the parent.
         // We do nothing about tag *parameters*, these remain unchanged within the
         // payload buffer associated with the whole VMContext.
@@ -1872,8 +1862,8 @@ pub(crate) fn translate_suspend<'a>(
     let tag_addr = shared::tag_address(env, builder, tag_index);
     emit_debug_println!(env, builder, "[suspend] suspending with tag {:p}", tag_addr);
 
+    // This traps with an unhandled tag code if we are on the main stack.
     let suspend_contref = typed_continuations_load_continuation_reference(env, builder);
-    // TODO: Trap if this is null
     let cref = tc::VMContRef::new(suspend_contref, env.pointer_type());
 
     let fiber_stack = cref.get_fiber_stack(env, builder);
