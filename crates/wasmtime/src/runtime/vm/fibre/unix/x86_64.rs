@@ -18,7 +18,7 @@ use wasmtime_asm_macros::asm_func;
 asm_func!(
     "wasmtime_fibre_switch_to_parent",
     "
-        // We need rdi later on, use RSI for top of stack instead.
+        // We need RDI later on, use RSI for top of stack instead.
         mov rsi, rdi
 
         mov rbp, -0x10[rsi]
