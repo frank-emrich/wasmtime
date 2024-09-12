@@ -325,8 +325,8 @@ pub(crate) mod typed_continuation_helpers {
     /// Compile-time representation of `crate::runtime::vm::fibre::FiberStack`.
     pub struct FiberStack {
         /// This is NOT the "top of stack" address of the stack itself. In line
-        /// with how the (runtime) `FiberStack` type works, this a pointer to
-        /// where the tos address is stored!
+        /// with how the (runtime) `FiberStack` type works, this is a pointer to
+        /// the TOS address.
         pointer_to_tos: ir::Value,
     }
 
@@ -1165,8 +1165,8 @@ pub(crate) mod typed_continuation_helpers {
 
     impl FiberStack {
         /// The parameter is NOT the "top of stack" address of the stack itself. In line
-        /// with how the (runtime) `FiberStack` type works, this a pointer to
-        /// where the tos address is stored!
+        /// with how the (runtime) `FiberStack` type works, this is a pointer to
+        /// the TOS address.
         pub fn new(pointer_to_tos: ir::Value) -> Self {
             Self { pointer_to_tos }
         }
