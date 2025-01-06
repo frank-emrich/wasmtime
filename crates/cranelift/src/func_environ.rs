@@ -1831,7 +1831,7 @@ impl FuncEnvironment<'_> {
                 self.ensure_table_exists(builder.func, table_index);
                 let (table_entry_addr, flags) = table_data.prepare_table_addr(self, builder, index);
                 Ok(builder.ins().load(
-                    stack_switching::fatpointer::pointer_type(self.pointer_type()),
+                    stack_switching::fatpointer::POINTER_TYPE,
                     flags,
                     table_entry_addr,
                     0,
@@ -2305,7 +2305,7 @@ impl FuncEnvironment<'_> {
     ) -> WasmResult<ir::Value> {
         let byte_is_null = match builder.func.dfg.value_type(value) {
             // continuation
-            ty if ty == stack_switching::fatpointer::pointer_type(self.pointer_type()) => {
+            ty if ty == stack_switching::fatpointer::POINTER_TYPE => {
                 let (_revision, contref) =
                     stack_switching::fatpointer::deconstruct(self, builder, value);
                 builder

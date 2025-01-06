@@ -208,7 +208,7 @@ fn wasm_call_signature(
 fn reference_type(wasm_ht: WasmHeapType, pointer_type: ir::Type) -> ir::Type {
     match wasm_ht.top() {
         WasmHeapTopType::Func => pointer_type,
-        WasmHeapTopType::Cont => stack_switching::fatpointer::pointer_type(pointer_type),
+        WasmHeapTopType::Cont => stack_switching::fatpointer::POINTER_TYPE,
         WasmHeapTopType::Any | WasmHeapTopType::Extern => ir::types::I32,
     }
 }
