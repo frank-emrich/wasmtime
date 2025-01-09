@@ -308,6 +308,12 @@ wasmtime_option_group! {
         pub trap_on_grow_failure: Option<bool>,
         /// Maximum execution time of wasm code before timing out (1, 2s, 100ms, etc)
         pub timeout: Option<Duration>,
+        /// Size of stacks created with cont.new instructions
+        pub stack_switching_stack_size: Option<usize>,
+        /// Space that must be left on stack when starting execution of a
+        /// function while running on a continuation stack.
+        /// Must be smaller than the `wasmfx_stack_size` option above.
+        pub stack_switching_red_zone_size: Option<usize>,
         /// Configures support for all WebAssembly proposals implemented.
         pub all_proposals: Option<bool>,
         /// Configure support for the bulk memory proposal.
@@ -345,6 +351,10 @@ wasmtime_option_group! {
         pub component_model_multiple_returns: Option<bool>,
         /// Configure support for the function-references proposal.
         pub function_references: Option<bool>,
+        /// Configure support for the exceptions proposal.
+        pub exceptions: Option<bool>,
+        /// Configure support for the stack-switching proposal.
+        pub stack_switching: Option<bool>,
         /// Configure support for the GC proposal.
         pub gc: Option<bool>,
         /// Configure support for the custom-page-sizes proposal.
@@ -732,6 +742,13 @@ impl CommonOptions {
             config.native_unwind_info(enable);
         }
 
+        if let Some(stack_switching_stack_size) = self.wasm.stack_switching_stack_size {
+            config.stack_switching_stack_size(stack_switching_stack_size);
+        }
+        if let Some(stack_switching_red_zone_size) = self.wasm.stack_switching_red_zone_size {
+            config.stack_switching_red_zone_size(stack_switching_red_zone_size);
+        }
+
         match_feature! {
             ["pooling-allocator" : self.opts.pooling_allocator.or(pooling_allocator_default)]
             enable => {
@@ -896,6 +913,12 @@ impl CommonOptions {
         }
         if let Some(enable) = self.wasm.memory64.or(all) {
             config.wasm_memory64(enable);
+        }
+        if let Some(enable) = self.wasm.exceptions {
+            config.wasm_exceptions(enable);
+        }
+        if let Some(enable) = self.wasm.stack_switching {
+            config.wasm_stack_switching(enable);
         }
         if let Some(enable) = self.wasm.custom_page_sizes.or(all) {
             config.wasm_custom_page_sizes(enable);

@@ -153,6 +153,7 @@ fn read_field_at_addr(
                         .call(get_interned_func_ref, &[vmctx, func_ref_id, expected_ty]);
                     builder.func.dfg.first_result(call_inst)
                 }
+                WasmHeapTopType::Cont => unimplemented!(), // TODO(dhil): revisit later.
             },
         },
     };
@@ -908,7 +909,7 @@ pub fn translate_ref_test(
         let result = if ref_ty.nullable {
             // All null references (within the same type hierarchy) match null
             // references to the bottom type.
-            func_env.translate_ref_is_null(builder.cursor(), val)?
+            func_env.translate_ref_is_null(builder, val)?
         } else {
             // `ref.test` is always false for non-nullable bottom types, as the
             // bottom types are uninhabited.
@@ -925,7 +926,7 @@ pub fn translate_ref_test(
         let result = if ref_ty.nullable {
             builder.ins().iconst(ir::types::I32, 1)
         } else {
-            let is_null = func_env.translate_ref_is_null(builder.cursor(), val)?;
+            let is_null = func_env.translate_ref_is_null(builder, val)?;
             let zero = builder.ins().iconst(ir::types::I32, 0);
             let one = builder.ins().iconst(ir::types::I32, 1);
             builder.ins().select(is_null, zero, one)
@@ -942,7 +943,7 @@ pub fn translate_ref_test(
         );
         let is_i31 = builder.ins().band(val, i31_mask);
         let result = if ref_ty.nullable {
-            let is_null = func_env.translate_ref_is_null(builder.cursor(), val)?;
+            let is_null = func_env.translate_ref_is_null(builder, val)?;
             builder.ins().bor(is_null, is_i31)
         } else {
             is_i31
@@ -960,7 +961,7 @@ pub fn translate_ref_test(
     let continue_block = builder.create_block();
 
     // Current block: check if the reference is null and branch appropriately.
-    let is_null = func_env.translate_ref_is_null(builder.cursor(), val)?;
+    let is_null = func_env.translate_ref_is_null(builder, val)?;
     let is_null_result = if ref_ty.nullable {
         is_null
     } else {
@@ -1050,6 +1051,8 @@ pub fn translate_ref_test(
         | WasmHeapType::NoExtern
         | WasmHeapType::Func
         | WasmHeapType::NoFunc
+        | WasmHeapType::Cont
+        | WasmHeapType::NoCont
         | WasmHeapType::I31 => unreachable!("handled top, bottom, and i31 types above"),
 
         // For these abstract but non-top and non-bottom types, we check the
@@ -1102,6 +1105,7 @@ pub fn translate_ref_test(
 
             func_env.is_subtype(builder, actual_shared_ty, expected_shared_ty)
         }
+        WasmHeapType::ConcreteCont(_) => todo!(), // TODO(dhil): FIXME for GC support.
     };
     builder.ins().jump(continue_block, &[result]);
 
@@ -1425,6 +1429,9 @@ impl FuncEnvironment<'_> {
             // types. Should have been caught by the assertion at the start of
             // the function.
             WasmHeapType::Func | WasmHeapType::ConcreteFunc(_) | WasmHeapType::NoFunc => {
+                unreachable!()
+            }
+            WasmHeapType::Cont | WasmHeapType::ConcreteCont(_) | WasmHeapType::NoCont => {
                 unreachable!()
             }
         };

@@ -8,14 +8,15 @@
 use crate::prelude::*;
 use crate::store::StoreOpaque;
 use alloc::sync::Arc;
+use continuation::stack_chain::StackChainCell;
 use core::fmt;
 use core::ops::Deref;
 use core::ops::DerefMut;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use wasmtime_environ::{
-    DefinedFuncIndex, DefinedMemoryIndex, HostPtr, ModuleInternedTypeIndex, VMOffsets,
-    VMSharedTypeIndex,
+    stack_switching::StackSwitchingConfig, DefinedFuncIndex, DefinedMemoryIndex, HostPtr,
+    ModuleInternedTypeIndex, VMOffsets, VMSharedTypeIndex,
 };
 
 mod arch;
@@ -38,11 +39,13 @@ mod traphandlers;
 mod unwind;
 mod vmcontext;
 
+pub mod continuation;
 #[cfg(feature = "threads")]
 mod parking_spot;
 
 #[cfg(feature = "debug-builtins")]
 pub mod debug_builtins;
+pub mod fibre;
 pub mod libcalls;
 pub mod mpk;
 
@@ -87,8 +90,9 @@ pub use crate::runtime::vm::unwind::*;
 pub use crate::runtime::vm::vmcontext::{
     VMArrayCallFunction, VMArrayCallHostFuncContext, VMContext, VMFuncRef, VMFunctionBody,
     VMFunctionImport, VMGlobalDefinition, VMGlobalImport, VMMemoryDefinition, VMMemoryImport,
-    VMOpaqueContext, VMRuntimeLimits, VMTableImport, VMWasmCallFunction, ValRaw,
+    VMOpaqueContext, VMRuntimeLimits, VMTableImport, VMTagImport, VMWasmCallFunction, ValRaw,
 };
+
 pub use send_sync_ptr::SendSyncPtr;
 pub use send_sync_unsafe_cell::SendSyncUnsafeCell;
 
@@ -129,6 +133,17 @@ cfg_if::cfg_if! {
 pub unsafe trait VMStore {
     /// Get a shared borrow of this store's `StoreOpaque`.
     fn store_opaque(&self) -> &StoreOpaque;
+
+    /// Used to configure `VMContext` initialization and store the right pointer
+    /// in the `VMContext`.
+    fn stack_chain(&self) -> *mut StackChainCell;
+
+    /// Returns the `StackSwitchingConfig` associated with this store.
+    /// NOTE(frank-emrich) Currently, this is part of the
+    /// `wasmtime::config::Config` object of the `Engine` associated with the
+    /// `Store`. However, the whole point of this trait is so that we don't
+    /// depend on the entire `wasmtime` crate in the current crate.
+    fn stack_switching_config(&self) -> *const StackSwitchingConfig;
 
     /// Get an exclusive borrow of this store's `StoreOpaque`.
     fn store_opaque_mut(&mut self) -> &mut StoreOpaque;

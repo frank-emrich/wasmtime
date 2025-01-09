@@ -30,14 +30,16 @@
 //      imported_functions: [VMFunctionImport; module.num_imported_functions],
 //      imported_tables: [VMTableImport; module.num_imported_tables],
 //      imported_globals: [VMGlobalImport; module.num_imported_globals],
+//      imported_tags: [VMTagImport; module.num_imported_tags],
 //      tables: [VMTableDefinition; module.num_defined_tables],
 //      globals: [VMGlobalDefinition; module.num_defined_globals],
+//      tags: [VMTagDefinition; module.num_defined_tags],
 //      func_refs: [VMFuncRef; module.num_escaped_funcs],
 // }
 
 use crate::{
-    DefinedGlobalIndex, DefinedMemoryIndex, DefinedTableIndex, FuncIndex, FuncRefIndex,
-    GlobalIndex, MemoryIndex, Module, OwnedMemoryIndex, TableIndex,
+    DefinedGlobalIndex, DefinedMemoryIndex, DefinedTableIndex, DefinedTagIndex, FuncIndex,
+    FuncRefIndex, GlobalIndex, MemoryIndex, Module, OwnedMemoryIndex, TableIndex, TagIndex,
 };
 use cranelift_entity::packed_option::ReservedValue;
 
@@ -70,6 +72,8 @@ pub struct VMOffsets<P> {
     pub num_imported_memories: u32,
     /// The number of imported globals in the module.
     pub num_imported_globals: u32,
+    /// The number of imported tags in the module.
+    pub num_imported_tags: u32,
     /// The number of defined tables in the module.
     pub num_defined_tables: u32,
     /// The number of defined memories in the module.
@@ -78,6 +82,8 @@ pub struct VMOffsets<P> {
     pub num_owned_memories: u32,
     /// The number of defined globals in the module.
     pub num_defined_globals: u32,
+    /// The number of defined tags in the module.
+    pub num_defined_tags: u32,
     /// The number of escaped functions in the module, the size of the func_refs
     /// array.
     pub num_escaped_funcs: u32,
@@ -87,12 +93,21 @@ pub struct VMOffsets<P> {
     imported_tables: u32,
     imported_memories: u32,
     imported_globals: u32,
+    imported_tags: u32,
     defined_tables: u32,
     defined_memories: u32,
     owned_memories: u32,
     defined_globals: u32,
+    defined_tags: u32,
     defined_func_refs: u32,
     size: u32,
+
+    // The following field stores a pointer into the StoreOpauqe, to value of
+    // type `crate::stack_switching::StackChain`.
+    // The head of the chain is the
+    // currently executing stack (main stack or a continuation).
+    typed_continuations_stack_chain: u32,
+    typed_continuations_payloads: u32,
 }
 
 /// Trait used for the `ptr` representation of the field of `VMOffsets`
@@ -149,6 +164,18 @@ pub trait PtrSize {
     #[inline]
     fn size_of_vmglobal_definition(&self) -> u8 {
         16
+    }
+
+    /// Return the size of `VMTagDefinition`.
+    #[inline]
+    fn size_of_vmtag_definition(&self) -> u8 {
+        4
+    }
+
+    /// This is the size of the largest value type (i.e. a V128).
+    #[inline]
+    fn maximum_value_size(&self) -> u8 {
+        self.size_of_vmglobal_definition()
     }
 
     // Offsets within `VMRuntimeLimits`
@@ -330,6 +357,8 @@ pub struct VMOffsetsFields<P> {
     pub num_imported_memories: u32,
     /// The number of imported globals in the module.
     pub num_imported_globals: u32,
+    /// The number of imported tags in the module.
+    pub num_imported_tags: u32,
     /// The number of defined tables in the module.
     pub num_defined_tables: u32,
     /// The number of defined memories in the module.
@@ -338,6 +367,8 @@ pub struct VMOffsetsFields<P> {
     pub num_owned_memories: u32,
     /// The number of defined globals in the module.
     pub num_defined_globals: u32,
+    /// The number of defined tags in the module.
+    pub num_defined_tags: u32,
     /// The number of escaped functions in the module, the size of the function
     /// references array.
     pub num_escaped_funcs: u32,
@@ -359,11 +390,13 @@ impl<P: PtrSize> VMOffsets<P> {
             num_imported_functions: cast_to_u32(module.num_imported_funcs),
             num_imported_tables: cast_to_u32(module.num_imported_tables),
             num_imported_memories: cast_to_u32(module.num_imported_memories),
+            num_imported_tags: cast_to_u32(module.num_imported_tags),
             num_imported_globals: cast_to_u32(module.num_imported_globals),
             num_defined_tables: cast_to_u32(module.num_defined_tables()),
             num_defined_memories: cast_to_u32(module.num_defined_memories()),
             num_owned_memories,
             num_defined_globals: cast_to_u32(module.globals.len() - module.num_imported_globals),
+            num_defined_tags: cast_to_u32(module.tags.len() - module.num_imported_tags),
             num_escaped_funcs: cast_to_u32(module.num_escaped_funcs),
         })
     }
@@ -389,8 +422,10 @@ impl<P: PtrSize> VMOffsets<P> {
                     num_imported_tables: _,
                     num_imported_memories: _,
                     num_imported_globals: _,
+                    num_imported_tags: _,
                     num_defined_tables: _,
                     num_defined_globals: _,
+                    num_defined_tags: _,
                     num_defined_memories: _,
                     num_owned_memories: _,
                     num_escaped_funcs: _,
@@ -422,9 +457,13 @@ impl<P: PtrSize> VMOffsets<P> {
         }
 
         calculate_sizes! {
+            typed_continuations_payloads: "typed continuations payloads object",
+            typed_continuations_stack_chain: "typed continuations stack chain",
             defined_func_refs: "module functions",
+            defined_tags: "defined tags",
             defined_globals: "defined globals",
             defined_tables: "defined tables",
+            imported_tags: "imported tags",
             imported_globals: "imported globals",
             imported_tables: "imported tables",
             imported_functions: "imported functions",
@@ -443,21 +482,27 @@ impl<P: PtrSize> From<VMOffsetsFields<P>> for VMOffsets<P> {
             num_imported_tables: fields.num_imported_tables,
             num_imported_memories: fields.num_imported_memories,
             num_imported_globals: fields.num_imported_globals,
+            num_imported_tags: fields.num_imported_tags,
             num_defined_tables: fields.num_defined_tables,
             num_defined_memories: fields.num_defined_memories,
             num_owned_memories: fields.num_owned_memories,
             num_defined_globals: fields.num_defined_globals,
+            num_defined_tags: fields.num_defined_tags,
             num_escaped_funcs: fields.num_escaped_funcs,
             imported_functions: 0,
             imported_tables: 0,
             imported_memories: 0,
             imported_globals: 0,
+            imported_tags: 0,
             defined_tables: 0,
             defined_memories: 0,
             owned_memories: 0,
             defined_globals: 0,
+            defined_tags: 0,
             defined_func_refs: 0,
             size: 0,
+            typed_continuations_stack_chain: 0,
+            typed_continuations_payloads: 0,
         };
 
         // Convenience functions for checked addition and multiplication.
@@ -502,15 +547,29 @@ impl<P: PtrSize> From<VMOffsetsFields<P>> for VMOffsets<P> {
                 = cmul(ret.num_imported_tables, ret.size_of_vmtable_import()),
             size(imported_globals)
                 = cmul(ret.num_imported_globals, ret.size_of_vmglobal_import()),
+        size(imported_tags)
+                = cmul(ret.num_imported_tags, ret.size_of_vmtag_import()),
             size(defined_tables)
                 = cmul(ret.num_defined_tables, ret.size_of_vmtable_definition()),
             align(16),
             size(defined_globals)
                 = cmul(ret.num_defined_globals, ret.ptr.size_of_vmglobal_definition()),
+            size(defined_tags)
+                = cmul(ret.num_defined_tags, ret.ptr.size_of_vmtag_definition()),
+            align(16),
             size(defined_func_refs) = cmul(
                 ret.num_escaped_funcs,
                 ret.ptr.size_of_vm_func_ref(),
             ),
+            size(typed_continuations_stack_chain)
+                = ret.ptr.size(),
+            align(core::mem::align_of::<crate::stack_switching::Payloads>() as u32),
+            size(typed_continuations_payloads) =
+                core::mem::size_of::<crate::stack_switching::Payloads>() as u32,
+
+            align(16), // TODO(dhil): This could probably be done more
+                       // efficiently by packing the pointer into the above 16 byte
+                       // alignment
         }
 
         ret.size = next_field_offset;
@@ -636,6 +695,27 @@ impl<P: PtrSize> VMOffsets<P> {
     }
 }
 
+/// Offsets for `VMTagImport`.
+impl<P: PtrSize> VMOffsets<P> {
+    /// The offset of the `from` field.
+    #[inline]
+    pub fn vmtag_import_from(&self) -> u8 {
+        0 * self.pointer_size()
+    }
+
+    /// The offset of the `vmctx` field.
+    #[inline]
+    pub fn vmtag_import_vmctx(&self) -> u8 {
+        1 * self.pointer_size()
+    }
+
+    /// Return the size of `VMTagImport`.
+    #[inline]
+    pub fn size_of_vmtag_import(&self) -> u8 {
+        2 * self.pointer_size()
+    }
+}
+
 /// Offsets for `VMSharedTypeIndex`.
 impl<P: PtrSize> VMOffsets<P> {
     /// Return the size of `VMSharedTypeIndex`.
@@ -671,6 +751,12 @@ impl<P: PtrSize> VMOffsets<P> {
         self.imported_globals
     }
 
+    /// The offset of the `tags` array.
+    #[inline]
+    pub fn vmctx_imported_tags_begin(&self) -> u32 {
+        self.imported_tags
+    }
+
     /// The offset of the `tables` array.
     #[inline]
     pub fn vmctx_tables_begin(&self) -> u32 {
@@ -695,10 +781,30 @@ impl<P: PtrSize> VMOffsets<P> {
         self.defined_globals
     }
 
+    /// The offset of the `tags` array.
+    #[inline]
+    pub fn vmctx_tags_begin(&self) -> u32 {
+        self.defined_tags
+    }
+
     /// The offset of the `func_refs` array.
     #[inline]
     pub fn vmctx_func_refs_begin(&self) -> u32 {
         self.defined_func_refs
+    }
+
+    /// TODO
+    #[inline]
+    pub fn vmctx_typed_continuations_stack_chain(&self) -> u32 {
+        self.typed_continuations_stack_chain
+    }
+
+    /// The offset of the typed continuations payloads object, stored as a as a
+    /// wasmtime_comtinuations::Payloads object. Used to transfer payloads from
+    /// suspend calls to the corresponding handler/resume instructions.
+    #[inline]
+    pub fn vmctx_typed_continuations_payloads(&self) -> u32 {
+        self.typed_continuations_payloads
     }
 
     /// Return the size of the `VMContext` allocation.
@@ -739,6 +845,13 @@ impl<P: PtrSize> VMOffsets<P> {
             + index.as_u32() * u32::from(self.size_of_vmglobal_import())
     }
 
+    /// Return the offset to `VMTagImport` index `index`.
+    #[inline]
+    pub fn vmctx_vmtag_import(&self, index: TagIndex) -> u32 {
+        assert!(index.as_u32() < self.num_imported_tags);
+        self.vmctx_imported_tags_begin() + index.as_u32() * u32::from(self.size_of_vmtag_import())
+    }
+
     /// Return the offset to `VMTableDefinition` index `index`.
     #[inline]
     pub fn vmctx_vmtable_definition(&self, index: DefinedTableIndex) -> u32 {
@@ -768,6 +881,13 @@ impl<P: PtrSize> VMOffsets<P> {
         assert!(index.as_u32() < self.num_defined_globals);
         self.vmctx_globals_begin()
             + index.as_u32() * u32::from(self.ptr.size_of_vmglobal_definition())
+    }
+
+    /// Return the offset to the `VMTagDefinition` index `index`.
+    #[inline]
+    pub fn vmctx_vmtag_definition(&self, index: DefinedTagIndex) -> u32 {
+        assert!(index.as_u32() < self.num_defined_tags);
+        self.vmctx_tags_begin() + index.as_u32() * u32::from(self.ptr.size_of_vmtag_definition())
     }
 
     /// Return the offset to the `VMFuncRef` for the given function
@@ -801,6 +921,12 @@ impl<P: PtrSize> VMOffsets<P> {
     #[inline]
     pub fn vmctx_vmtable_import_from(&self, index: TableIndex) -> u32 {
         self.vmctx_vmtable_import(index) + u32::from(self.vmtable_import_from())
+    }
+
+    /// Return the offset to the `from` field in `VMTagImport` index `index`.
+    #[inline]
+    pub fn vmctx_vmtag_import_from(&self, index: TagIndex) -> u32 {
+        self.vmctx_vmtag_import(index) + u32::from(self.vmtag_import_from())
     }
 
     /// Return the offset to the `base` field in `VMTableDefinition` index `index`.

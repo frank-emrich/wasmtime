@@ -1068,13 +1068,17 @@ impl Func {
         func_ref: NonNull<VMFuncRef>,
         params_and_returns: *mut [ValRaw],
     ) -> Result<()> {
-        invoke_wasm_and_catch_traps(store, |caller, vm| {
-            func_ref.as_ref().array_call(
-                vm,
-                VMOpaqueContext::from_vmcontext(caller),
-                params_and_returns,
-            )
-        })
+        invoke_wasm_and_catch_traps(
+            store,
+            |caller, vm| {
+                func_ref.as_ref().array_call(
+                    vm,
+                    VMOpaqueContext::from_vmcontext(caller),
+                    params_and_returns,
+                )
+            },
+            func_ref.as_ref().vmctx,
+        )
     }
 
     /// Converts the raw representation of a `funcref` into an `Option<Func>`
@@ -1191,6 +1195,7 @@ impl Func {
                 results.len()
             );
         }
+
         for (ty, arg) in ty.params().zip(params) {
             arg.ensure_matches_ty(opaque, &ty)
                 .context("argument type mismatch")?;
@@ -1595,15 +1600,50 @@ impl Func {
 pub(crate) fn invoke_wasm_and_catch_traps<T>(
     store: &mut StoreContextMut<'_, T>,
     closure: impl FnMut(*mut VMContext, Option<InterpreterRef<'_>>) -> bool,
+    callee: *mut VMOpaqueContext,
 ) -> Result<()> {
     unsafe {
+        if VMContext::try_from_opaque(callee).is_some() {
+            // If we get here, the callee is a "proper" `VMContext`, and we are
+            // indeed calling into wasm.
+            //
+            // We now ensure that the following invariant holds (see
+            // wasmfx/wasmfxtime#109): Since we know that we are (re)-entering
+            // wasm, it must not be the case that we weren't still running
+            // inside a continuation when reaching this point. In other words,
+            // we must currently be on the main stack.
+            //
+            // We check this by inspecting this thread's chain of
+            // `CallThreadState`s, which is a linked list of all (nested)
+            // invocations of wasm (and certain host calls). If any of them are
+            // executing wasm, we raise an error.
+            // Since we are doing this check every time we enter wasm, it is
+            // sufficient to only look at the most recent previous invocation of
+            // wasm (i.e., we do not need to walk the entire `CallTheadState`
+            // chain, but only walk to the first such state corresponding to an
+            // execution of wasm).
+            //
+            // As a result, the call below is O(n), where n is the number of
+            // `CallThreadState`s at the beginning in this thread's CTS chain before
+            // the first such state that corresponds to wasm execution.
+            // In other words, n is the nesting level of calls to wrapped host
+            // functions from within a host function (e.g., calling `f.call()`
+            // while within a host call, where `f` is the result from wrapping a
+            // Rust function inside a `Func`).
+            if crate::runtime::vm::first_wasm_state_on_fiber_stack() {
+                return Err(anyhow::anyhow!(
+                    "Re-entering wasm while already executing on a continuation stack"
+                ));
+            }
+        }
+
         let exit = enter_wasm(store);
 
         if let Err(trap) = store.0.call_hook(CallHook::CallingWasm) {
             exit_wasm(store, exit);
             return Err(trap);
         }
-        let result = crate::runtime::vm::catch_traps(store, closure);
+        let result = crate::runtime::vm::catch_traps(store, callee, closure);
         exit_wasm(store, exit);
         store.0.call_hook(CallHook::ReturningFromWasm)?;
         result.map_err(|t| crate::trap::from_runtime_box(store.0, t))

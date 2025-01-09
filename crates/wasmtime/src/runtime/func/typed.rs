@@ -209,18 +209,24 @@ where
         // efficient to move in memory. This closure is actually invoked on the
         // other side of a C++ shim, so it can never be inlined enough to make
         // the memory go away, so the size matters here for performance.
+        let vmctx = unsafe { func.as_ref().vmctx };
         let mut captures = (func, storage);
 
-        let result = invoke_wasm_and_catch_traps(store, |caller, vm| {
-            let (func_ref, storage) = &mut captures;
-            let storage_len = mem::size_of_val::<Storage<_, _>>(storage) / mem::size_of::<ValRaw>();
-            let storage: *mut Storage<_, _> = storage;
-            let storage = storage.cast::<ValRaw>();
-            let storage = core::ptr::slice_from_raw_parts_mut(storage, storage_len);
-            func_ref
-                .as_ref()
-                .array_call(vm, VMOpaqueContext::from_vmcontext(caller), storage)
-        });
+        let result = invoke_wasm_and_catch_traps(
+            store,
+            |caller, vm| {
+                let (func_ref, storage) = &mut captures;
+                let storage_len =
+                    mem::size_of_val::<Storage<_, _>>(storage) / mem::size_of::<ValRaw>();
+                let storage: *mut Storage<_, _> = storage;
+                let storage = storage.cast::<ValRaw>();
+                let storage = core::ptr::slice_from_raw_parts_mut(storage, storage_len);
+                func_ref
+                    .as_ref()
+                    .array_call(vm, VMOpaqueContext::from_vmcontext(caller), storage)
+            },
+            vmctx,
+        );
 
         let (_, storage) = captures;
         result?;

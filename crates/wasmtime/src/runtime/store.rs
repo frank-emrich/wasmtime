@@ -81,6 +81,7 @@ use crate::instance::InstanceData;
 use crate::linker::Definition;
 use crate::module::RegisteredModuleId;
 use crate::prelude::*;
+use crate::runtime::vm::continuation::stack_chain::{StackChain, StackChainCell};
 use crate::runtime::vm::mpk::{self, ProtectionKey, ProtectionMask};
 use crate::runtime::vm::{
     Backtrace, ExportGlobal, GcRootsList, GcStore, InstanceAllocationRequest, InstanceAllocator,
@@ -104,7 +105,10 @@ use core::ops::{Deref, DerefMut, Range};
 use core::pin::Pin;
 use core::ptr;
 use core::task::{Context, Poll};
-use wasmtime_environ::TripleExt;
+use wasmtime_environ::{
+    stack_switching::{CommonStackInformation, StackSwitchingConfig},
+    TripleExt,
+};
 
 mod context;
 pub use self::context::*;
@@ -313,6 +317,21 @@ pub struct StoreOpaque {
 
     engine: Engine,
     runtime_limits: VMRuntimeLimits,
+
+    // Stack information used by stack switching instructions. See
+    // documentation on `wasmtime_environ::stack_switching::StackChain` for details.
+    //
+    // Note that in terms of (interior) mutability, we generally follow the same
+    // pattern as the `VMRuntimeLimits` object above: In the case of
+    // `StackLimits`, all of its fields are `UnsafeCell`s. For the stack chain,
+    // we wrap the entire `StackChainObject` in an `UnsafeCell`.
+    //
+    // Finally, observe that the stack chain adds more internal self references:
+    // The stack chain always contains a `MainStack` element at the ends which
+    // has a pointer to the `main_stack_limits` field of the same `StoreOpaque`.
+    main_stack_information: CommonStackInformation,
+    stack_chain: StackChainCell,
+
     instances: Vec<StoreInstance>,
     #[cfg(feature = "component-model")]
     num_component_instances: usize,
@@ -545,6 +564,8 @@ impl<T> Store<T> {
                 _marker: marker::PhantomPinned,
                 engine: engine.clone(),
                 runtime_limits: Default::default(),
+                main_stack_information: CommonStackInformation::running_default(),
+                stack_chain: StackChainCell::absent(),
                 instances: Vec::new(),
                 #[cfg(feature = "component-model")]
                 num_component_instances: 0,
@@ -635,6 +656,15 @@ impl<T> Store<T> {
                 instance
             }
         };
+
+        unsafe {
+            // NOTE(frank-emrich) The setup code for `default_caller` above
+            // together with the comment on the `PhantomPinned` marker inside
+            // `Store` indicates that `inner` is supposed to be at a stable
+            // location at this point, without explicitly being `Pin`-ed.
+            let stack_chain = inner.stack_chain.0.get();
+            *stack_chain = StackChain::MainStack(inner.main_stack_information());
+        }
 
         Self {
             inner: ManuallyDrop::new(inner),
@@ -1926,6 +1956,20 @@ impl StoreOpaque {
     }
 
     #[inline]
+    pub fn main_stack_information(&self) -> *mut CommonStackInformation {
+        // NOTE(frank-emrich) This looks dogdy, but follows the same pattern as
+        // `vmruntime_limits()` above.
+        &self.main_stack_information as *const CommonStackInformation as *mut CommonStackInformation
+    }
+
+    #[inline]
+    pub fn stack_chain(&self) -> *mut StackChainCell {
+        // NOTE(frank-emrich) This looks dogdy, but follows the same pattern as
+        // `vmruntime_limits()` above.
+        &self.stack_chain as *const StackChainCell as *mut StackChainCell
+    }
+
+    #[inline]
     pub fn default_caller(&self) -> *mut VMContext {
         self.default_caller.vmctx()
     }
@@ -2551,6 +2595,14 @@ unsafe impl<T> crate::runtime::vm::VMStore for StoreInner<T> {
         &self.inner
     }
 
+    fn stack_chain(&self) -> *mut StackChainCell {
+        <StoreOpaque>::stack_chain(self)
+    }
+
+    fn stack_switching_config(&self) -> *const StackSwitchingConfig {
+        &<StoreOpaque>::engine(&self).config().stack_switching_config
+    }
+
     fn store_opaque_mut(&mut self) -> &mut StoreOpaque {
         &mut self.inner
     }
@@ -2844,6 +2896,14 @@ impl Drop for StoreOpaque {
                     allocator.decrement_component_instance_count();
                 }
             }
+
+            // FIXME(frank-emrich) The handlers can only be non-empty at this
+            // point if we trapped while inside a continuation (i.e., the main
+            // stack was a parent of the trapping continuation). Once we
+            // properly clean up the Store/Instance at that point (see issue
+            // #253), this `clear` should no longer be necessary.
+            self.main_stack_information.handlers.clear();
+            self.main_stack_information.handlers.deallocate();
 
             // See documentation for these fields on `StoreOpaque` for why they
             // must be dropped in this order.

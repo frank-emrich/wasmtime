@@ -18,8 +18,9 @@ pub use self::signals::*;
 use crate::prelude::*;
 use crate::runtime::module::lookup_code;
 use crate::runtime::store::StoreOpaque;
+use crate::runtime::vm::continuation::stack_chain::StackChainCell;
 use crate::runtime::vm::sys::traphandlers;
-use crate::runtime::vm::{Instance, InterpreterRef, VMContext, VMRuntimeLimits};
+use crate::runtime::vm::{Instance, InterpreterRef, VMContext, VMOpaqueContext, VMRuntimeLimits};
 use crate::{StoreContextMut, WasmBacktrace};
 use core::cell::Cell;
 use core::ops::Range;
@@ -351,44 +352,50 @@ impl From<wasmtime_environ::Trap> for TrapReason {
 /// longjmp'd over and none of its destructors on the stack may be run.
 pub unsafe fn catch_traps<T, F>(
     store: &mut StoreContextMut<'_, T>,
+    callee: *mut VMOpaqueContext,
     mut closure: F,
 ) -> Result<(), Box<Trap>>
 where
     F: FnMut(*mut VMContext, Option<InterpreterRef<'_>>) -> bool,
 {
+    let callee_stack_chain = VMContext::try_from_opaque(callee)
+        .map(|vmctx| Instance::from_vmctx(vmctx, |i| *i.stack_chain() as *const StackChainCell));
+
     let caller = store.0.default_caller();
-    let result = CallThreadState::new(store.0, caller).with(|cx| match store.0.interpreter() {
-        // In interpreted mode directly invoke the host closure since we won't
-        // be using host-based `setjmp`/`longjmp` as that's not going to save
-        // the context we want.
-        Some(r) => {
-            cx.jmp_buf
-                .set(CallThreadState::JMP_BUF_INTERPRETER_SENTINEL);
-            closure(caller, Some(r))
-        }
+    let result = CallThreadState::new(store.0, caller, callee_stack_chain).with(|cx| {
+        match store.0.interpreter() {
+            // In interpreted mode directly invoke the host closure since we won't
+            // be using host-based `setjmp`/`longjmp` as that's not going to save
+            // the context we want.
+            Some(r) => {
+                cx.jmp_buf
+                    .set(CallThreadState::JMP_BUF_INTERPRETER_SENTINEL);
+                closure(caller, Some(r))
+            }
 
-        // In native mode, however, defer to C to do the `setjmp` since Rust
-        // doesn't understand `setjmp`.
-        //
-        // Note that here we pass a function pointer to C to catch longjmp
-        // within, here it's `call_closure`, and that passes `None` for the
-        // interpreter since this branch is only ever taken if the interpreter
-        // isn't present.
-        None => traphandlers::wasmtime_setjmp(
-            cx.jmp_buf.as_ptr(),
-            {
-                extern "C" fn call_closure<F>(payload: *mut u8, caller: *mut VMContext) -> bool
-                where
-                    F: FnMut(*mut VMContext, Option<InterpreterRef<'_>>) -> bool,
+            // In native mode, however, defer to C to do the `setjmp` since Rust
+            // doesn't understand `setjmp`.
+            //
+            // Note that here we pass a function pointer to C to catch longjmp
+            // within, here it's `call_closure`, and that passes `None` for the
+            // interpreter since this branch is only ever taken if the interpreter
+            // isn't present.
+            None => traphandlers::wasmtime_setjmp(
+                cx.jmp_buf.as_ptr(),
                 {
-                    unsafe { (*(payload as *mut F))(caller, None) }
-                }
+                    extern "C" fn call_closure<F>(payload: *mut u8, caller: *mut VMContext) -> bool
+                    where
+                        F: FnMut(*mut VMContext, Option<InterpreterRef<'_>>) -> bool,
+                    {
+                        unsafe { (*(payload as *mut F))(caller, None) }
+                    }
 
-                call_closure::<F>
-            },
-            &mut closure as *mut F as *mut u8,
-            caller,
-        ),
+                    call_closure::<F>
+                },
+                &mut closure as *mut F as *mut u8,
+                caller,
+            ),
+        }
     });
 
     return match result {
@@ -401,6 +408,31 @@ where
         #[cfg(all(feature = "std", panic = "unwind"))]
         Err((UnwindReason::Panic(panic), _, _)) => std::panic::resume_unwind(panic),
     };
+}
+
+/// Returns true if the first `CallThreadState` in this thread's chain that
+/// actually executes wasm is doing so inside a continuation. Returns false
+/// if there is no `CallThreadState` executing wasm.
+pub fn first_wasm_state_on_fiber_stack() -> bool {
+    tls::with(|head_state| {
+        // Iterate this threads' CallThreadState chain starting at `head_state`
+        // (if chain is non-empty), skipping those CTSs whose
+        // `callee_stack_chain` is None. This means that if `first_wasm_state`
+        // is Some, it is the first entry in the call thread state chain
+        // actually executin wasm.
+        let first_wasm_state = head_state
+            .iter()
+            .flat_map(|head| head.iter())
+            .skip_while(|state| state.callee_stack_chain.is_none())
+            .next();
+
+        first_wasm_state.map_or(false, |state| unsafe {
+            let stack_chain = &*state
+                .callee_stack_chain
+                .expect("must be Some according to filtering above");
+            !(*stack_chain.0.get()).is_main_stack()
+        })
+    })
 }
 
 // Module to hide visibility of the `CallThreadState::prev` field and force
@@ -422,6 +454,10 @@ mod call_thread_state {
 
         pub(crate) limits: *const VMRuntimeLimits,
         pub(crate) unwinder: &'static dyn Unwind,
+
+        /// `Some(ptr)` iff this CallThreadState is for the execution of wasm.
+        /// In that case, `ptr` is the executing `Store`'s stack chain.
+        pub(crate) callee_stack_chain: Option<*const StackChainCell>,
 
         pub(super) prev: Cell<tls::Ptr>,
         #[cfg(all(feature = "signals-based-traps", unix, not(miri)))]
@@ -458,7 +494,11 @@ mod call_thread_state {
         pub const JMP_BUF_INTERPRETER_SENTINEL: *mut u8 = 1 as *mut u8;
 
         #[inline]
-        pub(super) fn new(store: &mut StoreOpaque, caller: *mut VMContext) -> CallThreadState {
+        pub(super) fn new(
+            store: &mut StoreOpaque,
+            caller: *mut VMContext,
+            callee_stack_chain: Option<*const StackChainCell>,
+        ) -> CallThreadState {
             let limits = unsafe { *Instance::from_vmctx(caller, |i| i.runtime_limits()) };
 
             // Don't try to plumb #[cfg] everywhere for this field, just pretend
@@ -475,6 +515,7 @@ mod call_thread_state {
                 #[cfg(feature = "coredump")]
                 capture_coredump: store.engine().config().coredump_on_trap,
                 limits,
+                callee_stack_chain,
                 #[cfg(all(feature = "signals-based-traps", unix, not(miri)))]
                 async_guard_range: store.async_guard_range(),
                 prev: Cell::new(ptr::null()),

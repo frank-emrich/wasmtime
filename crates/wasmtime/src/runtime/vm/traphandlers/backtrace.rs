@@ -23,6 +23,7 @@
 
 use crate::prelude::*;
 use crate::runtime::store::StoreOpaque;
+use crate::runtime::vm::continuation::stack_chain::StackChain;
 use crate::runtime::vm::{
     traphandlers::{tls, CallThreadState},
     Unwind, VMRuntimeLimits,
@@ -111,12 +112,28 @@ impl Backtrace {
     ) {
         log::trace!("====== Capturing Backtrace ======");
 
+        // We are only interested in wasm frames, not host frames. Thus, we peel
+        // away the first states in this thread's `CallThreadState` chain that
+        // do not execute wasm.
+        // Note(frank-emrich) I'm not entirely sure if it can ever be the case
+        // that `state` is not actually executing wasm. In other words, it may
+        // be the case that we always have `Some(state) == first_wasm_state`.
+        // Otherwise we would be building a backtrace while executing a host
+        // call. But those cannot trap, but only panic and we do not use this
+        // function to build backtraces for panics.
+        let first_wasm_state = state
+            .iter()
+            .flat_map(|head| head.iter())
+            .skip_while(|state| state.callee_stack_chain.is_none())
+            .next();
+
         let (last_wasm_exit_pc, last_wasm_exit_fp) = match trap_pc_and_fp {
             // If we exited Wasm by catching a trap, then the Wasm-to-host
             // trampoline did not get a chance to save the last Wasm PC and FP,
             // and we need to use the plumbed-through values instead.
             Some((pc, fp)) => {
                 assert!(core::ptr::eq(limits, state.limits));
+                assert!(first_wasm_state.is_some());
                 (pc, fp)
             }
             // Either there is no Wasm currently on the stack, or we exited Wasm
@@ -128,24 +145,38 @@ impl Backtrace {
             }
         };
 
+        let first_wasm_state_stack_chain = first_wasm_state
+            .map(|state| state.callee_stack_chain.map(|cell| &*(*cell).0.get()))
+            .flatten();
+
+        // The first value in `activations` is for the most recently running
+        // wasm. We thus provide the stack chain of `first_wasm_state` to
+        // traverse the potential continuation stacks. For the subsequent
+        // activations, we unconditionally use `None` as the corresponding stack
+        // chain. This is justified because only the most recent execution of
+        // wasm may execute off the main stack (see comments in
+        // `wasmtime::invoke_wasm_and_catch_traps` for details).
         let activations = core::iter::once((
+            first_wasm_state_stack_chain,
             last_wasm_exit_pc,
             last_wasm_exit_fp,
             *(*limits).last_wasm_entry_fp.get(),
         ))
         .chain(
-            state
+            first_wasm_state
                 .iter()
+                .flat_map(|state| state.iter())
                 .filter(|state| core::ptr::eq(limits, state.limits))
                 .map(|state| {
                     (
+                        None,
                         state.old_last_wasm_exit_pc(),
                         state.old_last_wasm_exit_fp(),
                         state.old_last_wasm_entry_fp(),
                     )
                 }),
         )
-        .take_while(|&(pc, fp, sp)| {
+        .take_while(|&(_chain, pc, fp, sp)| {
             if pc == 0 {
                 debug_assert_eq!(fp, 0);
                 debug_assert_eq!(sp, 0);
@@ -153,8 +184,10 @@ impl Backtrace {
             pc != 0
         });
 
-        for (pc, fp, sp) in activations {
-            if let ControlFlow::Break(()) = Self::trace_through_wasm(unwind, pc, fp, sp, &mut f) {
+        for (chain, pc, fp, sp) in activations {
+            if let ControlFlow::Break(()) =
+                Self::trace_through_continuations(unwind, chain, pc, fp, sp, &mut f)
+            {
                 log::trace!("====== Done Capturing Backtrace (closure break) ======");
                 return;
             }
@@ -163,8 +196,94 @@ impl Backtrace {
         log::trace!("====== Done Capturing Backtrace (reached end of activations) ======");
     }
 
+    unsafe fn trace_through_continuations(
+        unwind: &dyn Unwind,
+        chain: Option<&StackChain>,
+        pc: usize,
+        fp: usize,
+        trampoline_sp: usize,
+        mut f: impl FnMut(Frame) -> ControlFlow<()>,
+    ) -> ControlFlow<()> {
+        use crate::runtime::vm::continuation::imp::VMContRef;
+        use wasmtime_environ::stack_switching::StackLimits;
+
+        // Handle the stack that is currently running (which may be a
+        // continuation or the main stack).
+        Self::trace_through_wasm(unwind, pc, fp, trampoline_sp, &mut f)?;
+
+        chain.map_or(ControlFlow::Continue(()), |chain| {
+            debug_assert_ne!(*chain, StackChain::Absent);
+
+            let stack_limits_vec: Vec<*mut StackLimits> =
+                chain.clone().into_stack_limits_iter().collect();
+            let continuations_vec: Vec<*mut VMContRef> =
+                chain.clone().into_continuation_iter().collect();
+
+            // The StackLimits of the currently running stack (whether that's a
+            // continuation or the main stack) contains undefined data, the
+            // information about that stack is saved in the Store's
+            // `VMRuntimeLimits` and handled at the top of this function already.
+            // That's why we ignore `stack_limits_vec[0]`.
+            //
+            // Note that a continuation stack's ControlContext stores
+            // information about how to resume execution *in its parent*. Thus,
+            // we combine the information from continuations_vec[i] with
+            // stack_limits_vec[i + 1] below to get information about a
+            // particular stack.
+            //
+            // There must be exactly one more `StackLimits` object than there
+            // are continuations, due to the main stack having one, too.
+            assert_eq!(stack_limits_vec.len(), continuations_vec.len() + 1);
+
+            for i in 0..continuations_vec.len() {
+                let (continuation, parent_continuation, parent_limits) = unsafe {
+                    // The continuation whose control context we want to
+                    // access, to get information about how to continue
+                    // execution in its parent.
+                    let continuation = &*continuations_vec[i];
+
+                    // The stack limits describing the parent of `continuation`.
+                    let parent_limits = &*stack_limits_vec[i + 1];
+
+                    // The parent of `continuation`, if the parent is itself a
+                    // continuation. Otherwise, if `continuation` is the last
+                    // continuation (i.e., its parent is the main stack), this is
+                    // None.
+                    let parent_continuation = if i + 1 < continuations_vec.len() {
+                        Some(&*continuations_vec[i + 1])
+                    } else {
+                        None
+                    };
+                    (continuation, parent_continuation, parent_limits)
+                };
+                let fiber_stack = continuation.fiber_stack();
+                let resume_pc = fiber_stack.control_context_instruction_pointer();
+                let resume_fp = fiber_stack.control_context_frame_pointer();
+
+                // If the parent is indeed a continuation, we know the
+                // boundaries of its stack and can perform some extra checks.
+                let parent_stack_range = parent_continuation.and_then(|p| p.fiber_stack().range());
+                parent_stack_range.inspect(|parent_stack_range| {
+                    debug_assert!(parent_stack_range.contains(&resume_fp));
+                    debug_assert!(parent_stack_range.contains(&parent_limits.last_wasm_entry_fp));
+                    debug_assert!(parent_stack_range.contains(&parent_limits.stack_limit));
+                });
+
+                Self::trace_through_wasm(
+                    unwind,
+                    resume_pc,
+                    resume_fp,
+                    parent_limits.last_wasm_entry_fp,
+                    &mut f,
+                )?
+            }
+            ControlFlow::Continue(())
+        })
+    }
+
     /// Walk through a contiguous sequence of Wasm frames starting with the
     /// frame at the given PC and FP and ending at `trampoline_sp`.
+    // TODO(frank-emrich) Implement tracing across continuations.
     unsafe fn trace_through_wasm(
         unwind: &dyn Unwind,
         mut pc: usize,

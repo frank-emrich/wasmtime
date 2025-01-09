@@ -88,7 +88,15 @@ pub enum Trap {
     /// would have violated the reentrance rules of the component model,
     /// triggering a trap instead.
     CannotEnterComponent,
-    // if adding a variant here be sure to update the `check!` macro below
+
+    /// We are suspending to a tag for which there is no active handler.
+    UnhandledTag,
+
+    /// Attempt to resume a continuation twice.
+    ContinuationAlreadyConsumed,
+
+    /// For debug assertions in generated code.
+    DebugAssertion, // if adding a variant here be sure to update the `check!` macro below
 }
 
 impl Trap {
@@ -124,6 +132,9 @@ impl Trap {
             AllocationTooLarge
             CastFailure
             CannotEnterComponent
+            UnhandledTag
+            ContinuationAlreadyConsumed
+            DebugAssertion
         }
 
         None
@@ -154,6 +165,9 @@ impl fmt::Display for Trap {
             AllocationTooLarge => "allocation size too large",
             CastFailure => "cast failure",
             CannotEnterComponent => "cannot enter component instance",
+            UnhandledTag => "unhandled tag",
+            ContinuationAlreadyConsumed => "continuation already consumed",
+            DebugAssertion => "triggered debug assertion",
         };
         write!(f, "wasm trap: {desc}")
     }

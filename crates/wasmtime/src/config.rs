@@ -11,7 +11,9 @@ use std::path::Path;
 use wasmparser::WasmFeatures;
 #[cfg(feature = "cache")]
 use wasmtime_cache::CacheConfig;
-use wasmtime_environ::{ConfigTunables, TripleExt, Tunables};
+use wasmtime_environ::{
+    stack_switching::StackSwitchingConfig, ConfigTunables, TripleExt, Tunables,
+};
 
 #[cfg(feature = "runtime")]
 use crate::memory::MemoryCreator;
@@ -132,6 +134,14 @@ pub struct Config {
     profiling_strategy: ProfilingStrategy,
     tunables: ConfigTunables,
 
+    /// Runtime configuration for the stack switching feature.
+    /// The structure is defined in the
+    /// `wasmtime_environ::stack_switching` module, so that we can
+    /// hand out the configuration object in the interface of
+    /// `wasmtime_runtime::Store` trait, where the full `Config` type
+    /// is not in scope.
+    pub stack_switching_config: StackSwitchingConfig,
+
     #[cfg(feature = "cache")]
     pub(crate) cache_config: CacheConfig,
     #[cfg(feature = "runtime")]
@@ -229,6 +239,7 @@ impl Config {
             tunables: ConfigTunables::default(),
             #[cfg(any(feature = "cranelift", feature = "winch"))]
             compiler_config: CompilerConfig::default(),
+            stack_switching_config: StackSwitchingConfig::default(),
             target: None,
             #[cfg(feature = "gc")]
             collector: Collector::default(),
@@ -728,6 +739,19 @@ impl Config {
         self
     }
 
+    /// Configures the size of the stacks created with cont.new instructions.
+    pub fn stack_switching_stack_size(&mut self, size: usize) -> &mut Self {
+        self.stack_switching_config.stack_size = size;
+        self
+    }
+
+    /// Configures the amount of space that must be left on stack when starting
+    /// execution of a function while running on a continuation stack.
+    pub fn stack_switching_red_zone_size(&mut self, size: usize) -> &mut Self {
+        self.stack_switching_config.red_zone_size = size;
+        self
+    }
+
     fn wasm_feature(&mut self, flag: WasmFeatures, enable: bool) -> &mut Self {
         self.enabled_features.set(flag, enable);
         self.disabled_features.set(flag, !enable);
@@ -1034,6 +1058,32 @@ impl Config {
     #[cfg(feature = "component-model")]
     pub fn wasm_component_model(&mut self, enable: bool) -> &mut Self {
         self.wasm_feature(WasmFeatures::COMPONENT_MODEL, enable);
+        self
+    }
+
+    /// Configures whether the WebAssembly exception handling
+    /// [proposal] will be enabled for compilation.
+    ///
+    /// Note that this feature is a work-in-progress and is incomplete.
+    ///
+    /// This is `false` by default.
+    ///
+    /// [proposal]: https://github.com/WebAssembly/exception-handling
+    pub fn wasm_exceptions(&mut self, enable: bool) -> &mut Self {
+        self.wasm_feature(WasmFeatures::EXCEPTIONS, enable);
+        self
+    }
+
+    /// Configures whether the WebAssembly stack-switching
+    /// [proposal] will be enabled for compilation.
+    ///
+    /// Note that this feature is a work-in-progress and is incomplete.
+    ///
+    /// This is `false` by default.
+    ///
+    /// [proposal]: https://github.com/WebAssembly/stack-switching
+    pub fn wasm_stack_switching(&mut self, enable: bool) -> &mut Self {
+        self.wasm_feature(WasmFeatures::STACK_SWITCHING, enable);
         self
     }
 
@@ -1976,6 +2026,7 @@ impl Config {
                     | WasmFeatures::THREADS
                     | WasmFeatures::RELAXED_SIMD
                     | WasmFeatures::TAIL_CALL
+                    | WasmFeatures::STACK_SWITCHING
                     | WasmFeatures::GC_TYPES;
                 match self.compiler_target().architecture {
                     target_lexicon::Architecture::Aarch64(_) => {
@@ -2361,6 +2412,24 @@ impl Config {
 
         if features.contains(WasmFeatures::RELAXED_SIMD) && !features.contains(WasmFeatures::SIMD) {
             bail!("cannot disable the simd proposal but enable the relaxed simd proposal");
+        }
+
+        if features.contains(WasmFeatures::STACK_SWITCHING) {
+            let model = match target.operating_system {
+                target_lexicon::OperatingSystem::Windows => "update_windows_tib",
+                target_lexicon::OperatingSystem::Linux => "basic",
+                _ => bail!("stack-switching feature not supported on this platform "),
+            };
+
+            if !self
+                .compiler_config
+                .ensure_setting_unset_or_given("stack_switch_model".into(), model.into())
+            {
+                bail!(
+                    "compiler option 'stack_switch_model' must be set to '{}' on this platform",
+                    model
+                );
+            }
         }
 
         // Apply compiler settings and flags

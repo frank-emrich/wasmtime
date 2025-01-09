@@ -137,6 +137,16 @@ pub extern "C" fn wasmtime_config_wasm_memory64_set(c: &mut wasm_config_t, enabl
 }
 
 #[no_mangle]
+pub extern "C" fn wasmtime_config_wasm_exceptions_set(c: &mut wasm_config_t, enable: bool) {
+    c.config.wasm_exceptions(enable);
+}
+
+#[no_mangle]
+pub extern "C" fn wasmtime_config_wasm_stack_switching_set(c: &mut wasm_config_t, enable: bool) {
+    c.config.wasm_stack_switching(enable);
+}
+
+#[no_mangle]
 #[cfg(any(feature = "cranelift", feature = "winch"))]
 pub extern "C" fn wasmtime_config_strategy_set(
     c: &mut wasm_config_t,
