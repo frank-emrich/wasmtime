@@ -58,7 +58,10 @@ pub use vm_contobj::*;
 unsafe impl Send for VMContObj {}
 unsafe impl Sync for VMContObj {}
 
+pub mod stack;
+
 pub mod imp {
+    use super::stack::ContinuationStack;
     use super::stack_chain::StackChain;
     use crate::runtime::vm::{
         vmcontext::{VMFuncRef, ValRaw},
@@ -73,9 +76,6 @@ pub mod imp {
         debug_println,
         stack_switching::{CommonStackInformation, ENABLE_DEBUG_PRINTING},
     };
-
-    /// Fibers used for continuations
-    pub type FiberStack = crate::runtime::vm::fibre::FiberStack;
 
     /// TODO
     #[repr(C)]
@@ -95,7 +95,7 @@ pub mod imp {
         pub last_ancestor: *mut VMContRef,
 
         /// The underlying stack.
-        pub stack: FiberStack,
+        pub stack: ContinuationStack,
 
         /// Used to store
         /// 1. The arguments to the function passed to cont.new
@@ -119,12 +119,12 @@ pub mod imp {
     }
 
     impl VMContRef {
-        pub fn fiber_stack(&self) -> &FiberStack {
+        pub fn fiber_stack(&self) -> &ContinuationStack {
             &self.stack
         }
 
-        pub fn detach_stack(&mut self) -> FiberStack {
-            core::mem::replace(&mut self.stack, FiberStack::unallocated())
+        pub fn detach_stack(&mut self) -> ContinuationStack {
+            core::mem::replace(&mut self.stack, ContinuationStack::unallocated())
         }
 
         /// This is effectively a `Default` implementation, without calling it
@@ -144,7 +144,7 @@ pub mod imp {
             };
             let parent_chain = StackChain::Absent;
             let last_ancestor = std::ptr::null_mut();
-            let stack = FiberStack::unallocated();
+            let stack = ContinuationStack::unallocated();
             let args = Payloads::new(0);
             let values = Payloads::new(0);
             let revision = 0;
@@ -268,11 +268,11 @@ pub mod imp {
             contref.last_ancestor = contref;
 
             // In order to give the pool a uniform interface for the optimized
-            // and baseline implementation, it returns the `FiberStack` as a
+            // and baseline implementation, it returns the `ContinuationStack` as a
             // standalone value, without being attached to the `VMContRef`.
-            // We attach them here, the previous `FiberStack` attached to the
+            // We attach them here, the previous `ContinuationStack` attached to the
             // `VMContRef` while in the pool should be an empty dummy
-            // `FiberStack`.
+            // `ContinuationStack`.
             std::mem::swap(&mut contref.stack, &mut stack);
             debug_assert!(stack.is_unallocated());
             debug_assert!(!contref.stack.is_unallocated());
@@ -315,7 +315,7 @@ pub mod imp {
 
         assert_eq!(offset_of!(VMContRef, revision), vm_cont_ref::REVISION);
 
-        assert_eq!(core::mem::size_of::<FiberStack>(), FIBER_STACK_SIZE);
+        assert_eq!(core::mem::size_of::<ContinuationStack>(), FIBER_STACK_SIZE);
         assert_eq!(core::mem::size_of::<StackChain>(), STACK_CHAIN_SIZE);
 
         // `CommonStackInformation` and `StackLimits` offsets don't need tests because

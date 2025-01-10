@@ -81,8 +81,8 @@ use crate::instance::InstanceData;
 use crate::linker::Definition;
 use crate::module::RegisteredModuleId;
 use crate::prelude::*;
-use crate::runtime::vm::continuation::stack_chain::{StackChain, StackChainCell};
 use crate::runtime::vm::mpk::{self, ProtectionKey, ProtectionMask};
+use crate::runtime::vm::stack_switching::stack_chain::{StackChain, StackChainCell};
 use crate::runtime::vm::{
     Backtrace, ExportGlobal, GcRootsList, GcStore, InstanceAllocationRequest, InstanceAllocator,
     InstanceHandle, Interpreter, InterpreterRef, ModuleRuntimeInfo, OnDemandInstanceAllocator,

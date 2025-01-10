@@ -36,9 +36,9 @@
 //!
 //! Note that this design ensures that external tools can construct backtraces
 //! in the presence of stack switching by using frame pointers only: The
-//! wasmtime_fibre_start trampoline uses the address of the RBP field in the
+//! wasmtime_continuation_start trampoline uses the address of the RBP field in the
 //! control context (0xAff0 above) as its frame pointer. This means that when
-//! passing the wasmtime_fibre_start frame while doing frame pointer walking,
+//! passing the wasmtime_continuation_start frame while doing frame pointer walking,
 //! the parent of that frame is the last frame in the parent of this
 //! continuation.
 //!
@@ -58,14 +58,13 @@ use crate::runtime::vm::{VMContext, VMFuncRef, VMOpaqueContext, ValRaw};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Allocator {
-    Malloc,
     Mmap,
     Custom,
 }
 
 #[derive(Debug)]
 #[repr(C)]
-pub struct FiberStack {
+pub struct ContinuationStack {
     // The top of the stack; for stacks allocated by the fiber implementation itself,
     // the base address of the allocation will be `top.sub(len.unwrap())`
     top: *mut u8,
@@ -75,7 +74,7 @@ pub struct FiberStack {
     allocator: Allocator,
 }
 
-impl FiberStack {
+impl ContinuationStack {
     pub fn new(size: usize) -> io::Result<Self> {
         // Round up our stack size request to the nearest multiple of the
         // page size.
@@ -106,18 +105,6 @@ impl FiberStack {
                 top: mmap.cast::<u8>().add(mmap_len),
                 len: mmap_len,
                 allocator: Allocator::Mmap,
-            })
-        }
-    }
-
-    pub fn malloc(size: usize) -> io::Result<Self> {
-        unsafe {
-            let layout = Layout::array::<u8>(size).unwrap();
-            let base = alloc(layout);
-            Ok(Self {
-                top: base.add(size),
-                len: size,
-                allocator: Allocator::Malloc,
             })
         }
     }
@@ -184,20 +171,20 @@ impl FiberStack {
     /// actually runs the desired computation.
     ///
     /// Concretely, switching to the stack prepared by this function
-    /// causes that we enter `wasmtime_fibre_start`, which then in turn
+    /// causes that we enter `wasmtime_continuation_start`, which then in turn
     /// calls `fiber_start` with  the following arguments:
     /// TOS, func_ref, caller_vmctx, args_ptr, args_capacity
     ///
-    /// The layout of the FiberStack near the top of stack (TOS) *after* running
+    /// The layout of the ContinuationStack near the top of stack (TOS) *after* running
     /// this function is as follows:
     ///
     ///  Offset from    |
     ///       TOS       | Contents
     ///  ---------------|-------------------------------------------------------
-    ///          -0x08   address of wasmtime_fibre_start function (future PC)
+    ///          -0x08   address of wasmtime_continuation_start function (future PC)
     ///          -0x10   TOS - 0x10 (future RBP)
     ///          -0x18   TOS - 0x40 (future RSP)
-    ///          -0x20   0 (alignment and wasmtime_fibre_start can't return)
+    ///          -0x20   0 (alignment and wasmtime_continuation_start can't return)
     ///          -0x28   func_ref
     ///          -0x30   caller_vmctx
     ///          -0x38   args_ptr
@@ -221,7 +208,7 @@ impl FiberStack {
             // Yes, these offsets are technically redundant, but they make
             // things more readable.
             let to_store = [
-                (0x08, wasmtime_fibre_start as usize),
+                (0x08, wasmtime_continuation_start as usize),
                 (0x10, tos.sub(0x10) as usize),
                 (0x18, tos.sub(0x40) as usize),
                 (0x20, 0),
@@ -240,21 +227,17 @@ impl FiberStack {
 
 pub fn switch_to_parent(top_of_stack: *mut u8) {
     unsafe {
-        wasmtime_fibre_switch_to_parent(top_of_stack);
+        wasmtime_continuation_switch_to_parent(top_of_stack);
     }
 }
 
-impl Drop for FiberStack {
+impl Drop for ContinuationStack {
     fn drop(&mut self) {
         unsafe {
             match self.allocator {
                 Allocator::Mmap => {
                     let ret = rustix::mm::munmap(self.top.sub(self.len) as _, self.len);
                     debug_assert!(ret.is_ok());
-                }
-                Allocator::Malloc => {
-                    let layout = Layout::array::<u8>(self.len).unwrap();
-                    dealloc(self.top.sub(self.len), layout);
                 }
                 Allocator::Custom => {} // It's the creator's responsibility to reclaim the memory.
             }
@@ -263,13 +246,13 @@ impl Drop for FiberStack {
 }
 
 extern "C" {
-    fn wasmtime_fibre_switch_to_parent(top_of_stack: *mut u8);
+    fn wasmtime_continuation_switch_to_parent(top_of_stack: *mut u8);
     #[allow(dead_code)] // only used in inline assembly for some platforms
-    fn wasmtime_fibre_start();
+    fn wasmtime_continuation_start();
 }
 
 /// This function is responsible for actually running a wasm function inside a
-/// continuation. It is only ever called from `wasmtime_fibre_start`. Hence, it
+/// continuation. It is only ever called from `wasmtime_continuation_start`. Hence, it
 /// must never return.
 extern "C" fn fiber_start(
     top_of_stack: *mut u8,
@@ -293,7 +276,7 @@ extern "C" fn fiber_start(
         // `cont.new`). However, we may subsequenly `resume` the continuation
         // from a different Wasm instance. The way to fix this would be to make
         // the currently active `VMContext` an additional parameter of
-        // `wasmtime_fibre_switch` and pipe it through to this point. However,
+        // `wasmtime_continuation_switch` and pipe it through to this point. However,
         // since the caller vmctx is only really used to access stuff in the
         // underlying `Store`, it's fine to be slightly sloppy about the exact
         // value we set.
@@ -309,6 +292,6 @@ cfg_if::cfg_if! {
     if #[cfg(target_arch = "x86_64")] {
         mod x86_64;
     } else {
-        compile_error!("fibers are not supported on this CPU architecture");
+        compile_error!("the stack switching feature is not supported on this CPU architecture");
     }
 }

@@ -18,7 +18,7 @@ pub use self::signals::*;
 use crate::prelude::*;
 use crate::runtime::module::lookup_code;
 use crate::runtime::store::StoreOpaque;
-use crate::runtime::vm::continuation::stack_chain::StackChainCell;
+use crate::runtime::vm::stack_switching::stack_chain::StackChainCell;
 use crate::runtime::vm::sys::traphandlers;
 use crate::runtime::vm::{Instance, InterpreterRef, VMContext, VMOpaqueContext, VMRuntimeLimits};
 use crate::{StoreContextMut, WasmBacktrace};

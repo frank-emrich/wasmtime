@@ -3,9 +3,9 @@
 //! `InstanceHandle` is a reference-counting handle for an `Instance`.
 
 use crate::runtime::vm::const_expr::{ConstEvalContext, ConstExprEvaluator};
-use crate::runtime::vm::continuation::stack_chain::StackChainCell;
 use crate::runtime::vm::export::Export;
 use crate::runtime::vm::memory::{Memory, RuntimeMemoryCreator};
+use crate::runtime::vm::stack_switching::stack_chain::StackChainCell;
 use crate::runtime::vm::table::{Table, TableElement, TableElementType};
 use crate::runtime::vm::vmcontext::{
     VMBuiltinFunctionsArray, VMContext, VMFuncRef, VMFunctionImport, VMGlobalDefinition,
@@ -1514,7 +1514,7 @@ impl Instance {
     ) -> Result<
         (
             *mut stacks_allocator::VMContRef,
-            stacks_allocator::FiberStack,
+            stacks_allocator::ContinuationStack,
         ),
         Error,
     > {

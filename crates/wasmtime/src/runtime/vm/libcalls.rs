@@ -54,8 +54,8 @@
 //! }
 //! ```
 
-use super::continuation::imp::VMContRef;
-use super::continuation::VMContObj;
+use super::stack_switching::imp::VMContRef;
+use super::stack_switching::VMContObj;
 use crate::prelude::*;
 use crate::runtime::vm::table::{Table, TableElementType};
 use crate::runtime::vm::vmcontext::VMFuncRef;
@@ -1416,7 +1416,7 @@ pub mod relocs {
 }
 
 // Builtins for continuations. These are thin wrappers around the
-// respective definitions in continuation.rs.
+// respective definitions in stack_switching.rs.
 fn cont_new(
     store: &mut dyn VMStore,
     instance: &mut Instance,
@@ -1424,15 +1424,20 @@ fn cont_new(
     param_count: u32,
     result_count: u32,
 ) -> Result<Option<AllocationSize>, TrapReason> {
-    let ans =
-        crate::vm::continuation::imp::cont_new(store, instance, func, param_count, result_count)?;
+    let ans = crate::vm::stack_switching::imp::cont_new(
+        store,
+        instance,
+        func,
+        param_count,
+        result_count,
+    )?;
     Ok(Some(AllocationSize(ans.cast::<u8>() as usize)))
 }
 
 fn cont_ref_drop(_store: &mut dyn VMStore, instance: &mut Instance, contref: *mut u8) {
-    crate::vm::continuation::imp::drop_cont_ref(
+    crate::vm::stack_switching::imp::drop_cont_ref(
         instance,
-        contref.cast::<crate::vm::continuation::imp::VMContRef>(),
+        contref.cast::<crate::vm::stack_switching::imp::VMContRef>(),
     );
 }
 

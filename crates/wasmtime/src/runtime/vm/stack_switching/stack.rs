@@ -1,5 +1,5 @@
 //! This module contains a modified version of the `wasmtime_fiber` crate,
-//! specialized for executing WasmFX continuations.
+//! specialized for executing stack switching continuations.
 
 #![allow(missing_docs)]
 
@@ -13,34 +13,29 @@ cfg_if::cfg_if! {
         pub mod unix;
         use unix as imp;
     } else {
-        compile_error!("fibers are not supported on this platform");
+        compile_error!("the stack switching feature is not supported on this platform");
     }
 }
 
 /// Represents an execution stack to use for a fiber.
 #[derive(Debug)]
 #[repr(C)]
-pub struct FiberStack(imp::FiberStack);
+pub struct ContinuationStack(imp::ContinuationStack);
 
-impl FiberStack {
+impl ContinuationStack {
     /// Creates a new fiber stack of the given size.
     pub fn new(size: usize) -> io::Result<Self> {
-        Ok(Self(imp::FiberStack::new(size)?))
+        Ok(Self(imp::ContinuationStack::new(size)?))
     }
 
     /// Returns a stack of size 0.
     pub fn unallocated() -> Self {
-        Self(imp::FiberStack::unallocated())
+        Self(imp::ContinuationStack::unallocated())
     }
 
     /// Is this stack unallocated/of size 0?
     pub fn is_unallocated(&self) -> bool {
-        imp::FiberStack::is_unallocated(&self.0)
-    }
-
-    /// Creates a new fiber stack of the given size (using malloc).
-    pub fn malloc(size: usize) -> io::Result<Self> {
-        Ok(Self(imp::FiberStack::malloc(size)?))
+        imp::ContinuationStack::is_unallocated(&self.0)
     }
 
     /// Creates a new fiber stack with the given pointer to the bottom of the
@@ -60,7 +55,7 @@ impl FiberStack {
         guard_size: usize,
         len: usize,
     ) -> io::Result<Self> {
-        Ok(Self(imp::FiberStack::from_raw_parts(
+        Ok(Self(imp::ContinuationStack::from_raw_parts(
             bottom, guard_size, len,
         )?))
     }

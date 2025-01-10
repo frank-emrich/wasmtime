@@ -8,12 +8,12 @@
 use crate::prelude::*;
 use crate::store::StoreOpaque;
 use alloc::sync::Arc;
-use continuation::stack_chain::StackChainCell;
 use core::fmt;
 use core::ops::Deref;
 use core::ops::DerefMut;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
+use stack_switching::stack_chain::StackChainCell;
 use wasmtime_environ::{
     stack_switching::StackSwitchingConfig, DefinedFuncIndex, DefinedMemoryIndex, HostPtr,
     ModuleInternedTypeIndex, VMOffsets, VMSharedTypeIndex,
@@ -39,13 +39,12 @@ mod traphandlers;
 mod unwind;
 mod vmcontext;
 
-pub mod continuation;
 #[cfg(feature = "threads")]
 mod parking_spot;
+pub mod stack_switching;
 
 #[cfg(feature = "debug-builtins")]
 pub mod debug_builtins;
-pub mod fibre;
 pub mod libcalls;
 pub mod mpk;
 

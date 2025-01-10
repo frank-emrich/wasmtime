@@ -16,7 +16,7 @@ use wasmtime_asm_macros::asm_func;
 // the current stack and are returning to the parent.
 // Thus, this function never returns.
 asm_func!(
-    "wasmtime_fibre_switch_to_parent",
+    "wasmtime_continuation_switch_to_parent",
     "
         // We need RDI later on, use RSI for top of stack instead.
         mov rsi, rdi
@@ -36,7 +36,7 @@ asm_func!(
 
 // This is a pretty special function that has no real signature. Its use is to
 // be the "base" function of all fibers. This entrypoint is used in
-// `wasmtime_fibre_init` to bootstrap the execution of a new fiber.
+// `wasmtime_continuation_init` to bootstrap the execution of a new fiber.
 //
 // We also use this function as a persistent frame on the stack to emit dwarf
 // information to unwind into the caller. This allows us to unwind from the
@@ -53,12 +53,12 @@ asm_func!(
 //
 // Executing `stack_switch` on a stack prepared by `FiberStack::initialize` as
 // described in the comment on `FiberStack::initialize` leads to the following
-// values in various registers when execution of wasmtime_fibre_start begins:
+// values in various registers when execution of wasmtime_continuation_start begins:
 //
 // RSP: TOS - 0x40
 // RBP: TOS - 0x10
 asm_func!(
-    "wasmtime_fibre_start",
+    "wasmtime_continuation_start",
     "
         // TODO(frank-emrich): Restore DWARF information for this function. In
         // the meantime, debugging is possible using frame pointer walking.
@@ -74,7 +74,7 @@ asm_func!(
         // 5. args_capacity
         //
         // Note that `fiber_start` never returns: Instead, it resume to the
-        // parent using `wasmtime_fibre_switch_to_parent`.
+        // parent using `wasmtime_continuation_switch_to_parent`.
 
         pop r8  // args_capacity
         pop rcx // args_ptr
@@ -91,7 +91,7 @@ asm_func!(
 
 #[test]
 fn test_return_payload() {
-    // The following assumption is baked into `wasmtime_fibre_switch_to_parent`.
+    // The following assumption is baked into `wasmtime_continuation_switch_to_parent`.
     assert_eq!(
         wasmtime_environ::stack_switching::CONTROL_EFFECT_RETURN_DISCRIMINANT,
         0

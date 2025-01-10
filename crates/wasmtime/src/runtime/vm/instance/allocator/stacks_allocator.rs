@@ -8,7 +8,7 @@ use crate::prelude::*;
 use anyhow::Result;
 use wasmtime_environ::stack_switching::StackSwitchingConfig;
 
-pub use crate::runtime::vm::continuation::imp::{FiberStack, VMContRef};
+pub use crate::runtime::vm::stack_switching::{imp::VMContRef, stack::ContinuationStack};
 
 // This module is dead code if the pooling allocator is toggled.
 #[allow(dead_code)]
@@ -27,8 +27,8 @@ pub mod on_demand {
             })
         }
 
-        pub fn allocate(&mut self) -> Result<(*mut VMContRef, FiberStack)> {
-            let stack = super::FiberStack::new(self.stack_size);
+        pub fn allocate(&mut self) -> Result<(*mut VMContRef, ContinuationStack)> {
+            let stack = super::ContinuationStack::new(self.stack_size);
             let stack = stack.map_err(|_| anyhow::anyhow!("Fiber stack allocation failed"));
             let contref = Box::into_raw(Box::new(VMContRef::empty()));
             Ok((contref, stack?))
@@ -55,18 +55,18 @@ impl StacksAllocator {
     }
 
     /// Note that for technical reasons, we return the `VMContRef` and
-    /// `FiberStack` separately. In particular, the stack field of the
+    /// `ContinuationStack` separately. In particular, the stack field of the
     /// continuation does not correspond to/point to that stack, yet. Instead, the
     /// `VMContRef` returned here has an empty stack (i.e., `None` in the
     /// baseline implementation, or an empty dummy stack in the optimized
     /// implementation).
     /// This allows the baseline implementation of the allocator interface to
-    /// initialize a new `Fiber` from the `FiberStack`. then save it in the
+    /// initialize a new `Fiber` from the `ContinuationStack`. then save it in the
     /// `VMContRef`.
     ///
     /// Note that the `revision` counter of the returned `VMContRef` may be
     /// non-zero and must not be decremented.
-    pub fn allocate(&mut self) -> Result<(*mut VMContRef, FiberStack)> {
+    pub fn allocate(&mut self) -> Result<(*mut VMContRef, ContinuationStack)> {
         self.inner.allocate()
     }
 

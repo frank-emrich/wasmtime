@@ -23,7 +23,7 @@
 
 use crate::prelude::*;
 use crate::runtime::store::StoreOpaque;
-use crate::runtime::vm::continuation::stack_chain::StackChain;
+use crate::runtime::vm::stack_switching::stack_chain::StackChain;
 use crate::runtime::vm::{
     traphandlers::{tls, CallThreadState},
     Unwind, VMRuntimeLimits,
@@ -204,7 +204,7 @@ impl Backtrace {
         trampoline_sp: usize,
         mut f: impl FnMut(Frame) -> ControlFlow<()>,
     ) -> ControlFlow<()> {
-        use crate::runtime::vm::continuation::imp::VMContRef;
+        use crate::runtime::vm::stack_switching::imp::VMContRef;
         use wasmtime_environ::stack_switching::StackLimits;
 
         // Handle the stack that is currently running (which may be a
