@@ -2043,24 +2043,14 @@ impl From<wasmparser::MemoryType> for Memory {
 /// WebAssembly event.
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Tag {
-    /// The event signature type.
-    pub ty: TypeIndex,
     /// The tag signature type.
     pub signature: EngineOrModuleTypeIndex,
 }
 
 impl Tag {
     /// Constructs a new tag.
-    pub fn new(idx: TypeIndex, signature: EngineOrModuleTypeIndex) -> Self {
-        Self { ty: idx, signature }
-    }
-
-    /// Partially constructs a new tag (HACK).
-    pub fn partial(idx: u32) -> Self {
-        Tag::new(
-            TypeIndex::from_u32(idx),
-            EngineOrModuleTypeIndex::Module(ModuleInternedTypeIndex(u32::MAX - 1)),
-        )
+    pub fn new(signature: EngineOrModuleTypeIndex) -> Self {
+        Self { signature }
     }
 }
 
@@ -2080,13 +2070,13 @@ impl TypeTrace for Tag {
     }
 }
 
-impl From<wasmparser::TagType> for Tag {
-    fn from(ty: wasmparser::TagType) -> Tag {
-        match ty.kind {
-            wasmparser::TagKind::Exception => Tag::partial(ty.func_type_idx),
-        }
-    }
-}
+// impl From<wasmparser::TagType> for Tag {
+//     fn from(ty: wasmparser::TagType) -> Tag {
+//         match ty.kind {
+//             wasmparser::TagKind::Exception => Tag::partial(ty.func_type_idx),
+//         }
+//     }
+// }
 
 /// Helpers used to convert a `wasmparser` type to a type in this crate.
 #[allow(missing_docs, reason = "self-describing functions")]

@@ -566,9 +566,9 @@ impl Module {
     }
 
     /// TODO
-    pub fn push_tag(&mut self, idx: TypeIndex, signature: ModuleInternedTypeIndex) -> TagIndex {
+    pub fn push_tag(&mut self, _idx: TypeIndex, signature: ModuleInternedTypeIndex) -> TagIndex {
         self.tags
-            .push(Tag::new(idx, EngineOrModuleTypeIndex::Module(signature)))
+            .push(Tag::new(EngineOrModuleTypeIndex::Module(signature)))
     }
 
     /// Returns an iterator over all of the defined function indices in this
