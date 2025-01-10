@@ -358,11 +358,12 @@ pub unsafe fn catch_traps<T, F>(
 where
     F: FnMut(*mut VMContext, Option<InterpreterRef<'_>>) -> bool,
 {
-    let callee_stack_chain = VMContext::try_from_opaque(callee)
-        .map(|vmctx| Instance::from_vmctx(vmctx, |i| *i.stack_chain() as *const StackChainCell));
+
 
     let caller = store.0.default_caller();
-    let result = CallThreadState::new(store.0, caller, callee_stack_chain).with(|cx| {
+    let caller_stack_chain =
+        Instance::from_vmctx(caller, |i| *i.stack_chain() as *const StackChainCell);
+    let result = CallThreadState::new(store.0, caller, Some(caller_stack_chain)).with(|cx| {
         match store.0.interpreter() {
             // In interpreted mode directly invoke the host closure since we won't
             // be using host-based `setjmp`/`longjmp` as that's not going to save

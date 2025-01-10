@@ -1603,7 +1603,7 @@ pub(crate) fn invoke_wasm_and_catch_traps<T>(
     callee: *mut VMOpaqueContext,
 ) -> Result<()> {
     unsafe {
-        if VMContext::try_from_opaque(callee).is_some() {
+        if true {
             // If we get here, the callee is a "proper" `VMContext`, and we are
             // indeed calling into wasm.
             //
