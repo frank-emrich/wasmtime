@@ -862,10 +862,9 @@ pub(crate) mod stack_switching_helpers {
         ) -> StackChain {
             let base_addr = self.address;
 
-            let offset =
-                i32::try_from(env.offsets.vmctx_typed_continuations_stack_chain()).unwrap();
+            let offset = i32::try_from(env.offsets.vmctx_stack_switching_stack_chain()).unwrap();
 
-            // The `typed_continuations_stack_chain` field of the VMContext only
+            // The `stack_switching_stack_chain` field of the VMContext only
             // contains a pointer to the `StackChainCell` in the `Store`.
             // The pointer never changes through the liftime of a `VMContext`,
             // which is why this load is `readonly`.
@@ -890,8 +889,7 @@ pub(crate) mod stack_switching_helpers {
         ) {
             let base_addr = self.address;
 
-            let offset =
-                i32::try_from(env.offsets.vmctx_typed_continuations_stack_chain()).unwrap();
+            let offset = i32::try_from(env.offsets.vmctx_stack_switching_stack_chain()).unwrap();
 
             // Same situation as in `load_stack_chain` regarding pointer
             // indirection and it being `readonly`.
@@ -1423,10 +1421,8 @@ fn vmctx_load_payloads<'a>(
 
     if valtypes.len() > 0 {
         let vmctx = env.vmctx_val(&mut builder.cursor());
-        let vmctx_payloads = helpers::Payloads::new(
-            vmctx,
-            env.offsets.vmctx_typed_continuations_payloads() as i32,
-        );
+        let vmctx_payloads =
+            helpers::Payloads::new(vmctx, env.offsets.vmctx_stack_switching_payloads() as i32);
 
         values = vmctx_payloads.load_data_entries(env, builder, valtypes);
 
@@ -1554,10 +1550,8 @@ pub(crate) fn vmctx_store_payloads<'a>(
 ) {
     if values.len() > 0 {
         let vmctx = env.vmctx_val(&mut builder.cursor());
-        let payloads = helpers::Payloads::new(
-            vmctx,
-            env.offsets.vmctx_typed_continuations_payloads() as i32,
-        );
+        let payloads =
+            helpers::Payloads::new(vmctx, env.offsets.vmctx_stack_switching_payloads() as i32);
 
         let nargs = builder.ins().iconst(I32, values.len() as i64);
         payloads.ensure_capacity(env, builder, nargs);
@@ -1787,7 +1781,6 @@ pub(crate) fn translate_cont_bind<'a>(
     args: &[ir::Value],
     remaining_arg_count: usize,
 ) -> ir::Value {
-    //let contref = typed_continuations_cont_obj_get_cont_ref(env, builder, contobj);
     let (witness, contref) = fatpointer::deconstruct(env, builder, contobj);
     let mut vmcontref = helpers::VMContRef::new(contref);
     let revision = vmcontref.get_revision(env, builder);
@@ -1823,7 +1816,7 @@ pub(crate) fn translate_cont_new<'a>(
 ) -> WasmResult<ir::Value> {
     let nargs = builder.ins().iconst(I32, arg_types.len() as i64);
     let nreturns = builder.ins().iconst(I32, return_types.len() as i64);
-    call_builtin!(builder, env, let contref = tc_cont_new(func, nargs, nreturns));
+    call_builtin!(builder, env, let contref = cont_new(func, nargs, nreturns));
     let tag = helpers::VMContRef::new(contref).get_revision(env, builder);
     let contobj = fatpointer::construct(env, builder, tag, contref);
     emit_debug_println!(env, builder, "[cont_new] contref = {:p}", contref);
@@ -2233,7 +2226,7 @@ pub(crate) fn translate_resume<'a>(
         // object if there are no lingering references to it,
         // otherwise we have to keep it alive (though it can be
         // repurposed).
-        call_builtin!(builder, env, tc_drop_cont_ref(returned_contref.address));
+        call_builtin!(builder, env, cont_ref_drop(returned_contref.address));
 
         Ok(values)
     }

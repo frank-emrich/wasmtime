@@ -32,12 +32,13 @@
 /// For performance reasons, the VMContRef at the bottom of this chain
 /// (i.e., the one pointed to by the VMContObj) has a pointer to the
 /// other end of the chain (i.e., its last ancestor).
-pub mod safe_vm_contobj {
+pub mod vm_contobj {
     use super::imp::VMContRef;
     use core::ptr::NonNull;
 
-    // This type is 16 byte aligned so that we can do an aligned load into a
-    // 128bit value (see [wasmtime_cranelift::wasmfx::shared::vm_contobj_type]).
+    // This type is 16 byte aligned so that we can do an aligned load
+    // into a 128bit value (see
+    // [wasmtime_cranelift::stack_switching::fatpointer::pointer_type]).
     #[repr(C, align(16))]
     #[derive(Debug, Clone, Copy)]
     pub struct VMContObj {
@@ -52,7 +53,7 @@ pub mod safe_vm_contobj {
     }
 }
 
-pub use safe_vm_contobj::*;
+pub use vm_contobj::*;
 
 unsafe impl Send for VMContObj {}
 unsafe impl Sync for VMContObj {}
@@ -340,57 +341,65 @@ pub mod stack_chain {
     ///
     /// There are generally two uses of such chains:
     ///
-    /// 1. The `typed_continuations_chain` field in the VMContext contains such a
-    /// chain of stacks, where the head of the list denotes the stack that is
-    /// currently executing (either a continuation or the main stack), as well as
-    /// the parent stacks, in case of a continuation currently running. Note that in
-    /// this case, the linked list must contains 0 or more `Continuation` elements,
-    /// followed by a final `MainStack` element. In particular, this list always
-    /// ends with `MainStack` and never contains an `Absent` variant.
+    /// 1. The `stack_switching_stack_chain` field in the VMContext
+    /// contains such a chain of stacks, where the head of the list
+    /// denotes the stack that is currently executing (either a
+    /// continuation or the main stack), as well as the parent stacks,
+    /// in case of a continuation currently running. Note that in this
+    /// case, the linked list must contains 0 or more `Continuation`
+    /// elements, followed by a final `MainStack` element. In
+    /// particular, this list always ends with `MainStack` and never
+    /// contains an `Absent` variant.
     ///
-    /// 2. When a continuation is suspended, its chain of parents eventually ends
-    /// with an `Absent` variant in its `parent_chain` field. Note that a suspended
-    /// continuation never appears in the stack chain in the VMContext!
+    /// 2. When a continuation is suspended, its chain of parents
+    /// eventually ends with an `Absent` variant in its `parent_chain`
+    /// field. Note that a suspended continuation never appears in the
+    /// stack chain in the VMContext!
     ///
     ///
-    /// As mentioned before, each stack in a `StackChain` has a corresponding
-    /// `StackLimits` object. For continuations, this is stored in the `limits`
-    /// fields of the corresponding `VMContRef`. For the main stack, the
-    /// `MainStack` variant contains a pointer to the
-    /// `typed_continuations_main_stack_limits` field of the VMContext.
+    /// As mentioned before, each stack in a `StackChain` has a
+    /// corresponding `StackLimits` object. For continuations, this is
+    /// stored in the `limits` fields of the corresponding
+    /// `VMContRef`. For the main stack, the `MainStack` variant
+    /// contains a pointer to the `stack_switching_main_stack_limits`
+    /// field of the VMContext.
     ///
-    /// The following invariants hold for these `StackLimits` objects, and the data
-    /// in `VMRuntimeLimits`.
+    /// The following invariants hold for these `StackLimits` objects,
+    /// and the data in `VMRuntimeLimits`.
     ///
-    /// Currently executing stack:
-    /// For the currently executing stack (i.e., the stack that is at the head of
-    /// the VMContext's `typed_continuations_chain` list), the associated
-    /// `StackLimits` object contains stale/undefined data. Instead, the live data
-    /// describing the limits for the currently executing stack is always maintained
-    /// in `VMRuntimeLimits`. Note that as a general rule independently from any
-    /// execution of continuations, the `last_wasm_exit*` fields in the
-    /// `VMRuntimeLimits` contain undefined values while executing wasm.
+    /// Currently executing stack: For the currently executing stack
+    /// (i.e., the stack that is at the head of the VMContext's
+    /// `stack_switching_stack_chain` list), the associated
+    /// `StackLimits` object contains stale/undefined data. Instead,
+    /// the live data describing the limits for the currently
+    /// executing stack is always maintained in
+    /// `VMRuntimeLimits`. Note that as a general rule independently
+    /// from any execution of continuations, the `last_wasm_exit*`
+    /// fields in the `VMRuntimeLimits` contain undefined values while
+    /// executing wasm.
     ///
-    /// Parents of currently executing stack:
-    /// For stacks that appear in the tail of the VMContext's
-    /// `typed_continuations_chain` list (i.e., stacks that are not currently
-    /// executing themselves, but are a parent of the currently executing stack), we
-    /// have the following: All the fields in the stack's StackLimits are valid,
-    /// describing the stack's stack limit, and pointers where executing for that
-    /// stack entered and exited WASM.
+    /// Parents of currently executing stack: For stacks that appear
+    /// in the tail of the VMContext's `stack_switching_stack_chain`
+    /// list (i.e., stacks that are not currently executing
+    /// themselves, but are a parent of the currently executing
+    /// stack), we have the following: All the fields in the stack's
+    /// StackLimits are valid, describing the stack's stack limit, and
+    /// pointers where executing for that stack entered and exited
+    /// WASM.
     ///
-    /// Suspended continuations:
-    /// For suspended continuations (including their parents), we have the
-    /// following. Note that the main stack can never be in this state. The
-    /// `stack_limit` and `last_enter_wasm_sp` fields of the corresponding
-    /// `StackLimits` object contain valid data, while the `last_exit_wasm_*` fields
-    /// contain arbitrary values.
-    /// There is only one exception to this: Note that a continuation that has been
-    /// created with cont.new, but never been resumed so far, is considered
-    /// "suspended". However, its `last_enter_wasm_sp` field contains undefined
-    /// data. This is justified, because when resume-ing a continuation for the
-    /// first time, a native-to-wasm trampoline is called, which sets up the
-    /// `last_wasm_entry_sp` in the `VMRuntimeLimits` with the correct value, thus
+    /// Suspended continuations: For suspended continuations
+    /// (including their parents), we have the following. Note that
+    /// the main stack can never be in this state. The `stack_limit`
+    /// and `last_enter_wasm_sp` fields of the corresponding
+    /// `StackLimits` object contain valid data, while the
+    /// `last_exit_wasm_*` fields contain arbitrary values.  There is
+    /// only one exception to this: Note that a continuation that has
+    /// been created with cont.new, but never been resumed so far, is
+    /// considered "suspended". However, its `last_enter_wasm_sp`
+    /// field contains undefined data. This is justified, because when
+    /// resume-ing a continuation for the first time, a native-to-wasm
+    /// trampoline is called, which sets up the `last_wasm_entry_sp`
+    /// in the `VMRuntimeLimits` with the correct value, thus
     /// restoring the necessary invariant.
     #[derive(Debug, Clone, PartialEq)]
     #[repr(usize, C)]

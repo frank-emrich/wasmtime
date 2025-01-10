@@ -310,9 +310,10 @@ wasmtime_option_group! {
         pub timeout: Option<Duration>,
         /// Size of stacks created with cont.new instructions
         pub stack_switching_stack_size: Option<usize>,
-        /// Space that must be left on stack when starting execution of a
-        /// function while running on a continuation stack.
-        /// Must be smaller than the `wasmfx_stack_size` option above.
+        /// Space that must be left on stack when starting execution
+        /// of a function while running on a continuation stack.  Must
+        /// be smaller than the `stack_switching_stack_size` option
+        /// above.
         pub stack_switching_red_zone_size: Option<usize>,
         /// Configures support for all WebAssembly proposals implemented.
         pub all_proposals: Option<bool>,

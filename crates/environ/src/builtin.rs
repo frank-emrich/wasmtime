@@ -207,10 +207,9 @@ macro_rules! foreach_builtin_function {
             raise(vmctx: vmctx);
 
             // Creates a new continuation from a funcref.
-            tc_cont_new(vmctx: vmctx, r: pointer, param_count: i32, result_count: i32) -> pointer;
-
-            // TODO
-            tc_drop_cont_ref(vmctx: vmctx, contref: pointer);
+            cont_new(vmctx: vmctx, r: pointer, param_count: i32, result_count: i32) -> pointer;
+            // Drops a continuation reference.
+            cont_ref_drop(vmctx: vmctx, contref: pointer);
 
             // General-purpose allocation. Only used by stack-switching
             // code at the moment.
@@ -415,15 +414,9 @@ impl BuiltinFunctionIndex {
             (@get intern_func_ref_for_gc_heap i64) => (return None);
             (@get is_subtype i32) => (return None);
 
-            (@get tc_cont_new pointer) => (TrapSentinel::Negative);
+            (@get cont_new pointer) => (TrapSentinel::Negative);
             (@get tc_allocate pointer) => (TrapSentinel::Negative);
             (@get tc_reallocate pointer) => (TrapSentinel::Negative);
-            (@get tc_baseline_resume i32) => (return None);
-            (@get tc_baseline_cont_new pointer) => (TrapSentinel::Negative);
-            (@get tc_baseline_continuation_arguments_ptr pointer) => (TrapSentinel::Negative);
-            (@get tc_baseline_continuation_values_ptr pointer) => (TrapSentinel::Negative);
-            (@get tc_baseline_get_payloads_ptr pointer) => (TrapSentinel::Negative);
-            (@get tc_baseline_get_current_continuation pointer) => (TrapSentinel::Negative);
 
             // Bool-returning functions use `false` as an indicator of a trap.
             (@get $name:ident bool) => (TrapSentinel::Falsy);

@@ -1417,7 +1417,7 @@ pub mod relocs {
 
 // Builtins for continuations. These are thin wrappers around the
 // respective definitions in continuation.rs.
-fn tc_cont_new(
+fn cont_new(
     store: &mut dyn VMStore,
     instance: &mut Instance,
     func: *mut u8,
@@ -1429,7 +1429,7 @@ fn tc_cont_new(
     Ok(Some(AllocationSize(ans.cast::<u8>() as usize)))
 }
 
-fn tc_drop_cont_ref(_store: &mut dyn VMStore, instance: &mut Instance, contref: *mut u8) {
+fn cont_ref_drop(_store: &mut dyn VMStore, instance: &mut Instance, contref: *mut u8) {
     crate::vm::continuation::imp::drop_cont_ref(
         instance,
         contref.cast::<crate::vm::continuation::imp::VMContRef>(),

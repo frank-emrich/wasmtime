@@ -106,8 +106,8 @@ pub struct VMOffsets<P> {
     // type `crate::stack_switching::StackChain`.
     // The head of the chain is the
     // currently executing stack (main stack or a continuation).
-    typed_continuations_stack_chain: u32,
-    typed_continuations_payloads: u32,
+    stack_switching_stack_chain: u32,
+    stack_switching_payloads: u32,
 }
 
 /// Trait used for the `ptr` representation of the field of `VMOffsets`
@@ -457,8 +457,8 @@ impl<P: PtrSize> VMOffsets<P> {
         }
 
         calculate_sizes! {
-            typed_continuations_payloads: "typed continuations payloads object",
-            typed_continuations_stack_chain: "typed continuations stack chain",
+            stack_switching_payloads: "stack switching payloads object",
+            stack_switching_stack_chain: "stack switching stack chain",
             defined_func_refs: "module functions",
             defined_tags: "defined tags",
             defined_globals: "defined globals",
@@ -501,8 +501,8 @@ impl<P: PtrSize> From<VMOffsetsFields<P>> for VMOffsets<P> {
             defined_tags: 0,
             defined_func_refs: 0,
             size: 0,
-            typed_continuations_stack_chain: 0,
-            typed_continuations_payloads: 0,
+            stack_switching_stack_chain: 0,
+            stack_switching_payloads: 0,
         };
 
         // Convenience functions for checked addition and multiplication.
@@ -561,10 +561,10 @@ impl<P: PtrSize> From<VMOffsetsFields<P>> for VMOffsets<P> {
                 ret.num_escaped_funcs,
                 ret.ptr.size_of_vm_func_ref(),
             ),
-            size(typed_continuations_stack_chain)
+            size(stack_switching_stack_chain)
                 = ret.ptr.size(),
             align(core::mem::align_of::<crate::stack_switching::Payloads>() as u32),
-            size(typed_continuations_payloads) =
+            size(stack_switching_payloads) =
                 core::mem::size_of::<crate::stack_switching::Payloads>() as u32,
 
             align(16), // TODO(dhil): This could probably be done more
@@ -795,16 +795,17 @@ impl<P: PtrSize> VMOffsets<P> {
 
     /// TODO
     #[inline]
-    pub fn vmctx_typed_continuations_stack_chain(&self) -> u32 {
-        self.typed_continuations_stack_chain
+    pub fn vmctx_stack_switching_stack_chain(&self) -> u32 {
+        self.stack_switching_stack_chain
     }
 
-    /// The offset of the typed continuations payloads object, stored as a as a
-    /// wasmtime_comtinuations::Payloads object. Used to transfer payloads from
-    /// suspend calls to the corresponding handler/resume instructions.
+    /// The offset of the stack switching payloads object, stored as a
+    /// as a wasmtime_environ::stack_switching::Payloads object. Used
+    /// to transfer payloads from suspend calls to the corresponding
+    /// handler/resume instructions.
     #[inline]
-    pub fn vmctx_typed_continuations_payloads(&self) -> u32 {
-        self.typed_continuations_payloads
+    pub fn vmctx_stack_switching_payloads(&self) -> u32 {
+        self.stack_switching_payloads
     }
 
     /// Return the size of the `VMContext` allocation.

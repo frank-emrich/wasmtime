@@ -29,8 +29,8 @@ macro_rules! debug_println {
     }
 }
 
-/// Runtime configuration options for WasmFX that can be set via the command
-/// line.
+/// Runtime configuration options for stack switching that can be set
+/// via the command line.
 ///
 /// Part of wasmtime::config::Config type (which is not in scope in this crate).
 #[derive(Debug, Clone)]
@@ -366,7 +366,7 @@ pub const CONTROL_EFFECT_SWITCH_DISCRIMINANT: u32 = 3;
 /// Universal control effect. This structure encodes return signal,
 /// resume signal, suspension signal, and the handler to suspend to in a single variant type.
 /// This instance is used at runtime. There is a codegen
-/// counterpart in `cranelift/src/wasmfx/shared.rs`.
+/// counterpart in `cranelift/src/stack-switching/control_effect.rs`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum ControlEffect {

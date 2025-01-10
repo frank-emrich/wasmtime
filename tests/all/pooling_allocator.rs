@@ -642,7 +642,7 @@ fn instance_too_large() -> Result<()> {
 configured maximum of 16 bytes; breakdown of allocation requirement:
 
  * 65.22% - 240 bytes - instance state management
- * 6.52% - 24 bytes - typed continuations payloads object
+ * 6.52% - 24 bytes - stack switching payloads object
  * 23.91% - 88 bytes - static vmctx data
 "
     } else {
@@ -651,7 +651,7 @@ instance allocation for this module requires 272 bytes which exceeds the \
 configured maximum of 16 bytes; breakdown of allocation requirement:
 
  * 52.94% - 144 bytes - instance state management
- * 8.82% - 24 bytes - typed continuations payloads object
+ * 8.82% - 24 bytes - stack switching payloads object
  * 32.35% - 88 bytes - static vmctx data
 "
     };
