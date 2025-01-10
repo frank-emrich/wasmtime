@@ -361,9 +361,7 @@ where
 
 
     let caller = store.0.default_caller();
-    let caller_stack_chain =
-        Instance::from_vmctx(caller, |i| *i.stack_chain() as *const StackChainCell);
-    let result = CallThreadState::new(store.0, caller, Some(caller_stack_chain)).with(|cx| {
+    let result = CallThreadState::new(store.0, caller).with(|cx| {
         match store.0.interpreter() {
             // In interpreted mode directly invoke the host closure since we won't
             // be using host-based `setjmp`/`longjmp` as that's not going to save
@@ -439,6 +437,7 @@ pub fn first_wasm_state_on_fiber_stack() -> bool {
 // Module to hide visibility of the `CallThreadState::prev` field and force
 // usage of its accessor methods.
 mod call_thread_state {
+    use crate::runtime::vm::stack_switching::stack_chain::StackChain;
     use super::*;
     use crate::runtime::vm::Unwind;
 
@@ -456,9 +455,7 @@ mod call_thread_state {
         pub(crate) limits: *const VMRuntimeLimits,
         pub(crate) unwinder: &'static dyn Unwind,
 
-        /// `Some(ptr)` iff this CallThreadState is for the execution of wasm.
-        /// In that case, `ptr` is the executing `Store`'s stack chain.
-        pub(crate) callee_stack_chain: Option<*const StackChainCell>,
+        pub(crate) stack_chain: StackChain,
 
         pub(super) prev: Cell<tls::Ptr>,
         #[cfg(all(feature = "signals-based-traps", unix, not(miri)))]
@@ -498,9 +495,11 @@ mod call_thread_state {
         pub(super) fn new(
             store: &mut StoreOpaque,
             caller: *mut VMContext,
-            callee_stack_chain: Option<*const StackChainCell>,
         ) -> CallThreadState {
             let limits = unsafe { *Instance::from_vmctx(caller, |i| i.runtime_limits()) };
+            let stack_chain =  unsafe {
+                (*(&*store.stack_chain()).0.get()).clone()
+            };
 
             // Don't try to plumb #[cfg] everywhere for this field, just pretend
             // we're using it on miri/windows to silence compiler warnings.
@@ -516,7 +515,7 @@ mod call_thread_state {
                 #[cfg(feature = "coredump")]
                 capture_coredump: store.engine().config().coredump_on_trap,
                 limits,
-                callee_stack_chain,
+                stack_chain,
                 #[cfg(all(feature = "signals-based-traps", unix, not(miri)))]
                 async_guard_range: store.async_guard_range(),
                 prev: Cell::new(ptr::null()),

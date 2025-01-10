@@ -112,28 +112,12 @@ impl Backtrace {
     ) {
         log::trace!("====== Capturing Backtrace ======");
 
-        // We are only interested in wasm frames, not host frames. Thus, we peel
-        // away the first states in this thread's `CallThreadState` chain that
-        // do not execute wasm.
-        // Note(frank-emrich) I'm not entirely sure if it can ever be the case
-        // that `state` is not actually executing wasm. In other words, it may
-        // be the case that we always have `Some(state) == first_wasm_state`.
-        // Otherwise we would be building a backtrace while executing a host
-        // call. But those cannot trap, but only panic and we do not use this
-        // function to build backtraces for panics.
-        let first_wasm_state = state
-            .iter()
-            .flat_map(|head| head.iter())
-            .skip_while(|state| state.callee_stack_chain.is_none())
-            .next();
-
         let (last_wasm_exit_pc, last_wasm_exit_fp) = match trap_pc_and_fp {
             // If we exited Wasm by catching a trap, then the Wasm-to-host
             // trampoline did not get a chance to save the last Wasm PC and FP,
             // and we need to use the plumbed-through values instead.
             Some((pc, fp)) => {
                 assert!(core::ptr::eq(limits, state.limits));
-                assert!(first_wasm_state.is_some());
                 (pc, fp)
             }
             // Either there is no Wasm currently on the stack, or we exited Wasm
@@ -145,9 +129,7 @@ impl Backtrace {
             }
         };
 
-        let first_wasm_state_stack_chain = first_wasm_state
-            .map(|state| state.callee_stack_chain.map(|cell| &*(*cell).0.get()))
-            .flatten();
+        let stack_chain = &state.stack_chain;
 
         // The first value in `activations` is for the most recently running
         // wasm. We thus provide the stack chain of `first_wasm_state` to
@@ -157,7 +139,7 @@ impl Backtrace {
         // wasm may execute off the main stack (see comments in
         // `wasmtime::invoke_wasm_and_catch_traps` for details).
         let activations = core::iter::once((
-            first_wasm_state_stack_chain,
+            stack_chain,
             last_wasm_exit_pc,
             last_wasm_exit_fp,
             *(*limits).last_wasm_entry_fp.get(),
