@@ -346,6 +346,9 @@ pub(crate) mod stack_switching_helpers {
     }
 
     pub type PayloadsVector = Vector<u128>;
+
+    pub type Payloads = ArrayRef<u128>;
+
     // Actually a vector of *mut VMTagDefinition
     pub type HandlerList = ArrayRef<*mut u8>;
 
@@ -392,9 +395,9 @@ pub(crate) mod stack_switching_helpers {
         }
 
         #[allow(clippy::cast_possible_truncation, reason = "TODO")]
-        pub fn values(&self) -> PayloadsVector {
+        pub fn values(&self) -> Payloads {
             let offset = super::stack_switching_environ::offsets::vm_cont_ref::VALUES;
-            PayloadsVector::new(self.address, offset as i32)
+            Payloads::new(self.address, offset as i32)
         }
 
         pub fn common_stack_information<'a>(
@@ -1547,11 +1550,7 @@ pub(crate) mod stack_switching_helpers {
                 align as u8,
             );
             let slot = builder.create_sized_stack_slot(slot_size);
-            let new_data = builder.ins().stack_addr(
-                ir::types::Type::int_with_byte_size(entry_size as u16).unwrap(),
-                slot,
-                0,
-            );
+            let new_data = builder.ins().stack_addr(env.pointer_type(), slot, 0);
 
             self.set_capacity(builder, capacity_value);
             self.set_data(builder, new_data);
@@ -1731,6 +1730,12 @@ pub(crate) fn vmcontref_load_values<'a>(
         let co = helpers::VMContRef::new(contref);
         let values = co.values();
 
+        if cfg!(debug_assertions) {
+            let count = builder.ins().iconst(I32, valtypes.len() as i64);
+            let length = values.get_length(env, builder);
+            emit_debug_assert_ule!(env, builder, count, length);
+        }
+
         let payload_ptr = values.get_data(env, builder);
 
         let mut offset = 0;
@@ -1745,10 +1750,7 @@ pub(crate) fn vmcontref_load_values<'a>(
             offset += env.offsets.ptr.maximum_value_size() as i32;
         }
 
-        // In theory, we way want to deallocate the buffer instead of just
-        // clearing it if its size is above a certain threshold. That would
-        // avoid keeping a large object unnecessarily long.
-        values.clear(builder);
+        values.clear(env, builder);
     }
 
     result
@@ -1794,12 +1796,8 @@ pub(crate) fn vmcontref_store_payloads<'a>(
 
             let payloads = co.values();
 
-            // Unlike for the args buffer (where we know the maximum
-            // required capacity at the time of creation of the
-            // `VMContRef`), tag return buffers are re-used and may
-            // be too small.
-            payloads.ensure_capacity(env, builder, remaining_arg_count);
-
+            // This also checks that the buffer is large enough to hold
+            // `values.len()` more elements.
             let ptr = payloads.occupy_next_slots(env, builder, values.len() as i32);
             builder.ins().jump(store_data_block, &[ptr]);
         }
@@ -2563,6 +2561,14 @@ pub(crate) fn translate_suspend<'a>(
 
     active_contref.set_last_ancestor(env, builder, end_of_chain_contref.address);
 
+    // In the active_contref's `values` buffer, stack-allocate enough room so that we can
+    // later store `tag_return_types.len()` when resuming the continuation.
+    let values = active_contref.values();
+    let required_capacity = u32::try_from(tag_return_types.len()).unwrap();
+    if required_capacity > 0 {
+        values.allocate(env, builder, required_capacity);
+    }
+
     // Set current continuation to suspended and break up handler chain.
     let active_contref_csi = active_contref.common_stack_information(env, builder);
     if cfg!(debug_assertions) {
@@ -2664,6 +2670,14 @@ pub(crate) fn translate_switch<'a>(
         let mut switcher_contref = helpers::VMContRef::new(switcher_contref);
 
         switcher_contref.set_last_ancestor(env, builder, last_ancestor.address);
+
+        // In the switcher_contref's `values` buffer, stack-allocate enough room so that we can
+        // later store `tag_return_types.len()` when resuming the continuation.
+        let values = switcher_contref.values();
+        let required_capacity = u32::try_from(return_types.len()).unwrap();
+        if required_capacity > 0 {
+            values.allocate(env, builder, required_capacity);
+        }
 
         let switcher_contref_csi = switcher_contref.common_stack_information(env, builder);
         emit_debug_assert!(
