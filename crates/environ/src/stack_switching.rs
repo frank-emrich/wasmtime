@@ -219,6 +219,19 @@ impl<T> Vector<T> {
     }
 }
 
+#[repr(C)]
+#[derive(Debug, Clone)]
+/// TODO
+pub struct ArrayRef<T> {
+    /// Number of currently occupied slots.
+    pub length: u32,
+    /// Number of slots in the data buffer. Note that this is *not* the size of
+    /// the buffer in bytes!
+    pub capacity: u32,
+    /// TODO
+    pub data: *mut T,
+}
+
 /// Type of vectors used for handling payloads passed between continuations.
 ///
 /// The actual type argument should be wasmtime::runtime::vm::vmcontext::ValRaw,
@@ -290,6 +303,20 @@ pub mod offsets {
         pub const DATA: usize = offset_of!(Vector<()>, data);
         /// Offset of `length` field
         pub const LENGTH: usize = offset_of!(Vector<()>, length);
+    }
+
+    /// Offsets of fields in `ArrayRef`.
+    /// Note that these are independent from the type parameter `T`.
+    pub mod array_ref {
+        use crate::stack_switching::*;
+        use memoffset::offset_of;
+
+        /// Offset of `capacity` field
+        pub const CAPACITY: usize = offset_of!(ArrayRef<()>, capacity);
+        /// Offset of `data` field
+        pub const DATA: usize = offset_of!(ArrayRef<()>, data);
+        /// Offset of `length` field
+        pub const LENGTH: usize = offset_of!(ArrayRef<()>, length);
     }
 
     /// Offsets of fields in `wasmtime_runtime::continuation::VMContRef`.

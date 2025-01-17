@@ -330,6 +330,21 @@ pub(crate) mod stack_switching_helpers {
         phantom: PhantomData<T>,
     }
 
+    #[derive(Copy, Clone)]
+    pub struct ArrayRef<T> {
+        /// Base address of this object, which must be shifted by `offset` below.
+        base: ir::Value,
+
+        /// Adding this (statically) known offset gets us the overall address.
+        offset: i32,
+
+        /// The type parameter T is never used in the fields above. We still
+        /// want to have it for consistency with
+        /// `stack_switching_environ::Vector` and to use it in the associated
+        /// functions.
+        phantom: PhantomData<T>,
+    }
+
     pub type Payloads = Vector<u128>;
     // Actually a vector of *mut VMTagDefinition
     pub type HandlerList = Vector<*mut u8>;
@@ -1371,6 +1386,259 @@ pub(crate) mod stack_switching_helpers {
             let tos = self.load_top_of_stack(env, builder);
             // Control context begins 24 bytes below top of stack (see unix.rs)
             builder.ins().iadd_imm(tos, -0x18)
+        }
+    }
+
+    impl<T> ArrayRef<T> {
+        pub(crate) fn new(base: ir::Value, offset: i32) -> Self {
+            Self {
+                base,
+                offset,
+                phantom: PhantomData::default(),
+            }
+        }
+
+        fn get(&self, builder: &mut FunctionBuilder, ty: ir::Type, offset: i32) -> ir::Value {
+            let mem_flags = ir::MemFlags::trusted();
+            builder
+                .ins()
+                .load(ty, mem_flags, self.base, self.offset + offset)
+        }
+
+        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
+        fn set<U>(&self, builder: &mut FunctionBuilder, offset: i32, value: ir::Value) {
+            debug_assert_eq!(
+                builder.func.dfg.value_type(value),
+                Type::int_with_byte_size(std::mem::size_of::<U>() as u16).unwrap()
+            );
+            let mem_flags = ir::MemFlags::trusted();
+            builder
+                .ins()
+                .store(mem_flags, value, self.base, self.offset + offset);
+        }
+
+        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
+        pub fn get_data<'a>(
+            &self,
+            env: &mut crate::func_environ::FuncEnvironment<'a>,
+            builder: &mut FunctionBuilder,
+        ) -> ir::Value {
+            self.get(
+                builder,
+                env.pointer_type(),
+                super::stack_switching_environ::offsets::vector::DATA as i32,
+            )
+        }
+
+        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
+        fn get_capacity<'a>(
+            &self,
+            _env: &mut crate::func_environ::FuncEnvironment<'a>,
+            builder: &mut FunctionBuilder,
+        ) -> ir::Value {
+            // Vector capacity is stored as u32.
+            let ty = Type::int_with_byte_size(std::mem::size_of::<u32>() as u16).unwrap();
+            self.get(
+                builder,
+                ty,
+                super::stack_switching_environ::offsets::vector::CAPACITY as i32,
+            )
+        }
+
+        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
+        pub fn get_length<'a>(
+            &self,
+            _env: &mut crate::func_environ::FuncEnvironment<'a>,
+            builder: &mut FunctionBuilder,
+        ) -> ir::Value {
+            // Vector length is stored as u32.
+            let ty = Type::int_with_byte_size(std::mem::size_of::<u32>() as u16).unwrap();
+            self.get(
+                builder,
+                ty,
+                super::stack_switching_environ::offsets::vector::LENGTH as i32,
+            )
+        }
+
+        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
+        fn set_length(&self, builder: &mut FunctionBuilder, length: ir::Value) {
+            // Vector length is stored as u32.
+            self.set::<u32>(
+                builder,
+                super::stack_switching_environ::offsets::vector::LENGTH as i32,
+                length,
+            );
+        }
+
+        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
+        fn set_capacity(&self, builder: &mut FunctionBuilder, capacity: ir::Value) {
+            // Vector capacity is stored as u32.
+            self.set::<u32>(
+                builder,
+                super::stack_switching_environ::offsets::vector::CAPACITY as i32,
+                capacity,
+            );
+        }
+
+        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
+        fn set_data(&self, builder: &mut FunctionBuilder, data: ir::Value) {
+            self.set::<*mut T>(
+                builder,
+                super::stack_switching_environ::offsets::vector::DATA as i32,
+                data,
+            );
+        }
+
+        /// Returns pointer to next empty slot in data buffer and marks the
+        /// subsequent `arg_count` slots as occupied.
+        pub fn occupy_next_slots<'a>(
+            &self,
+            env: &mut crate::func_environ::FuncEnvironment<'a>,
+            builder: &mut FunctionBuilder,
+            arg_count: i32,
+        ) -> ir::Value {
+            let data = self.get_data(env, builder);
+            let original_length = self.get_length(env, builder);
+            let new_length = builder.ins().iadd_imm(original_length, arg_count as i64);
+            self.set_length(builder, new_length);
+
+            if cfg!(debug_assertions) {
+                let capacity = self.get_capacity(env, builder);
+                emit_debug_assert_ule!(env, builder, new_length, capacity);
+            }
+
+            let value_size = mem::size_of::<T>() as i64;
+            let original_length = builder.ins().uextend(I64, original_length);
+            let byte_offset = builder.ins().imul_imm(original_length, value_size);
+            builder.ins().iadd(data, byte_offset)
+        }
+
+        pub fn allocate<'a>(
+            &self,
+            env: &mut crate::func_environ::FuncEnvironment<'a>,
+            builder: &mut FunctionBuilder,
+            required_capacity: usize,
+        ) {
+            let zero = builder.ins().iconst(ir::types::I32, 0);
+            let capacity_value = builder.ins().iconst(I64, required_capacity as i64);
+            emit_debug_assert_ne!(env, builder, capacity_value, zero);
+            if cfg!(debug_assertions) {
+                // We must only re-allocate while there is no data in the buffer.
+                let length = self.get_length(env, builder);
+                emit_debug_assert_eq!(env, builder, length, zero);
+                let capacity = self.get_capacity(env, builder);
+                emit_debug_assert_eq!(env, builder, capacity, zero);
+            }
+
+            emit_debug_println!(
+                env,
+                builder,
+                "[ArrayRef::allocate] allocating buffer with capacity {}",
+                capacity_value
+            );
+
+            let align = std::mem::align_of::<T>();
+            let entry_size = std::mem::size_of::<T>();
+
+            let slot_size = ir::StackSlotData::new(
+                ir::StackSlotKind::ExplicitSlot,
+                (entry_size * required_capacity) as u32,
+                align as u8,
+            );
+            let slot = builder.create_sized_stack_slot(slot_size);
+            let new_data = builder.ins().stack_addr(
+                ir::types::Type::int_with_byte_size(entry_size as u16).unwrap(),
+                slot,
+                0,
+            );
+
+            self.set_capacity(builder, capacity_value);
+            self.set_data(builder, new_data);
+        }
+
+        /// Loads n entries from this Vector object, where n is the length of
+        /// `load_types`, which also gives the types of the values to load.
+        /// Loading starts at index 0 of the Vector object.
+        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
+        pub fn load_data_entries<'a>(
+            &self,
+            env: &mut crate::func_environ::FuncEnvironment<'a>,
+            builder: &mut FunctionBuilder,
+            load_types: &[ir::Type],
+        ) -> Vec<ir::Value> {
+            if cfg!(debug_assertions) {
+                let length = self.get_length(env, builder);
+                let load_count = builder.ins().iconst(I32, load_types.len() as i64);
+                emit_debug_assert_ule!(env, builder, load_count, length);
+            }
+
+            let memflags = ir::MemFlags::trusted();
+
+            let data_start_pointer = self.get_data(env, builder);
+            let mut values = vec![];
+            let mut offset = 0;
+            for valtype in load_types {
+                let val = builder
+                    .ins()
+                    .load(*valtype, memflags, data_start_pointer, offset);
+                values.push(val);
+                offset += std::mem::size_of::<T>() as i32;
+            }
+            values
+        }
+
+        /// Stores the given `values` in this Vector object, beginning at
+        /// index 0. This expects the Vector object to be empty (i.e., current
+        /// length is 0), and to be of sufficient capacity to store |`values`|
+        /// entries.
+        /// If `allow_smaller` is true, we allow storing values whose type has a
+        /// smaller size than T's. In that case, such values will be stored at
+        /// the beginning of a `T`-sized slot.
+        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
+        pub fn store_data_entries<'a>(
+            &self,
+            env: &mut crate::func_environ::FuncEnvironment<'a>,
+            builder: &mut FunctionBuilder,
+            values: &[ir::Value],
+            allow_smaller: bool,
+        ) {
+            let store_count = builder.ins().iconst(I32, values.len() as i64);
+
+            if cfg!(debug_assertions) {
+                for val in values {
+                    let ty = builder.func.dfg.value_type(*val);
+                    if allow_smaller {
+                        debug_assert!(ty.bytes() as usize <= std::mem::size_of::<T>());
+                    } else {
+                        debug_assert!(ty.bytes() as usize == std::mem::size_of::<T>());
+                    }
+                }
+
+                let capacity = self.get_capacity(env, builder);
+                let length = self.get_length(env, builder);
+                let zero = builder.ins().iconst(I32, 0);
+                emit_debug_assert_ule!(env, builder, store_count, capacity);
+                emit_debug_assert_eq!(env, builder, length, zero);
+            }
+
+            let memflags = ir::MemFlags::trusted();
+
+            let data_start_pointer = self.get_data(env, builder);
+
+            let mut offset = 0;
+            for value in values {
+                builder
+                    .ins()
+                    .store(memflags, *value, data_start_pointer, offset);
+                offset += std::mem::size_of::<T>() as i32;
+            }
+
+            self.set_length(builder, store_count);
+        }
+
+        pub fn clear(&self, builder: &mut FunctionBuilder) {
+            let zero = builder.ins().iconst(I32, 0);
+            self.set_length(builder, zero);
         }
     }
 }
