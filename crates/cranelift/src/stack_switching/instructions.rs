@@ -347,7 +347,7 @@ pub(crate) mod stack_switching_helpers {
 
     pub type Payloads = Vector<u128>;
     // Actually a vector of *mut VMTagDefinition
-    pub type HandlerList = Vector<*mut u8>;
+    pub type HandlerList = ArrayRef<*mut u8>;
 
     #[derive(Copy, Clone)]
     pub struct VMContext {
@@ -1426,7 +1426,7 @@ pub(crate) mod stack_switching_helpers {
             self.get(
                 builder,
                 env.pointer_type(),
-                super::stack_switching_environ::offsets::vector::DATA as i32,
+                super::stack_switching_environ::offsets::array_ref::DATA as i32,
             )
         }
 
@@ -1436,12 +1436,12 @@ pub(crate) mod stack_switching_helpers {
             _env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
         ) -> ir::Value {
-            // Vector capacity is stored as u32.
+            // ArrayRef capacity is stored as u32.
             let ty = Type::int_with_byte_size(std::mem::size_of::<u32>() as u16).unwrap();
             self.get(
                 builder,
                 ty,
-                super::stack_switching_environ::offsets::vector::CAPACITY as i32,
+                super::stack_switching_environ::offsets::array_ref::CAPACITY as i32,
             )
         }
 
@@ -1451,31 +1451,31 @@ pub(crate) mod stack_switching_helpers {
             _env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
         ) -> ir::Value {
-            // Vector length is stored as u32.
+            // ArrayRef length is stored as u32.
             let ty = Type::int_with_byte_size(std::mem::size_of::<u32>() as u16).unwrap();
             self.get(
                 builder,
                 ty,
-                super::stack_switching_environ::offsets::vector::LENGTH as i32,
+                super::stack_switching_environ::offsets::array_ref::LENGTH as i32,
             )
         }
 
         #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         fn set_length(&self, builder: &mut FunctionBuilder, length: ir::Value) {
-            // Vector length is stored as u32.
+            // ArrayRef length is stored as u32.
             self.set::<u32>(
                 builder,
-                super::stack_switching_environ::offsets::vector::LENGTH as i32,
+                super::stack_switching_environ::offsets::array_ref::LENGTH as i32,
                 length,
             );
         }
 
         #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         fn set_capacity(&self, builder: &mut FunctionBuilder, capacity: ir::Value) {
-            // Vector capacity is stored as u32.
+            // ArrayRef capacity is stored as u32.
             self.set::<u32>(
                 builder,
-                super::stack_switching_environ::offsets::vector::CAPACITY as i32,
+                super::stack_switching_environ::offsets::array_ref::CAPACITY as i32,
                 capacity,
             );
         }
@@ -1484,7 +1484,7 @@ pub(crate) mod stack_switching_helpers {
         fn set_data(&self, builder: &mut FunctionBuilder, data: ir::Value) {
             self.set::<*mut T>(
                 builder,
-                super::stack_switching_environ::offsets::vector::DATA as i32,
+                super::stack_switching_environ::offsets::array_ref::DATA as i32,
                 data,
             );
         }
@@ -1513,17 +1513,18 @@ pub(crate) mod stack_switching_helpers {
             builder.ins().iadd(data, byte_offset)
         }
 
+        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         pub fn allocate<'a>(
             &self,
             env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
-            required_capacity: usize,
+            required_capacity: u32,
         ) {
             let zero = builder.ins().iconst(ir::types::I32, 0);
-            let capacity_value = builder.ins().iconst(I64, required_capacity as i64);
+            let capacity_value = builder.ins().iconst(I32, required_capacity as i64);
             emit_debug_assert_ne!(env, builder, capacity_value, zero);
             if cfg!(debug_assertions) {
-                // We must only re-allocate while there is no data in the buffer.
+                // We must only allocate while there is no data in the buffer.
                 let length = self.get_length(env, builder);
                 emit_debug_assert_eq!(env, builder, length, zero);
                 let capacity = self.get_capacity(env, builder);
@@ -1538,11 +1539,11 @@ pub(crate) mod stack_switching_helpers {
             );
 
             let align = std::mem::align_of::<T>();
-            let entry_size = std::mem::size_of::<T>();
+            let entry_size = std::mem::size_of::<T>() as u32;
 
             let slot_size = ir::StackSlotData::new(
                 ir::StackSlotKind::ExplicitSlot,
-                (entry_size * required_capacity) as u32,
+                entry_size * required_capacity,
                 align as u8,
             );
             let slot = builder.create_sized_stack_slot(slot_size);
@@ -1636,9 +1637,19 @@ pub(crate) mod stack_switching_helpers {
             self.set_length(builder, store_count);
         }
 
-        pub fn clear(&self, builder: &mut FunctionBuilder) {
-            let zero = builder.ins().iconst(I32, 0);
-            self.set_length(builder, zero);
+        pub fn clear<'a>(
+            &self,
+            env: &mut crate::func_environ::FuncEnvironment<'a>,
+            builder: &mut FunctionBuilder,
+        ) {
+            let zero32 = builder.ins().iconst(I32, 0);
+            self.set_length(builder, zero32);
+
+            let zero32 = builder.ins().iconst(I32, 0);
+            self.set_capacity(builder, zero32);
+
+            let zero_ptr = builder.ins().iconst(env.pointer_type(), 0);
+            self.set_data(builder, zero_ptr);
         }
     }
 }
@@ -2275,10 +2286,10 @@ pub(crate) fn translate_resume<'a>(
 
         if resumetable.len() > 0 {
             // Total number of handlers (suspend and switch).
-            let handler_count = builder.ins().iconst(I32, resumetable.len() as i64);
-
-            // If the existing list is too small, reallocate (in runtime).
-            handler_list.ensure_capacity(env, builder, handler_count);
+            let handler_count = u32::try_from(resumetable.len()).unwrap();
+            // Populate the ArrayRef's data ptr with a pointer to a sufficiently
+            // large area on this stack.
+            handler_list.allocate(env, builder, handler_count);
 
             let suspend_handler_count = suspend_handlers.len();
 
@@ -2342,8 +2353,8 @@ pub(crate) fn translate_resume<'a>(
         vmctx.store_stack_chain(env, builder, &original_stack_chain);
         parent_csi.set_state(env, builder, stack_switching_environ::State::Running);
 
-        // Just for consistency: Reset the handler list.
-        handler_list.clear(builder);
+        // Just for consistency: Clear the handler list.
+        handler_list.clear(env, builder);
         parent_csi.set_first_switch_handler_index(env, builder, zero);
 
         // Extract the result and signal bit.
