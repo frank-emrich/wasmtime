@@ -250,6 +250,9 @@ impl<T> ArrayRef<T> {
 /// but we don't have access to that here.
 pub type PayloadsVector = Vector<u128>;
 
+/// TODO(frank-emrich)
+pub type Payloads = ArrayRef<u128>;
+
 /// List of handlers, represented by the handled tag.
 /// Thus, the stored data is actually `*mut VMTagDefinition`.
 pub type HandlerList = ArrayRef<*mut u8>;

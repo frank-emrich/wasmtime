@@ -1700,8 +1700,10 @@ fn vmctx_load_payloads<'a>(
 
     if valtypes.len() > 0 {
         let vmctx = env.vmctx_val(&mut builder.cursor());
-        let vmctx_payloads =
-            helpers::PayloadsVector::new(vmctx, env.offsets.vmctx_stack_switching_payloads() as i32);
+        let vmctx_payloads = helpers::PayloadsVector::new(
+            vmctx,
+            env.offsets.vmctx_stack_switching_payloads() as i32,
+        );
 
         values = vmctx_payloads.load_data_entries(env, builder, valtypes);
 
@@ -1829,8 +1831,10 @@ pub(crate) fn vmctx_store_payloads<'a>(
 ) {
     if values.len() > 0 {
         let vmctx = env.vmctx_val(&mut builder.cursor());
-        let payloads =
-            helpers::PayloadsVector::new(vmctx, env.offsets.vmctx_stack_switching_payloads() as i32);
+        let payloads = helpers::PayloadsVector::new(
+            vmctx,
+            env.offsets.vmctx_stack_switching_payloads() as i32,
+        );
 
         let nargs = builder.ins().iconst(I32, values.len() as i64);
         payloads.ensure_capacity(env, builder, nargs);

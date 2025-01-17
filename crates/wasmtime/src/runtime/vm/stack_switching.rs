@@ -70,7 +70,7 @@ pub mod imp {
     use core::cmp;
     use std::marker::PhantomPinned;
     use wasmtime_environ::stack_switching::HandlerList;
-    pub use wasmtime_environ::stack_switching::{PayloadsVector, StackLimits, State};
+    pub use wasmtime_environ::stack_switching::{Payloads, PayloadsVector, StackLimits, State};
     #[allow(unused)]
     use wasmtime_environ::{
         debug_println,
@@ -108,7 +108,7 @@ pub mod imp {
         /// and switch. They are received at the suspend site (i.e., the
         /// corrsponding suspend or switch instruction). In particular, this may
         /// not be used while the continuation's state is `Fresh`.
-        pub values: PayloadsVector,
+        pub values: Payloads,
 
         /// Revision counter.
         pub revision: u64,
@@ -144,7 +144,7 @@ pub mod imp {
             let last_ancestor = std::ptr::null_mut();
             let stack = ContinuationStack::unallocated();
             let args = PayloadsVector::new(0);
-            let values = PayloadsVector::new(0);
+            let values = Payloads::empty();
             let revision = 0;
             let _marker = PhantomPinned;
 
@@ -166,9 +166,8 @@ pub mod imp {
             // Note that continuation references do not own their parents, and we
             // don't drop them here.
 
-            // `Payloads` must be deallocated explicitly, they are considered non-owning.
+            // `PayloadsVector` must be deallocated explicitly, they are considered non-owning.
             self.args.deallocate();
-            self.values.deallocate();
 
             // We would like to enforce the invariant that any continuation that
             // was created for a cont.new (rather than, say, just living in a
