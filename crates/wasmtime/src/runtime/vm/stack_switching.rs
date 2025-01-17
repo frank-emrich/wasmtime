@@ -70,7 +70,7 @@ pub mod imp {
     use core::cmp;
     use std::marker::PhantomPinned;
     use wasmtime_environ::stack_switching::HandlerList;
-    pub use wasmtime_environ::stack_switching::{Payloads, StackLimits, State};
+    pub use wasmtime_environ::stack_switching::{PayloadsVector, StackLimits, State};
     #[allow(unused)]
     use wasmtime_environ::{
         debug_println,
@@ -101,14 +101,14 @@ pub mod imp {
         /// 1. The arguments to the function passed to cont.new
         /// 2. The return values of that function
         /// Note that this is *not* used for tag payloads.
-        pub args: Payloads,
+        pub args: PayloadsVector,
 
         /// Once a continuation has been suspended (using suspend or switch),
         /// this buffer is used to hold payloads provided by cont.bind, resume,
         /// and switch. They are received at the suspend site (i.e., the
         /// corrsponding suspend or switch instruction). In particular, this may
         /// not be used while the continuation's state is `Fresh`.
-        pub values: Payloads,
+        pub values: PayloadsVector,
 
         /// Revision counter.
         pub revision: u64,
@@ -143,8 +143,8 @@ pub mod imp {
             let parent_chain = StackChain::Absent;
             let last_ancestor = std::ptr::null_mut();
             let stack = ContinuationStack::unallocated();
-            let args = Payloads::new(0);
-            let values = Payloads::new(0);
+            let args = PayloadsVector::new(0);
+            let values = PayloadsVector::new(0);
             let revision = 0;
             let _marker = PhantomPinned;
 

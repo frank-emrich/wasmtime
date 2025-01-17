@@ -345,7 +345,7 @@ pub(crate) mod stack_switching_helpers {
         phantom: PhantomData<T>,
     }
 
-    pub type Payloads = Vector<u128>;
+    pub type PayloadsVector = Vector<u128>;
     // Actually a vector of *mut VMTagDefinition
     pub type HandlerList = ArrayRef<*mut u8>;
 
@@ -386,15 +386,15 @@ pub(crate) mod stack_switching_helpers {
         }
 
         #[allow(clippy::cast_possible_truncation, reason = "TODO")]
-        pub fn args(&self) -> Payloads {
+        pub fn args(&self) -> PayloadsVector {
             let offset = super::stack_switching_environ::offsets::vm_cont_ref::ARGS;
-            Payloads::new(self.address, offset as i32)
+            PayloadsVector::new(self.address, offset as i32)
         }
 
         #[allow(clippy::cast_possible_truncation, reason = "TODO")]
-        pub fn values(&self) -> Payloads {
+        pub fn values(&self) -> PayloadsVector {
             let offset = super::stack_switching_environ::offsets::vm_cont_ref::VALUES;
-            Payloads::new(self.address, offset as i32)
+            PayloadsVector::new(self.address, offset as i32)
         }
 
         pub fn common_stack_information<'a>(
@@ -1701,7 +1701,7 @@ fn vmctx_load_payloads<'a>(
     if valtypes.len() > 0 {
         let vmctx = env.vmctx_val(&mut builder.cursor());
         let vmctx_payloads =
-            helpers::Payloads::new(vmctx, env.offsets.vmctx_stack_switching_payloads() as i32);
+            helpers::PayloadsVector::new(vmctx, env.offsets.vmctx_stack_switching_payloads() as i32);
 
         values = vmctx_payloads.load_data_entries(env, builder, valtypes);
 
@@ -1830,7 +1830,7 @@ pub(crate) fn vmctx_store_payloads<'a>(
     if values.len() > 0 {
         let vmctx = env.vmctx_val(&mut builder.cursor());
         let payloads =
-            helpers::Payloads::new(vmctx, env.offsets.vmctx_stack_switching_payloads() as i32);
+            helpers::PayloadsVector::new(vmctx, env.offsets.vmctx_stack_switching_payloads() as i32);
 
         let nargs = builder.ins().iconst(I32, values.len() as i64);
         payloads.ensure_capacity(env, builder, nargs);

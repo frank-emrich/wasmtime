@@ -248,7 +248,7 @@ impl<T> ArrayRef<T> {
 ///
 /// The actual type argument should be wasmtime::runtime::vm::vmcontext::ValRaw,
 /// but we don't have access to that here.
-pub type Payloads = Vector<u128>;
+pub type PayloadsVector = Vector<u128>;
 
 /// List of handlers, represented by the handled tag.
 /// Thus, the stored data is actually `*mut VMTagDefinition`.
@@ -348,9 +348,9 @@ pub mod offsets {
         /// Offset of `args` field
         pub const ARGS: usize = STACK + super::FIBER_STACK_SIZE;
         /// Offset of `values` field
-        pub const VALUES: usize = ARGS + core::mem::size_of::<Payloads>();
+        pub const VALUES: usize = ARGS + core::mem::size_of::<PayloadsVector>();
         /// Offset of `revision` field
-        pub const REVISION: usize = VALUES + core::mem::size_of::<Payloads>();
+        pub const REVISION: usize = VALUES + core::mem::size_of::<PayloadsVector>();
     }
 
     /// TODO(dhil): Write documentation.

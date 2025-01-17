@@ -1386,9 +1386,9 @@ impl Instance {
             &VMBuiltinFunctionsArray::INIT;
 
         // Initialize the Payloads object to be empty
-        let vmctx_payloads: *mut wasmtime_environ::stack_switching::Payloads =
+        let vmctx_payloads: *mut wasmtime_environ::stack_switching::PayloadsVector =
             self.vmctx_plus_offset_mut(offsets.vmctx_stack_switching_payloads());
-        *vmctx_payloads = wasmtime_environ::stack_switching::Payloads::new(0);
+        *vmctx_payloads = wasmtime_environ::stack_switching::PayloadsVector::new(0);
 
         // Initialize the imports
         debug_assert_eq!(imports.functions.len(), module.num_imported_funcs);

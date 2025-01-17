@@ -563,9 +563,9 @@ impl<P: PtrSize> From<VMOffsetsFields<P>> for VMOffsets<P> {
             ),
             size(stack_switching_stack_chain)
                 = ret.ptr.size(),
-            align(core::mem::align_of::<crate::stack_switching::Payloads>() as u32),
+            align(core::mem::align_of::<crate::stack_switching::PayloadsVector>() as u32),
             size(stack_switching_payloads) =
-                core::mem::size_of::<crate::stack_switching::Payloads>() as u32,
+                core::mem::size_of::<crate::stack_switching::PayloadsVector>() as u32,
 
             align(16), // TODO(dhil): This could probably be done more
                        // efficiently by packing the pointer into the above 16 byte
