@@ -158,6 +158,16 @@ pub struct FuncEnvironment<'module_environment> {
     /// always present even if this is a "leaf" function, as we have to call
     /// into the host to trap when signal handlers are disabled.
     pub(crate) stack_limit_at_function_entry: Option<ir::GlobalValue>,
+
+    /// Used by the stack switching feature. If set, we have a allocated a
+    /// slot on this function's stack to be used for the
+    /// current stack's `handler_list` field.
+    pub(crate) stack_switching_handler_list_buffer: Option<ir::StackSlot>,
+
+    /// Used by the stack switching feature. If set, we have a allocated a
+    /// slot on this function's stack to be used for the
+    /// current continuation's `values` field.
+    pub(crate) stack_switching_values_buffer: Option<ir::StackSlot>,
 }
 
 impl<'module_environment> FuncEnvironment<'module_environment> {
@@ -205,6 +215,9 @@ impl<'module_environment> FuncEnvironment<'module_environment> {
             translation,
 
             stack_limit_at_function_entry: None,
+
+            stack_switching_handler_list_buffer: None,
+            stack_switching_values_buffer: None,
         }
     }
 
@@ -3232,15 +3245,8 @@ impl FuncEnvironment<'_> {
         builder: &mut FunctionBuilder<'_>,
         contobj: ir::Value,
         args: &[ir::Value],
-        remaining_arg_count: usize,
     ) -> ir::Value {
-        stack_switching::instructions::translate_cont_bind(
-            self,
-            builder,
-            contobj,
-            args,
-            remaining_arg_count,
-        )
+        stack_switching::instructions::translate_cont_bind(self, builder, contobj, args)
     }
 
     pub fn translate_cont_new(
@@ -3298,7 +3304,7 @@ impl FuncEnvironment<'_> {
         builder: &mut FunctionBuilder<'_>,
         tag_index: u32,
         suspend_args: &[ir::Value],
-        tag_return_types: &[WasmValType],
+        tag_return_types: &[ir::Type],
     ) -> Vec<ir::Value> {
         stack_switching::instructions::translate_suspend(
             self,
@@ -3316,7 +3322,7 @@ impl FuncEnvironment<'_> {
         tag_index: u32,
         contobj: ir::Value,
         switch_args: &[ir::Value],
-        return_types: &[WasmValType],
+        return_types: &[ir::Type],
     ) -> WasmResult<Vec<ir::Value>> {
         stack_switching::instructions::translate_switch(
             self,

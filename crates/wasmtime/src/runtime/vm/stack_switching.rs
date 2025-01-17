@@ -67,9 +67,8 @@ pub mod imp {
         vmcontext::{VMFuncRef, ValRaw},
         Instance, TrapReason, VMStore,
     };
-    use core::cmp;
     use std::marker::PhantomPinned;
-    use wasmtime_environ::stack_switching::HandlerList;
+    use wasmtime_environ::stack_switching::{Array, HandlerList};
     pub use wasmtime_environ::stack_switching::{Payloads, StackLimits, State};
     #[allow(unused)]
     use wasmtime_environ::{
@@ -97,17 +96,23 @@ pub mod imp {
         /// The underlying stack.
         pub stack: ContinuationStack,
 
-        /// Used to store
+        /// Used to store only
         /// 1. The arguments to the function passed to cont.new
         /// 2. The return values of that function
-        /// Note that this is *not* used for tag payloads.
+        ///
+        /// Note that the actual data buffer (i.e., the one `args.data` points
+        /// to) is always allocated on this continuation's stack.
         pub args: Payloads,
 
         /// Once a continuation has been suspended (using suspend or switch),
-        /// this buffer is used to hold payloads provided by cont.bind, resume,
-        /// and switch. They are received at the suspend site (i.e., the
-        /// corrsponding suspend or switch instruction). In particular, this may
-        /// not be used while the continuation's state is `Fresh`.
+        /// this buffer is used to pass payloads to and from the continuation.
+        /// More concretely, it is used to
+        /// - Pass payloads from a suspend instruction to the corresponding handler.
+        /// - Pass payloads to a continuation using cont.bind or resume
+        /// - Pass payloads to the continuation being switched to when using switch.
+        ///
+        /// Note that the actual data buffer (i.e., the one `values.data` points
+        /// to) is always allocated on this continuation's stack.
         pub values: Payloads,
 
         /// Revision counter.
@@ -133,9 +138,7 @@ pub mod imp {
         pub fn empty() -> Self {
             let limits = StackLimits::with_stack_limit(Default::default());
             let state = State::Fresh;
-            let handlers = HandlerList::new(
-                wasmtime_environ::stack_switching::INITIAL_HANDLER_LIST_CAPACITY as u32,
-            );
+            let handlers = HandlerList::empty();
             let common_stack_information = CommonStackInformation {
                 limits,
                 state,
@@ -145,8 +148,8 @@ pub mod imp {
             let parent_chain = StackChain::Absent;
             let last_ancestor = std::ptr::null_mut();
             let stack = ContinuationStack::unallocated();
-            let args = Payloads::new(0);
-            let values = Payloads::new(0);
+            let args = Payloads::empty();
+            let values = Payloads::empty();
             let revision = 0;
             let _marker = PhantomPinned;
 
@@ -167,12 +170,6 @@ pub mod imp {
         fn drop(&mut self) {
             // Note that continuation references do not own their parents, and we
             // don't drop them here.
-
-            // `Payloads` must be deallocated explicitly, they are considered non-owning.
-            self.args.deallocate();
-            self.values.deallocate();
-
-            self.common_stack_information.handlers.deallocate();
 
             // We would like to enforce the invariant that any continuation that
             // was created for a cont.new (rather than, say, just living in a
@@ -237,8 +234,6 @@ pub mod imp {
     ) -> Result<*mut VMContRef, TrapReason> {
         let caller_vmctx = instance.vmctx();
 
-        let capacity = cmp::max(param_count, result_count);
-
         let config = unsafe { &*(store.stack_switching_config()) };
         // TODO(frank-emrich) Currently, the general `stack_limit` configuration
         // option of wasmtime is unrelated to the stack size of our fiber stack.
@@ -262,7 +257,6 @@ pub mod imp {
             csi.limits = limits;
             csi.state = State::Fresh;
             contref.parent_chain = StackChain::Absent;
-            contref.args.ensure_capacity(capacity);
             // The continuation is fresh, which is a special case of being suspended.
             // Thus we need to set the correct end of the continuation chain: itself.
             contref.last_ancestor = contref;
@@ -277,11 +271,16 @@ pub mod imp {
             debug_assert!(stack.is_unallocated());
             debug_assert!(!contref.stack.is_unallocated());
 
+            // The initialization function will allocate the actual args/return value buffer and
+            // update this object (if needed).
+            let contref_args_ptr = &mut contref.args as *mut _ as *mut Array<ValRaw>;
+
             contref.stack.initialize(
                 func.cast::<VMFuncRef>(),
                 caller_vmctx,
-                contref.args.data as *mut ValRaw,
-                contref.args.capacity as usize,
+                contref_args_ptr,
+                param_count,
+                result_count,
             );
         };
 

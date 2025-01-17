@@ -9,9 +9,12 @@
 //! 0xAff0 +-----------------------+
 //!        | saved RSP             |
 //! 0xAfe8 +-----------------------+   <- beginning of "control context",
-//!        | 0                     |
-//! 0xAfe0 +-----------------------+   <- beginning of usable stack space
-//!        |                       |      below (16-byte aligned)
+//!        | args_capacity         |
+//! 0xAfe0 +-----------------------+
+//!        | args buffer, size:    |
+//!        | (16 * args_capacity)  |
+//! 0xAfc0 +-----------------------+   <- below: beginning of usable stack space
+//!        |                       |      (16-byte aligned)
 //!        |                       |
 //!        ~        ...            ~   <- actual native stack space to use
 //!        |                       |
@@ -46,12 +49,22 @@
 //! pointer chains. However, it understands continuations and does not rely on
 //! the trickery outlined here to go from the frames in one continuation to the
 //! parent.
+//!
+//! The args buffer is used as follows: It is used by the array calling
+//! trampoline to read and store the arguments and return values of the function
+//! running inside the continuation. If this function has m parameters and n
+//! return values, then args_capacity is defined as max(m, n) and the size of
+//! the args buffer is args_capacity * 16 bytes. The start address (0xAfc0 in
+//! the example above, thus assuming args_capacity = 2) is saved as the `data`
+//! field of the VMContRef's `args` object.
 
 #![allow(unused_macros)]
 
 use std::io;
 use std::ops::Range;
 use std::ptr;
+
+use wasmtime_environ::stack_switching::Array;
 
 use crate::runtime::vm::{VMContext, VMFuncRef, VMOpaqueContext, ValRaw};
 
@@ -174,27 +187,43 @@ impl ContinuationStack {
     /// calls `fiber_start` with  the following arguments:
     /// TOS, func_ref, caller_vmctx, args_ptr, args_capacity
     ///
+    /// Note that at this point we also allocate the args buffer
+    /// (see picture at the top of this file).
+    /// We define `args_capacity` as the max of parameter and return value count.
+    /// Then the size s of the actual buffer size is calculated as follows:
+    /// s = size_of(ValRaw) * `args_capacity`,
+    ///
+    /// Note that this value is used below, and we may have s = 0.
+    ///
     /// The layout of the ContinuationStack near the top of stack (TOS) *after* running
     /// this function is as follows:
+    ///
     ///
     ///  Offset from    |
     ///       TOS       | Contents
     ///  ---------------|-------------------------------------------------------
-    ///          -0x08   address of wasmtime_continuation_start function (future PC)
-    ///          -0x10   TOS - 0x10 (future RBP)
-    ///          -0x18   TOS - 0x40 (future RSP)
-    ///          -0x20   0 (alignment and wasmtime_continuation_start can't return)
-    ///          -0x28   func_ref
-    ///          -0x30   caller_vmctx
-    ///          -0x38   args_ptr
-    ///          -0x40   args_capacity
-    ///          -0x48   undefined
+    ///       -0x08     | address of wasmtime_continuation_start function (future PC)
+    ///       -0x10     | TOS - 0x10 (future RBP)
+    ///       -0x18     | TOS - 0x40 - s (future RSP)
+    ///       -0x20     | args_capacity
+    ///
+    ///
+    /// The data stored behind the args buffer is as follows:
+    ///
+    ///  Offset from    |
+    ///       TOS       | Contents
+    ///  ---------------|-------------------------------------------------------
+    ///       -0x28 - s | func_ref
+    ///       -0x30 - s | caller_vmctx
+    ///       -0x38 - s | args (of type *mut ArrayRef<ValRaw>)
+    ///       -0x40 - s | return_value_count
     pub fn initialize(
         &self,
         func_ref: *const VMFuncRef,
         caller_vmctx: *mut VMContext,
-        args_ptr: *mut ValRaw,
-        args_capacity: usize,
+        args: *mut Array<ValRaw>,
+        parameter_count: u32,
+        return_value_count: u32,
     ) {
         let tos = self.top;
 
@@ -204,17 +233,36 @@ impl ContinuationStack {
                 target.write(value)
             };
 
-            // Yes, these offsets are technically redundant, but they make
-            // things more readable.
+            let args = &mut *args;
+            let args_capacity = std::cmp::max(parameter_count, return_value_count);
+            // The args object must currently be empty.
+            debug_assert_eq!(args.capacity, 0);
+            debug_assert_eq!(args.length, 0);
+
+            // The size of the args buffer
+            let s = args_capacity as usize * std::mem::size_of::<ValRaw>();
+
+            // The actual pointer to the buffer
+            let args_data_ptr = if args_capacity == 0 {
+                0
+            } else {
+                tos as usize - 0x20 - s
+            };
+
+            args.capacity = args_capacity;
+            args.data = args_data_ptr as *mut ValRaw;
+
             let to_store = [
+                // Data near top of stack:
                 (0x08, wasmtime_continuation_start as usize),
                 (0x10, tos.sub(0x10) as usize),
-                (0x18, tos.sub(0x40) as usize),
-                (0x20, 0),
-                (0x28, func_ref as usize),
-                (0x30, caller_vmctx as usize),
-                (0x38, args_ptr as usize),
-                (0x40, args_capacity),
+                (0x18, tos.sub(0x40 + s) as usize),
+                (0x20, args_capacity as usize),
+                // Data after the args buffer:
+                (0x28 + s, func_ref as usize),
+                (0x30 + s, caller_vmctx as usize),
+                (0x38 + s, args as *mut Array<ValRaw> as usize),
+                (0x40 + s, return_value_count as usize),
             ];
 
             for (offset, data) in to_store {
@@ -257,16 +305,17 @@ unsafe extern "C" fn fiber_start(
     top_of_stack: *mut u8,
     func_ref: *const VMFuncRef,
     caller_vmctx: *mut VMContext,
-    args_ptr: *mut ValRaw,
-    args_capacity: usize,
+    args: *mut Array<ValRaw>,
+    return_value_count: u32,
 ) {
     unsafe {
         let func_ref = func_ref.as_ref().expect("Non-null function reference");
         let caller_vmxtx = VMOpaqueContext::from_vmcontext(caller_vmctx);
-        let params_and_returns = if args_ptr.is_null() {
+        let args = &mut *args;
+        let params_and_returns = if args.capacity == 0 {
             &mut []
         } else {
-            std::slice::from_raw_parts_mut(args_ptr, args_capacity)
+            std::slice::from_raw_parts_mut(args.data, args.capacity as usize)
         };
 
         // NOTE(frank-emrich) The usage of the `caller_vmctx` is probably not
@@ -281,6 +330,11 @@ unsafe extern "C" fn fiber_start(
         // value we set.
         func_ref.array_call(None, caller_vmxtx, params_and_returns); // TODO(dhil): we are ignoring the boolean return value
                                                                      // here... we probably shouldn't.
+
+        // The array call trampoline should have just written
+        // `return_value_count` values to the `args` buffer. Let's reflect that
+        // in its length field, to make various bounds checks happy.
+        args.length = return_value_count;
 
         // Switch back to parent, indicating that the continuation returned.
         switch_to_parent(top_of_stack);

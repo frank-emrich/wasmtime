@@ -2877,15 +2877,18 @@ pub fn translate_operator(
 
             let (original_contobj, args) = state.peekn(arg_count + 1).split_last().unwrap();
 
-            let new_contobj =
-                environ.translate_cont_bind(builder, *original_contobj, args, src_arity);
+            let new_contobj = environ.translate_cont_bind(builder, *original_contobj, args);
 
             state.popn(arg_count + 1);
             state.push1(new_contobj);
         }
         Operator::Suspend { tag_index } => {
             let param_types = environ.tag_params(*tag_index).to_vec();
-            let return_types = environ.tag_returns(*tag_index).to_vec();
+            let return_types: Vec<_> = environ
+                .tag_returns(*tag_index)
+                .iter()
+                .map(|ty| crate::value_type(environ.isa, *ty))
+                .collect();
 
             let params = state.peekn(param_types.len());
             let param_count = params.len();
@@ -2955,13 +2958,17 @@ pub fn translate_operator(
             // Argument types of current_continuation_type. These will in turn
             // be the types of the arguments we receive when someone switches
             // back to this switch instruction
-            let current_continuation_arg_types = match current_continuation_type.heap_type {
+            let current_continuation_arg_types: Vec<_> = match current_continuation_type.heap_type {
                 WasmHeapType::ConcreteCont(index) => {
                     let mti = index
                         .as_module_type_index()
                         .expect("Only supporting module type indices on switch for now");
 
-                    environ.continuation_arguments(mti.as_u32()).to_vec()
+                    environ
+                        .continuation_arguments(mti.as_u32())
+                        .iter()
+                        .map(|ty| crate::value_type(environ.isa, *ty))
+                        .collect()
                 }
                 _ => panic!("Invalid type on switch"),
             };

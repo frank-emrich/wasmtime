@@ -44,6 +44,7 @@ pub(crate) mod stack_switching_helpers {
     use cranelift_codegen::ir::condcodes::IntCC;
     use cranelift_codegen::ir::types::*;
     use cranelift_codegen::ir::InstBuilder;
+    use cranelift_codegen::ir::{StackSlot, StackSlotKind::*};
     use cranelift_frontend::FunctionBuilder;
     use std::mem;
     use wasmtime_environ::PtrSize;
@@ -316,7 +317,7 @@ pub(crate) mod stack_switching_helpers {
     }
 
     #[derive(Copy, Clone)]
-    pub struct Vector<T> {
+    pub struct Array<T> {
         /// Base address of this object, which must be shifted by `offset` below.
         base: ir::Value,
 
@@ -330,9 +331,10 @@ pub(crate) mod stack_switching_helpers {
         phantom: PhantomData<T>,
     }
 
-    pub type Payloads = Vector<u128>;
+    pub type Payloads = Array<u128>;
+
     // Actually a vector of *mut VMTagDefinition
-    pub type HandlerList = Vector<*mut u8>;
+    pub type HandlerList = Array<*mut u8>;
 
     #[derive(Copy, Clone)]
     pub struct VMContext {
@@ -391,24 +393,6 @@ pub(crate) mod stack_switching_helpers {
                 super::stack_switching_environ::offsets::vm_cont_ref::COMMON_STACK_INFORMATION;
             let address = builder.ins().iadd_imm(self.address, offset as i64);
             CommonStackInformation { address }
-        }
-
-        /// Returns pointer to buffer where results are stored after a
-        /// continuation has returned.
-        pub fn get_results<'a>(
-            &self,
-            env: &mut crate::func_environ::FuncEnvironment<'a>,
-            builder: &mut FunctionBuilder,
-        ) -> ir::Value {
-            if cfg!(debug_assertions) {
-                let has_returned = self.common_stack_information(env, builder).has_state(
-                    env,
-                    builder,
-                    super::stack_switching_environ::State::Returned,
-                );
-                emit_debug_assert!(env, builder, has_returned);
-            }
-            return self.args().get_data(env, builder);
         }
 
         /// Stores the parent of this continuation, which may either be another
@@ -520,7 +504,7 @@ pub(crate) mod stack_switching_helpers {
         }
     }
 
-    impl<T> Vector<T> {
+    impl<T> Array<T> {
         pub(crate) fn new(base: ir::Value, offset: i32) -> Self {
             Self {
                 base,
@@ -557,7 +541,7 @@ pub(crate) mod stack_switching_helpers {
             self.get(
                 builder,
                 env.pointer_type(),
-                super::stack_switching_environ::offsets::vector::DATA as i32,
+                super::stack_switching_environ::offsets::array::DATA as i32,
             )
         }
 
@@ -567,12 +551,12 @@ pub(crate) mod stack_switching_helpers {
             _env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
         ) -> ir::Value {
-            // Vector capacity is stored as u32.
+            // Array capacity is stored as u32.
             let ty = Type::int_with_byte_size(std::mem::size_of::<u32>() as u16).unwrap();
             self.get(
                 builder,
                 ty,
-                super::stack_switching_environ::offsets::vector::CAPACITY as i32,
+                super::stack_switching_environ::offsets::array::CAPACITY as i32,
             )
         }
 
@@ -582,31 +566,31 @@ pub(crate) mod stack_switching_helpers {
             _env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
         ) -> ir::Value {
-            // Vector length is stored as u32.
+            // Array length is stored as u32.
             let ty = Type::int_with_byte_size(std::mem::size_of::<u32>() as u16).unwrap();
             self.get(
                 builder,
                 ty,
-                super::stack_switching_environ::offsets::vector::LENGTH as i32,
+                super::stack_switching_environ::offsets::array::LENGTH as i32,
             )
         }
 
         #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         fn set_length(&self, builder: &mut FunctionBuilder, length: ir::Value) {
-            // Vector length is stored as u32.
+            // Array length is stored as u32.
             self.set::<u32>(
                 builder,
-                super::stack_switching_environ::offsets::vector::LENGTH as i32,
+                super::stack_switching_environ::offsets::array::LENGTH as i32,
                 length,
             );
         }
 
         #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         fn set_capacity(&self, builder: &mut FunctionBuilder, capacity: ir::Value) {
-            // Vector capacity is stored as u32.
+            // Array capacity is stored as u32.
             self.set::<u32>(
                 builder,
-                super::stack_switching_environ::offsets::vector::CAPACITY as i32,
+                super::stack_switching_environ::offsets::array::CAPACITY as i32,
                 capacity,
             );
         }
@@ -615,7 +599,7 @@ pub(crate) mod stack_switching_helpers {
         fn set_data(&self, builder: &mut FunctionBuilder, data: ir::Value) {
             self.set::<*mut T>(
                 builder,
-                super::stack_switching_environ::offsets::vector::DATA as i32,
+                super::stack_switching_environ::offsets::array::DATA as i32,
                 data,
             );
         }
@@ -644,108 +628,76 @@ pub(crate) mod stack_switching_helpers {
             builder.ins().iadd(data, byte_offset)
         }
 
-        #[allow(dead_code, reason = "TODO")]
-        pub fn deallocate_buffer<'a>(
+        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
+        pub fn allocate_or_reuse_stack_slot<'a>(
             &self,
             env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
-        ) {
-            let zero32 = builder.ins().iconst(ir::types::I32, 0);
-            let zero64 = builder.ins().iconst(ir::types::I64, 0);
-            let capacity = self.get_capacity(env, builder);
-            emit_debug_assert_ne!(env, builder, capacity, zero32);
-
-            let align = builder.ins().iconst(I64, std::mem::align_of::<T>() as i64);
-            let entry_size = std::mem::size_of::<T>();
-            let size = builder.ins().imul_imm(capacity, entry_size as i64);
-            let ptr = self.get_data(env, builder);
-
-            call_builtin!(builder, env, tc_deallocate(ptr, size, align));
-
-            self.set_capacity(builder, zero32);
-            self.set_length(builder, zero32);
-            self.set_data(builder, zero64);
-        }
-
-        pub fn ensure_capacity<'a>(
-            &self,
-            env: &mut crate::func_environ::FuncEnvironment<'a>,
-            builder: &mut FunctionBuilder,
-            required_capacity: ir::Value,
-        ) {
+            required_capacity: u32,
+            existing_slot: Option<StackSlot>,
+        ) -> StackSlot {
             let zero = builder.ins().iconst(ir::types::I32, 0);
-            emit_debug_assert_ne!(env, builder, required_capacity, zero);
-
             if cfg!(debug_assertions) {
-                let data = self.get_data(env, builder);
-                emit_debug_println!(
-                    env,
-                    builder,
-                    "[ensure_capacity] contref/base {:p}, buffer is {:p}",
-                    self.base,
-                    data
-                );
+                // We must only allocate while there is no data in the buffer.
+                let length = self.get_length(env, builder);
+                emit_debug_assert_eq!(env, builder, length, zero);
+                let capacity = self.get_capacity(env, builder);
+                emit_debug_assert_eq!(env, builder, capacity, zero);
             }
 
-            let capacity = self.get_capacity(env, builder);
+            let align = std::mem::align_of::<T>();
+            let entry_size = std::mem::size_of::<T>() as u32;
+            let required_size = required_capacity * entry_size;
 
-            let sufficient_capacity_block = builder.create_block();
-            let insufficient_capacity_block = builder.create_block();
+            match existing_slot {
+                Some(slot) if builder.func.get_stack_slot_data(slot).size >= required_size => {
+                    let slot_data = builder.func.get_stack_slot_data(slot).clone();
+                    let existing_capacity = slot_data.size / entry_size;
 
-            let big_enough =
-                builder
-                    .ins()
-                    .icmp(IntCC::UnsignedLessThanOrEqual, required_capacity, capacity);
+                    let capacity_value = builder.ins().iconst(I32, existing_capacity as i64);
+                    emit_debug_println!(
+                        env,
+                        builder,
+                        "[Array::allocate_or_reuse_stack_slot] Reusing existing buffer with capacity {}",
+                        capacity_value
+                    );
+                    debug_assert!(
+                        align <= builder.func.get_stack_slot_data(slot).align_shift as usize
+                    );
+                    debug_assert_eq!(builder.func.get_stack_slot_data(slot).kind, ExplicitSlot);
 
-            builder.ins().brif(
-                big_enough,
-                sufficient_capacity_block,
-                &[],
-                insufficient_capacity_block,
-                &[],
-            );
+                    let existing_data = builder.ins().stack_addr(env.pointer_type(), slot, 0);
 
-            {
-                builder.switch_to_block(insufficient_capacity_block);
-                builder.seal_block(insufficient_capacity_block);
+                    self.set_capacity(builder, capacity_value);
+                    self.set_data(builder, existing_data);
 
-                emit_debug_println!(
-                    env,
-                    builder,
-                    "[ensure_capacity] need to increase capacity from {} to {}",
-                    capacity,
-                    required_capacity
-                );
-
-                if cfg!(debug_assertions) {
-                    // We must only re-allocate while there is no data in the buffer.
-                    let length = self.get_length(env, builder);
-                    emit_debug_assert_eq!(env, builder, length, zero);
+                    slot
                 }
+                _ => {
+                    let capacity_value = builder.ins().iconst(I32, required_capacity as i64);
+                    emit_debug_assert_ne!(env, builder, capacity_value, zero);
 
-                let align = builder.ins().iconst(I64, std::mem::align_of::<T>() as i64);
-                let entry_size = std::mem::size_of::<T>();
-                let old_size = builder.ins().imul_imm(capacity, entry_size as i64);
-                let new_size = builder.ins().imul_imm(required_capacity, entry_size as i64);
+                    emit_debug_println!(
+                        env,
+                        builder,
+                        "[Array::allocate_or_reuse_stack_slot] allocating stack slot with capacity {}",
+                        capacity_value
+                    );
 
-                // The `tc_reallocate` libcalll takes the old and new size as
-                // u64, but `old_size` and `new_size` are currently just u32.
-                let old_size = builder.ins().uextend(I64, old_size);
-                let new_size = builder.ins().uextend(I64, new_size);
+                    let slot_size = ir::StackSlotData::new(
+                        ir::StackSlotKind::ExplicitSlot,
+                        required_size,
+                        align as u8,
+                    );
+                    let slot = builder.create_sized_stack_slot(slot_size);
+                    let new_data = builder.ins().stack_addr(env.pointer_type(), slot, 0);
 
-                let ptr = self.get_data(env, builder);
-                call_builtin!(
-                    builder, env, let new_data = tc_reallocate(ptr, old_size, new_size, align)
-                );
+                    self.set_capacity(builder, capacity_value);
+                    self.set_data(builder, new_data);
 
-                self.set_capacity(builder, required_capacity);
-                self.set_data(builder, new_data);
-                self.set_length(builder, zero);
-                builder.ins().jump(sufficient_capacity_block, &[]);
+                    slot
+                }
             }
-
-            builder.switch_to_block(sufficient_capacity_block);
-            builder.seal_block(sufficient_capacity_block);
         }
 
         /// Loads n entries from this Vector object, where n is the length of
@@ -828,19 +780,22 @@ pub(crate) mod stack_switching_helpers {
             self.set_length(builder, store_count);
         }
 
-        pub fn clear(&self, builder: &mut FunctionBuilder) {
-            let zero = builder.ins().iconst(I32, 0);
-            self.set_length(builder, zero);
-        }
-
-        /// Silences some unused function warnings
-        #[allow(dead_code, reason = "TODO")]
-        pub fn dummy<'a>(
+        pub fn clear<'a>(
+            &self,
             env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
+            discard_buffer: bool,
         ) {
-            let _sig = env.builtin_functions.tc_allocate(builder.func);
-            let _sig = env.builtin_functions.tc_deallocate(builder.func);
+            let zero32 = builder.ins().iconst(I32, 0);
+            self.set_length(builder, zero32);
+
+            if discard_buffer {
+                let zero32 = builder.ins().iconst(I32, 0);
+                self.set_capacity(builder, zero32);
+
+                let zero_ptr = builder.ins().iconst(env.pointer_type(), 0);
+                self.set_data(builder, zero_ptr);
+            }
         }
     }
 
@@ -1381,98 +1336,6 @@ use stack_switching_environ::{
 };
 use stack_switching_helpers as helpers;
 
-#[allow(clippy::cast_possible_truncation, reason = "TODO")]
-fn vmcontref_load_return_values<'a>(
-    env: &mut crate::func_environ::FuncEnvironment<'a>,
-    builder: &mut FunctionBuilder,
-    valtypes: &[WasmValType],
-    contref: ir::Value,
-) -> std::vec::Vec<ir::Value> {
-    let co = helpers::VMContRef::new(contref);
-    let mut values = vec![];
-
-    if valtypes.len() > 0 {
-        let result_buffer_addr = co.get_results(env, builder);
-
-        let mut offset = 0;
-        let memflags = ir::MemFlags::trusted();
-        for valtype in valtypes {
-            let val = builder.ins().load(
-                crate::value_type(env.isa, *valtype),
-                memflags,
-                result_buffer_addr,
-                offset,
-            );
-            values.push(val);
-            offset += env.offsets.ptr.maximum_value_size() as i32;
-        }
-    }
-    return values;
-}
-
-/// Loads values of the given types from the `Payloads` object in the `VMContext`.
-#[allow(clippy::cast_possible_truncation, reason = "TODO")]
-fn vmctx_load_payloads<'a>(
-    env: &mut crate::func_environ::FuncEnvironment<'a>,
-    builder: &mut FunctionBuilder,
-    valtypes: &[ir::Type],
-) -> Vec<ir::Value> {
-    let mut values = vec![];
-
-    if valtypes.len() > 0 {
-        let vmctx = env.vmctx_val(&mut builder.cursor());
-        let vmctx_payloads =
-            helpers::Payloads::new(vmctx, env.offsets.vmctx_stack_switching_payloads() as i32);
-
-        values = vmctx_payloads.load_data_entries(env, builder, valtypes);
-
-        // In theory, we way want to deallocate the buffer instead of just
-        // clearing it if its size is above a certain threshold. That would
-        // avoid keeping a large object unnecessarily long.
-        vmctx_payloads.clear(builder);
-    }
-
-    values
-}
-
-/// Loads values of the given types from the continuation's `values` field.
-#[allow(clippy::cast_possible_truncation, reason = "TODO")]
-pub(crate) fn vmcontref_load_values<'a>(
-    env: &mut crate::func_environ::FuncEnvironment<'a>,
-    builder: &mut FunctionBuilder,
-    contref: ir::Value,
-    valtypes: &[WasmValType],
-) -> Vec<ir::Value> {
-    let memflags = ir::MemFlags::trusted();
-    let mut result = vec![];
-
-    if valtypes.len() > 0 {
-        let co = helpers::VMContRef::new(contref);
-        let values = co.values();
-
-        let payload_ptr = values.get_data(env, builder);
-
-        let mut offset = 0;
-        for valtype in valtypes {
-            let val = builder.ins().load(
-                crate::value_type(env.isa, *valtype),
-                memflags,
-                payload_ptr,
-                offset,
-            );
-            result.push(val);
-            offset += env.offsets.ptr.maximum_value_size() as i32;
-        }
-
-        // In theory, we way want to deallocate the buffer instead of just
-        // clearing it if its size is above a certain threshold. That would
-        // avoid keeping a large object unnecessarily long.
-        values.clear(builder);
-    }
-
-    result
-}
-
 /// Stores the given arguments in the appropriate `Payloads` object in the continuation.
 /// If the continuation was never invoked, use the `args` object.
 /// Otherwise, use the `values` object.
@@ -1481,7 +1344,6 @@ pub(crate) fn vmcontref_store_payloads<'a>(
     env: &mut crate::func_environ::FuncEnvironment<'a>,
     builder: &mut FunctionBuilder,
     values: &[ir::Value],
-    remaining_arg_count: ir::Value,
     contref: ir::Value,
 ) {
     if values.len() > 0 {
@@ -1513,12 +1375,8 @@ pub(crate) fn vmcontref_store_payloads<'a>(
 
             let payloads = co.values();
 
-            // Unlike for the args buffer (where we know the maximum
-            // required capacity at the time of creation of the
-            // `VMContRef`), tag return buffers are re-used and may
-            // be too small.
-            payloads.ensure_capacity(env, builder, remaining_arg_count);
-
+            // This also checks that the buffer is large enough to hold
+            // `values.len()` more elements.
             let ptr = payloads.occupy_next_slots(env, builder, values.len() as i32);
             builder.ins().jump(store_data_block, &[ptr]);
         }
@@ -1537,26 +1395,6 @@ pub(crate) fn vmcontref_store_payloads<'a>(
                 offset += env.offsets.ptr.maximum_value_size() as i32;
             }
         }
-    }
-}
-
-/// Stores the given values in the `Payloads` object of the `VMContext`.
-//TODO(frank-emrich) Consider removing `valtypes` argument, as values are inherently typed
-#[allow(clippy::cast_possible_truncation, reason = "TODO")]
-pub(crate) fn vmctx_store_payloads<'a>(
-    env: &mut crate::func_environ::FuncEnvironment<'a>,
-    builder: &mut FunctionBuilder,
-    values: &[ir::Value],
-) {
-    if values.len() > 0 {
-        let vmctx = env.vmctx_val(&mut builder.cursor());
-        let payloads =
-            helpers::Payloads::new(vmctx, env.offsets.vmctx_stack_switching_payloads() as i32);
-
-        let nargs = builder.ins().iconst(I32, values.len() as i64);
-        payloads.ensure_capacity(env, builder, nargs);
-
-        payloads.store_data_entries(env, builder, values, true);
     }
 }
 
@@ -1779,7 +1617,6 @@ pub(crate) fn translate_cont_bind<'a>(
     builder: &mut FunctionBuilder,
     contobj: ir::Value,
     args: &[ir::Value],
-    remaining_arg_count: usize,
 ) -> ir::Value {
     let (witness, contref) = fatpointer::deconstruct(env, builder, contobj);
 
@@ -1801,8 +1638,7 @@ pub(crate) fn translate_cont_bind<'a>(
         .ins()
         .trapz(evidence, crate::TRAP_CONTINUATION_ALREADY_CONSUMED);
 
-    let remaining_arg_count = builder.ins().iconst(I32, remaining_arg_count as i64);
-    vmcontref_store_payloads(env, builder, args, remaining_arg_count, contref);
+    vmcontref_store_payloads(env, builder, args, contref);
 
     let revision = vmcontref.incr_revision(env, builder, revision);
     emit_debug_println!(env, builder, "new revision = {}", revision);
@@ -1935,8 +1771,7 @@ pub(crate) fn translate_resume<'a>(
 
         if resume_args.len() > 0 {
             // We store the arguments in the `VMContRef` to be resumed.
-            let count = builder.ins().iconst(I32, resume_args.len() as i64);
-            vmcontref_store_payloads(env, builder, resume_args, count, resume_contref);
+            vmcontref_store_payloads(env, builder, resume_args, resume_contref);
         }
 
         // Splice together stack chains:
@@ -2007,10 +1842,16 @@ pub(crate) fn translate_resume<'a>(
 
         if resumetable.len() > 0 {
             // Total number of handlers (suspend and switch).
-            let handler_count = builder.ins().iconst(I32, resumetable.len() as i64);
-
-            // If the existing list is too small, reallocate (in runtime).
-            handler_list.ensure_capacity(env, builder, handler_count);
+            let handler_count = u32::try_from(resumetable.len()).unwrap();
+            // Populate the Array's data ptr with a pointer to a sufficiently
+            // large area on this stack.
+            env.stack_switching_handler_list_buffer =
+                Some(handler_list.allocate_or_reuse_stack_slot(
+                    env,
+                    builder,
+                    handler_count,
+                    env.stack_switching_handler_list_buffer.clone(),
+                ));
 
             let suspend_handler_count = suspend_handlers.len();
 
@@ -2074,8 +1915,8 @@ pub(crate) fn translate_resume<'a>(
         vmctx.store_stack_chain(env, builder, &original_stack_chain);
         parent_csi.set_state(env, builder, stack_switching_environ::State::Running);
 
-        // Just for consistency: Reset the handler list.
-        handler_list.clear(builder);
+        // Just for consistency: Clear the handler list.
+        handler_list.clear(env, builder, true);
         parent_csi.set_first_switch_handler_index(env, builder, zero);
 
         // Extract the result and signal bit.
@@ -2105,7 +1946,7 @@ pub(crate) fn translate_resume<'a>(
 
     // The suspend block: Only used when we suspended, not for returns.
     // Here we extract the index of the handler to use.
-    let (handler_index, suspended_contobj) = {
+    let (handler_index, suspended_contref, suspended_contobj) = {
         builder.switch_to_block(suspend_block);
         builder.seal_block(suspend_block);
 
@@ -2146,7 +1987,7 @@ pub(crate) fn translate_resume<'a>(
         // another one.
         builder.ins().jump(dispatch_block, &[]);
 
-        (handler_index, suspended_contobj)
+        (handler_index, suspended_continuation, suspended_contobj)
     };
 
     // For technical reasons, the jump table needs to have a default
@@ -2177,10 +2018,21 @@ pub(crate) fn translate_resume<'a>(
                 .iter()
                 .map(|wty| crate::value_type(env.isa, *wty))
                 .collect();
-            let mut args = vmctx_load_payloads(env, builder, &param_types);
-            args.push(suspended_contobj);
 
-            builder.ins().jump(target_block, &args);
+            let values = suspended_contref.values();
+            let mut suspend_args = values.load_data_entries(env, builder, &param_types);
+
+            // At the suspend site, we store the suspend args in the the
+            // `values` buffer of the VMContRef that was active at the time that
+            // the suspend instruction was performed.
+            suspend_args.push(suspended_contobj);
+
+            // We clear the suspend args. This is mostly for consistency. Note
+            // that we don't zero out the data buffer, we still need it for the
+
+            values.clear(env, builder, false);
+
+            builder.ins().jump(target_block, &suspend_args);
         }
 
         preamble_blocks
@@ -2228,9 +2080,15 @@ pub(crate) fn translate_resume<'a>(
         let returned_csi = returned_contref.common_stack_information(env, builder);
         returned_csi.set_state(env, builder, stack_switching_environ::State::Returned);
 
-        // Load and push the results.
-        let returns = env.continuation_returns(type_index).to_vec();
-        let values = vmcontref_load_return_values(env, builder, &returns, returned_contref.address);
+        // Load the values returned by the continuation.
+        let return_types: Vec<_> = env
+            .continuation_returns(type_index)
+            .iter()
+            .map(|ty| crate::value_type(env.isa, *ty))
+            .collect();
+        let payloads = returned_contref.args();
+        let return_values = payloads.load_data_entries(env, builder, &return_types);
+        payloads.clear(env, builder, true);
 
         // The continuation has returned and all `VMContObjs` to it
         // should have been be invalidated. We may safely deallocate
@@ -2240,7 +2098,7 @@ pub(crate) fn translate_resume<'a>(
         // repurposed).
         call_builtin!(builder, env, cont_ref_drop(returned_contref.address));
 
-        Ok(values)
+        Ok(return_values)
     }
 }
 
@@ -2249,10 +2107,8 @@ pub(crate) fn translate_suspend<'a>(
     builder: &mut FunctionBuilder,
     tag_index: u32,
     suspend_args: &[ir::Value],
-    tag_return_types: &[WasmValType],
+    tag_return_types: &[ir::Type],
 ) -> Vec<ir::Value> {
-    vmctx_store_payloads(env, builder, suspend_args);
-
     let tag_addr = tag_address(env, builder, tag_index);
     emit_debug_println!(env, builder, "[suspend] suspending with tag {:p}", tag_addr);
 
@@ -2280,6 +2136,28 @@ pub(crate) fn translate_suspend<'a>(
 
     active_contref.set_last_ancestor(env, builder, end_of_chain_contref.address);
 
+    // In the active_contref's `values` buffer, stack-allocate enough room so that we can
+    // later store the following:
+    // 1. The suspend arguments
+    // 2. Afterwards, the tag return values
+    let values = active_contref.values();
+    let required_capacity =
+        u32::try_from(std::cmp::max(suspend_args.len(), tag_return_types.len()))
+            .expect("Number of stack switching payloads should fit in u32");
+
+    if required_capacity > 0 {
+        env.stack_switching_values_buffer = Some(values.allocate_or_reuse_stack_slot(
+            env,
+            builder,
+            required_capacity,
+            env.stack_switching_values_buffer.clone(),
+        ));
+    }
+
+    if suspend_args.len() > 0 {
+        values.store_data_entries(env, builder, suspend_args, true)
+    }
+
     // Set current continuation to suspended and break up handler chain.
     let active_contref_csi = active_contref.common_stack_information(env, builder);
     if cfg!(debug_assertions) {
@@ -2306,8 +2184,11 @@ pub(crate) fn translate_suspend<'a>(
         .ins()
         .stack_switch(control_context_ptr, control_context_ptr, suspend_payload);
 
-    let return_values =
-        vmcontref_load_values(env, builder, active_contref.address, tag_return_types);
+    // The return values of the suspend instruction are the tag return values, saved in the `args` buffer.
+    let values = active_contref.values();
+    let return_values = values.load_data_entries(env, builder, tag_return_types);
+    // We effectively consume the values and discard the stack allocated buffer.
+    values.clear(env, builder, true);
 
     return_values
 }
@@ -2319,7 +2200,7 @@ pub(crate) fn translate_switch<'a>(
     tag_index: u32,
     switchee_contobj: ir::Value,
     switch_args: &[ir::Value],
-    return_types: &[WasmValType],
+    return_types: &[ir::Type],
 ) -> WasmResult<Vec<ir::Value>> {
     let vmctx = helpers::VMContext::new(env.vmctx_val(&mut builder.cursor()), env.pointer_type());
 
@@ -2382,6 +2263,19 @@ pub(crate) fn translate_switch<'a>(
 
         switcher_contref.set_last_ancestor(env, builder, last_ancestor.address);
 
+        // In the switcher_contref's `values` buffer, stack-allocate enough room so that we can
+        // later store `tag_return_types.len()` when resuming the continuation.
+        let values = switcher_contref.values();
+        let required_capacity = u32::try_from(return_types.len()).unwrap();
+        if required_capacity > 0 {
+            env.stack_switching_values_buffer = Some(values.allocate_or_reuse_stack_slot(
+                env,
+                builder,
+                required_capacity,
+                env.stack_switching_values_buffer.clone(),
+            ));
+        }
+
         let switcher_contref_csi = switcher_contref.common_stack_information(env, builder);
         emit_debug_assert!(
             env,
@@ -2429,14 +2323,7 @@ pub(crate) fn translate_switch<'a>(
     let (switchee_contref_csi, switchee_contref_last_ancestor) = {
         let mut combined_payloads = switch_args.to_vec();
         combined_payloads.push(switcher_contobj);
-        let count = builder.ins().iconst(I32, combined_payloads.len() as i64);
-        vmcontref_store_payloads(
-            env,
-            builder,
-            &combined_payloads,
-            count,
-            switchee_contref.address,
-        );
+        vmcontref_store_payloads(env, builder, &combined_payloads, switchee_contref.address);
 
         let switchee_contref_csi = switchee_contref.common_stack_information(env, builder);
 
@@ -2602,7 +2489,11 @@ pub(crate) fn translate_switch<'a>(
             emit_debug_assert_eq!(env, builder, switcher_contref.address, active_contref);
         }
 
-        vmcontref_load_values(env, builder, switcher_contref.address, return_types)
+        let payloads = switcher_contref.values();
+        let return_values = payloads.load_data_entries(env, builder, return_types);
+        // We consume the values and discard the buffer (allocated on this stack)
+        payloads.clear(env, builder, true);
+        return_values
     };
 
     Ok(return_values)

@@ -3,16 +3,7 @@ use core::{
     convert::From,
     default::Default,
     marker::{Send, Sync},
-    ptr,
 };
-
-extern crate alloc;
-use alloc::vec::Vec;
-use core::mem::drop;
-
-/// Capacity of the `HandlerList` initially created for the main stack and every
-/// continuation.
-pub const INITIAL_HANDLER_LIST_CAPACITY: usize = 4;
 
 /// TODO
 #[allow(dead_code)]
@@ -84,8 +75,7 @@ pub struct CommonStackInformation {
     /// - Parent
     pub state: State,
 
-    /// Only in use when state is `Parent`.
-    /// Otherwise, the list may remain allocated, but its `length` must be 0.
+    /// Only in use when state is `Parent`. Otherwise, the list must be empty.
     ///
     /// Represents the handlers that this stack installed when resume-ing a
     /// continuation.
@@ -108,6 +98,10 @@ pub struct CommonStackInformation {
     /// VMTagDefinition).
     /// Further, `first_switch_handler_index` (see below) is set to n (i.e., the
     /// 0-based index of the first switch handler).
+    ///
+    /// Note that the actual data buffer (i.e., the one `handler.data` points
+    /// to) is always allocated on the stack that this `CommonStackInformation`
+    /// struct describes.
     pub handlers: HandlerList,
 
     /// Only used when state is `Parent`. See documentation of `handlers` above.
@@ -120,7 +114,7 @@ impl CommonStackInformation {
         Self {
             limits: StackLimits::default(),
             state: State::Running,
-            handlers: HandlerList::new(INITIAL_HANDLER_LIST_CAPACITY as u32),
+            handlers: HandlerList::empty(),
             first_switch_handler_index: 0,
         }
     }
@@ -150,84 +144,43 @@ unsafe impl Sync for HandlerList {}
 
 #[repr(C)]
 #[derive(Debug, Clone)]
-/// A growable container type. Unlike Rust's `Vec`, we consider `Vector`
-/// objects NOT to own the underlying data buffer. As a result, it does not
-/// implement `Drop`, all (de)allocation must be done manually.
-pub struct Vector<T> {
+/// Reference to a stack-allocated buffer ("array"), storing data of some type
+/// `T`.
+pub struct Array<T> {
     /// Number of currently occupied slots.
     pub length: u32,
     /// Number of slots in the data buffer. Note that this is *not* the size of
     /// the buffer in bytes!
     pub capacity: u32,
-    /// This is null if and only if capacity (and thus also `length`) are 0.
+    /// The actual data buffer
     pub data: *mut T,
 }
 
-impl<T> Vector<T> {
-    /// TODO(dhil): Write documentation.
-    #[inline]
-    pub fn new(capacity: u32) -> Self {
-        let data = if capacity == 0 {
-            ptr::null_mut()
-        } else {
-            let mut args = Vec::with_capacity(capacity as usize);
-            let args_ptr = args.as_mut_ptr();
-            args.leak();
-            args_ptr
-        };
+impl<T> Array<T> {
+    /// Creates empty `Array`
+    pub fn empty() -> Self {
         Self {
             length: 0,
-            capacity,
-            data,
+            capacity: 0,
+            data: std::ptr::null_mut(),
         }
     }
 
-    /// Ensures that we can hold at least the required number of elements.
-    /// Does not preserve existing elements and can therefore only be called on empty `Vector`.
-    #[inline]
-    pub fn ensure_capacity(&mut self, required_capacity: u32) {
-        assert_eq!(self.length, 0);
-        if self.capacity < required_capacity {
-            self.deallocate();
-
-            *self = Self::new(required_capacity)
-        }
-    }
-
-    /// TODO(dhil): Write documentation.
-    #[inline]
-    pub fn deallocate(&mut self) {
-        if self.data.is_null() {
-            debug_assert_eq!(self.length, 0);
-            debug_assert_eq!(self.capacity, 0);
-        } else {
-            drop(unsafe {
-                Vec::from_raw_parts(self.data, self.length as usize, self.capacity as usize)
-            });
-
-            // Just for safety:
-            self.data = core::ptr::null_mut();
-            self.capacity = 0;
-            self.length = 0;
-        }
-    }
-
-    /// TODO(dhil): Write documentation.
-    #[inline]
+    /// Makes `Array` empty.
     pub fn clear(&mut self) {
-        self.length = 0;
+        *self = Self::empty();
     }
 }
 
-/// Type of vectors used for handling payloads passed between continuations.
-///
-/// The actual type argument should be wasmtime::runtime::vm::vmcontext::ValRaw,
-/// but we don't have access to that here.
-pub type Payloads = Vector<u128>;
+/// Type used for passing payloads to and from continuations. The actual type
+/// argument should be wasmtime::runtime::vm::vmcontext::ValRaw, but we don't
+/// have access to that here.
+pub type Payloads = Array<u128>;
 
-/// List of handlers, represented by the handled tag.
-/// Thus, the stored data is actually `*mut VMTagDefinition`.
-pub type HandlerList = Vector<*mut u8>;
+/// Type for a list of handlers, represented by the handled tag. Thus, the
+/// stored data is actually `*mut VMTagDefinition`, but we don't havr access to
+/// that here.
+pub type HandlerList = Array<*mut u8>;
 
 /// Discriminant of variant `Absent` in
 /// `wasmtime_runtime::continuation::StackChain`.
@@ -278,18 +231,18 @@ impl From<State> for i32 {
 
 /// Defines offsets of the fields in the continuation-related types
 pub mod offsets {
-    /// Offsets of fields in `Vector`.
+    /// Offsets of fields in `Array`.
     /// Note that these are independent from the type parameter `T`.
-    pub mod vector {
+    pub mod array {
         use crate::stack_switching::*;
         use memoffset::offset_of;
 
         /// Offset of `capacity` field
-        pub const CAPACITY: usize = offset_of!(Vector<()>, capacity);
+        pub const CAPACITY: usize = offset_of!(Array<()>, capacity);
         /// Offset of `data` field
-        pub const DATA: usize = offset_of!(Vector<()>, data);
+        pub const DATA: usize = offset_of!(Array<()>, data);
         /// Offset of `length` field
-        pub const LENGTH: usize = offset_of!(Vector<()>, length);
+        pub const LENGTH: usize = offset_of!(Array<()>, length);
     }
 
     /// Offsets of fields in `wasmtime_runtime::continuation::VMContRef`.

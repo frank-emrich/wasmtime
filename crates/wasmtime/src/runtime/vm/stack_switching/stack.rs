@@ -6,6 +6,8 @@
 use std::io;
 use std::ops::Range;
 
+use wasmtime_environ::stack_switching::Array;
+
 use crate::runtime::vm::{VMContext, VMFuncRef, ValRaw};
 
 cfg_if::cfg_if! {
@@ -90,14 +92,27 @@ impl ContinuationStack {
         self.0.control_context_frame_pointer()
     }
 
+    /// Initializes this stack, such that it will execute the function denoted
+    /// by `func_ref`. `parameter_count` and `return_value_count` must be the
+    /// corresponding number of parameters and return values of `func_ref`.
+    /// `args` must point to the `args` field of the `VMContRef` owning this pointer.
+    ///
+    /// It will be updated by this function to correctly describe
+    /// the buffer used by this function for its arguments and return values.
     pub fn initialize(
         &self,
         func_ref: *const VMFuncRef,
         caller_vmctx: *mut VMContext,
-        args_ptr: *mut ValRaw,
-        args_capacity: usize,
+        args: *mut Array<ValRaw>,
+        parameter_count: u32,
+        return_value_count: u32,
     ) {
-        self.0
-            .initialize(func_ref, caller_vmctx, args_ptr, args_capacity)
+        self.0.initialize(
+            func_ref,
+            caller_vmctx,
+            args,
+            parameter_count,
+            return_value_count,
+        )
     }
 }

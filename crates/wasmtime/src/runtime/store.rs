@@ -2905,7 +2905,6 @@ impl Drop for StoreOpaque {
             // properly clean up the Store/Instance at that point (see issue
             // #253), this `clear` should no longer be necessary.
             self.main_stack_information.handlers.clear();
-            self.main_stack_information.handlers.deallocate();
 
             // See documentation for these fields on `StoreOpaque` for why they
             // must be dropped in this order.
