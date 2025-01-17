@@ -10,10 +10,6 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::mem::drop;
 
-/// Capacity of the `HandlerList` initially created for the main stack and every
-/// continuation.
-pub const INITIAL_HANDLER_LIST_CAPACITY: usize = 4;
-
 /// TODO
 #[allow(dead_code)]
 pub const ENABLE_DEBUG_PRINTING: bool = false;
@@ -120,7 +116,7 @@ impl CommonStackInformation {
         Self {
             limits: StackLimits::default(),
             state: State::Running,
-            handlers: HandlerList::new(INITIAL_HANDLER_LIST_CAPACITY as u32),
+            handlers: HandlerList::empty(),
             first_switch_handler_index: 0,
         }
     }
@@ -232,6 +228,22 @@ pub struct ArrayRef<T> {
     pub data: *mut T,
 }
 
+impl<T> ArrayRef<T> {
+    /// TODO(frank-emrich)
+    pub fn empty() -> Self {
+        Self {
+            length: 0,
+            capacity: 0,
+            data: std::ptr::null_mut(),
+        }
+    }
+
+    /// TODO(frank-emrich)
+    pub fn clear(&mut self) {
+        *self = Self::empty();
+    }
+}
+
 /// Type of vectors used for handling payloads passed between continuations.
 ///
 /// The actual type argument should be wasmtime::runtime::vm::vmcontext::ValRaw,
@@ -240,7 +252,7 @@ pub type Payloads = Vector<u128>;
 
 /// List of handlers, represented by the handled tag.
 /// Thus, the stored data is actually `*mut VMTagDefinition`.
-pub type HandlerList = Vector<*mut u8>;
+pub type HandlerList = ArrayRef<*mut u8>;
 
 /// Discriminant of variant `Absent` in
 /// `wasmtime_runtime::continuation::StackChain`.

@@ -133,9 +133,7 @@ pub mod imp {
         pub fn empty() -> Self {
             let limits = StackLimits::with_stack_limit(Default::default());
             let state = State::Fresh;
-            let handlers = HandlerList::new(
-                wasmtime_environ::stack_switching::INITIAL_HANDLER_LIST_CAPACITY as u32,
-            );
+            let handlers = HandlerList::empty();
             let common_stack_information = CommonStackInformation {
                 limits,
                 state,
@@ -171,8 +169,6 @@ pub mod imp {
             // `Payloads` must be deallocated explicitly, they are considered non-owning.
             self.args.deallocate();
             self.values.deallocate();
-
-            self.common_stack_information.handlers.deallocate();
 
             // We would like to enforce the invariant that any continuation that
             // was created for a cont.new (rather than, say, just living in a
