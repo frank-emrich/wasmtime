@@ -826,6 +826,7 @@ impl TypeRegistryInner {
                     .struct_layout(s)
                     .into(),
             ),
+            wasmtime_environ::WasmCompositeInnerType::Cont(_) => None, // TODO(dhil): revisit later.
         };
 
         // Add the type to our slab.

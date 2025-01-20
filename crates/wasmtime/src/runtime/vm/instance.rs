@@ -5,15 +5,16 @@
 use crate::runtime::vm::const_expr::{ConstEvalContext, ConstExprEvaluator};
 use crate::runtime::vm::export::Export;
 use crate::runtime::vm::memory::{Memory, RuntimeMemoryCreator};
+use crate::runtime::vm::stack_switching::stack_chain::StackChainCell;
 use crate::runtime::vm::table::{Table, TableElement, TableElementType};
 use crate::runtime::vm::vmcontext::{
     VMBuiltinFunctionsArray, VMContext, VMFuncRef, VMFunctionImport, VMGlobalDefinition,
     VMGlobalImport, VMMemoryDefinition, VMMemoryImport, VMOpaqueContext, VMRuntimeLimits,
-    VMTableDefinition, VMTableImport,
+    VMTableDefinition, VMTableImport, VMTagDefinition, VMTagImport,
 };
 use crate::runtime::vm::{
-    ExportFunction, ExportGlobal, ExportMemory, ExportTable, GcStore, Imports, ModuleRuntimeInfo,
-    SendSyncPtr, VMFunctionBody, VMGcRef, VMStore, WasmFault,
+    ExportFunction, ExportGlobal, ExportMemory, ExportTable, ExportTag, GcStore, Imports,
+    ModuleRuntimeInfo, SendSyncPtr, VMFunctionBody, VMGcRef, VMStore, WasmFault,
 };
 use crate::store::{StoreInner, StoreOpaque};
 use crate::{prelude::*, StoreContextMut};
@@ -27,16 +28,18 @@ use core::{mem, ptr};
 use sptr::Strict;
 use wasmtime_environ::{
     packed_option::ReservedValue, DataIndex, DefinedGlobalIndex, DefinedMemoryIndex,
-    DefinedTableIndex, ElemIndex, EntityIndex, EntityRef, EntitySet, FuncIndex, GlobalIndex,
-    HostPtr, MemoryIndex, Module, ModuleInternedTypeIndex, PrimaryMap, PtrSize, TableIndex,
-    TableInitialValue, TableSegmentElements, Trap, VMOffsets, VMSharedTypeIndex, WasmHeapTopType,
-    VMCONTEXT_MAGIC,
+    DefinedTableIndex, DefinedTagIndex, ElemIndex, EntityIndex, EntityRef, EntitySet, FuncIndex,
+    GlobalIndex, HostPtr, MemoryIndex, Module, ModuleInternedTypeIndex, PrimaryMap, PtrSize,
+    TableIndex, TableInitialValue, TableSegmentElements, TagIndex, Trap, VMOffsets,
+    VMSharedTypeIndex, WasmHeapTopType, VMCONTEXT_MAGIC,
 };
 #[cfg(feature = "wmemcheck")]
 use wasmtime_wmemcheck::Wmemcheck;
 
 mod allocator;
 pub use allocator::*;
+
+use allocator::stacks_allocator::StacksAllocator;
 
 /// The pair of an instance and a raw pointer its associated store.
 ///
@@ -281,6 +284,9 @@ pub struct Instance {
     #[cfg(feature = "wmemcheck")]
     pub(crate) wmemcheck_state: Option<Wmemcheck>,
 
+    /// Stacks allocator
+    stacks_allocator: Option<Box<StacksAllocator>>,
+
     /// Additional context used by compiled wasm code. This field is last, and
     /// represents a dynamically-sized array that extends beyond the nominal
     /// end of the struct (similar to a flexible array member).
@@ -321,6 +327,7 @@ impl Instance {
                 tables,
                 dropped_elements,
                 dropped_data,
+                stacks_allocator: None,
                 host_state: req.host_state,
                 vmctx_self_reference: SendSyncPtr::new(NonNull::new(ptr.add(1).cast()).unwrap()),
                 vmctx: VMContext {
@@ -433,6 +440,11 @@ impl Instance {
     /// Return the indexed `VMGlobalImport`.
     fn imported_global(&self, index: GlobalIndex) -> &VMGlobalImport {
         unsafe { &*self.vmctx_plus_offset(self.offsets().vmctx_vmglobal_import(index)) }
+    }
+
+    /// Return the indexed `VMTagImport`.
+    fn imported_tag(&self, index: TagIndex) -> &VMTagImport {
+        unsafe { &*self.vmctx_plus_offset(self.offsets().vmctx_vmtag_import(index)) }
     }
 
     /// Return the indexed `VMTableDefinition`.
@@ -558,10 +570,21 @@ impl Instance {
             })
     }
 
+    /// Return the indexed `VMTagDefinition`.
+    fn tag_ptr(&mut self, index: DefinedTagIndex) -> *mut VMTagDefinition {
+        unsafe { self.vmctx_plus_offset_mut(self.offsets().vmctx_vmtag_definition(index)) }
+    }
+
     /// Return a pointer to the interrupts structure
     #[inline]
     pub fn runtime_limits(&mut self) -> *mut *const VMRuntimeLimits {
         unsafe { self.vmctx_plus_offset_mut(self.offsets().ptr.vmctx_runtime_limits()) }
+    }
+
+    /// Return a pointer to the stack chain
+    #[inline]
+    pub fn stack_chain(&mut self) -> *mut *mut StackChainCell {
+        unsafe { self.vmctx_plus_offset_mut(self.offsets().vmctx_stack_switching_stack_chain()) }
     }
 
     /// Return a pointer to the global epoch counter used by this instance.
@@ -588,6 +611,7 @@ impl Instance {
         if let Some(store) = store {
             *self.vmctx_plus_offset_mut(self.offsets().ptr.vmctx_store()) = store;
             *self.runtime_limits() = (*store).vmruntime_limits();
+            *self.stack_chain() = (*store).stack_chain();
             *self.epoch_ptr() = (*store).engine().epoch_counter();
             self.set_gc_heap((*store).gc_store_mut().ok());
         } else {
@@ -665,6 +689,18 @@ impl Instance {
             definition,
             vmctx,
             table: self.env_module().tables[index],
+        }
+    }
+
+    fn get_exported_tag(&mut self, index: TagIndex) -> ExportTag {
+        ExportTag {
+            definition: if let Some(def_index) = self.env_module().defined_tag_index(index) {
+                self.tag_ptr(def_index)
+            } else {
+                self.imported_tag(index).from
+            },
+            vmctx: self.vmctx(),
+            tag: self.env_module().tags[index],
         }
     }
 
@@ -1048,6 +1084,7 @@ impl Instance {
                             )
                         }),
                     )?,
+                    WasmHeapTopType::Cont => todo!(), // TODO(dhil): We should have a bespoke cont table type first.
                 }
             }
         }
@@ -1348,6 +1385,11 @@ impl Instance {
         *self.vmctx_plus_offset_mut(offsets.ptr.vmctx_builtin_functions()) =
             &VMBuiltinFunctionsArray::INIT;
 
+        // Initialize the Payloads object to be empty
+        let vmctx_payloads: *mut wasmtime_environ::stack_switching::Payloads =
+            self.vmctx_plus_offset_mut(offsets.vmctx_stack_switching_payloads());
+        *vmctx_payloads = wasmtime_environ::stack_switching::Payloads::new(0);
+
         // Initialize the imports
         debug_assert_eq!(imports.functions.len(), module.num_imported_funcs);
         ptr::copy_nonoverlapping(
@@ -1372,6 +1414,12 @@ impl Instance {
             imports.globals.as_ptr(),
             self.vmctx_plus_offset_mut(offsets.vmctx_imported_globals_begin()),
             imports.globals.len(),
+        );
+        debug_assert_eq!(imports.tags.len(), module.num_imported_tags);
+        ptr::copy_nonoverlapping(
+            imports.tags.as_ptr(),
+            self.vmctx_plus_offset_mut(offsets.vmctx_imported_tags_begin()),
+            imports.tags.len(),
         );
 
         // N.B.: there is no need to initialize the funcrefs array because we
@@ -1411,6 +1459,20 @@ impl Instance {
             ptr = ptr.add(1);
         }
 
+        // Initialize the defined tags
+        for index in 0..module.tags.len() - module.num_imported_tags {
+            let defined_index = DefinedTagIndex::new(index);
+            let tag_index = module.tag_index(defined_index);
+            let tag = module.tags[tag_index];
+            let to = self.tag_ptr(defined_index);
+            ptr::write(
+                to,
+                VMTagDefinition::new(
+                    self.engine_type_index(tag.signature.unwrap_module_type_index()),
+                ),
+            );
+        }
+
         // Zero-initialize the globals so that nothing is uninitialized memory
         // after this function returns. The globals are actually initialized
         // with their const expression initializers after the instance is fully
@@ -1436,12 +1498,64 @@ impl Instance {
         }
         fault
     }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_stack_switching_stack_chain(&mut self, chain: *mut *mut StackChainCell) {
+        unsafe {
+            let ptr =
+                self.vmctx_plus_offset_mut(self.offsets().vmctx_stack_switching_stack_chain());
+            *ptr = chain;
+        }
+    }
+
+    // TODO
+    pub(crate) fn stack_switching_allocate_continuation(
+        &mut self,
+    ) -> Result<
+        (
+            *mut stacks_allocator::VMContRef,
+            stacks_allocator::ContinuationStack,
+        ),
+        Error,
+    > {
+        match &mut self.stacks_allocator {
+            Some(allocator) => allocator.allocate(),
+            None => unsafe {
+                InstanceAndStore::from_vmctx(
+                    (&mut self.vmctx) as *mut VMContext,
+                    |i| -> Result<_, Error> {
+                        let (_, store) = i.unpack_mut();
+                        let config = &*(store.stack_switching_config());
+                        self.stacks_allocator = Some(Box::new(StacksAllocator::new(config)?));
+                        self.stacks_allocator.as_mut().unwrap().allocate()
+                    },
+                )
+            },
+        }
+    }
+
+    pub(crate) fn stack_switching_deallocate_continuation(
+        &mut self,
+        contref: *mut stacks_allocator::VMContRef,
+    ) {
+        self.stacks_allocator.as_mut().unwrap().deallocate(contref)
+    }
 }
 
 /// A handle holding an `Instance` of a WebAssembly module.
 #[derive(Debug)]
 pub struct InstanceHandle {
     instance: Option<SendSyncPtr<Instance>>,
+}
+
+// These are only valid if the `Instance` type is send/sync, hence the
+// assertion below.
+unsafe impl Send for InstanceHandle {}
+unsafe impl Sync for InstanceHandle {}
+
+fn _assert_send_sync() {
+    fn _assert<T: Send + Sync>() {}
+    _assert::<Instance>();
 }
 
 impl InstanceHandle {
@@ -1482,6 +1596,11 @@ impl InstanceHandle {
         self.instance_mut().get_exported_table(export)
     }
 
+    /// Lookup a tag by index.
+    pub fn get_exported_tag(&mut self, export: TagIndex) -> ExportTag {
+        self.instance_mut().get_exported_tag(export)
+    }
+
     /// Lookup an item with the given index.
     pub fn get_export_by_index(&mut self, export: EntityIndex) -> Export {
         match export {
@@ -1489,6 +1608,7 @@ impl InstanceHandle {
             EntityIndex::Global(i) => Export::Global(self.get_exported_global(i)),
             EntityIndex::Table(i) => Export::Table(self.get_exported_table(i)),
             EntityIndex::Memory(i) => Export::Memory(self.get_exported_memory(i)),
+            EntityIndex::Tag(i) => Export::Tag(self.get_exported_tag(i)),
         }
     }
 

@@ -36,6 +36,8 @@ pub use self::pooling::{
     PoolingInstanceAllocatorConfig,
 };
 
+pub mod stacks_allocator;
+
 /// Represents a request for a new runtime instance.
 pub struct InstanceAllocationRequest<'a> {
     /// The info related to the compiled version of this module,
@@ -599,6 +601,8 @@ fn initialize_tables(
                         let items = (0..table.size()).map(|_| funcref);
                         table.init_func(0, items)?;
                     }
+
+                    WasmHeapTopType::Cont => todo!(), // TODO(dhil): cont type table.
                 }
             }
         }

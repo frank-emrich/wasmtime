@@ -264,6 +264,43 @@ mod test_vmglobal_import {
     }
 }
 
+/// The fields compiled code needs to access to utilize a WebAssembly
+/// tag imported from another instance.
+#[derive(Debug, Copy, Clone)]
+#[repr(C)]
+pub struct VMTagImport {
+    /// A pointer to the imported tag description.
+    pub from: *mut VMTagDefinition,
+    /// A pointer to the owning instance.
+    pub vmctx: *mut VMContext,
+}
+
+// Declare that this type is send/sync, it's the responsibility of users of
+// `VMGlobalImport` to uphold this guarantee.
+unsafe impl Send for VMTagImport {}
+unsafe impl Sync for VMTagImport {}
+
+#[cfg(test)]
+mod test_vmtag_import {
+    use super::VMTagImport;
+    use core::mem::{offset_of, size_of};
+    use wasmtime_environ::{Module, VMOffsets};
+
+    #[test]
+    fn check_vmtag_import_offsets() {
+        let module = Module::new();
+        let offsets = VMOffsets::new(u8::try_from(size_of::<*mut u8>()).unwrap(), &module);
+        assert_eq!(
+            size_of::<VMTagImport>(),
+            usize::from(offsets.size_of_vmtag_import())
+        );
+        assert_eq!(
+            offset_of!(VMTagImport, from),
+            usize::from(offsets.vmtag_import_from())
+        );
+    }
+}
+
 /// The fields compiled code needs to access to utilize a WebAssembly linear
 /// memory defined within the instance, namely the start address and the
 /// size in bytes.
@@ -458,6 +495,7 @@ impl VMGlobalDefinition {
                     global.init_gc_ref(store.gc_store_mut()?, r.as_ref())
                 }
                 WasmHeapTopType::Func => *global.as_func_ref_mut() = raw.get_funcref().cast(),
+                WasmHeapTopType::Cont => *global.as_func_ref_mut() = raw.get_funcref().cast(), // TODO(dhil): temporary hack.
             },
         }
         Ok(global)
@@ -491,6 +529,7 @@ impl VMGlobalDefinition {
                     }
                 }),
                 WasmHeapTopType::Func => ValRaw::funcref(self.as_func_ref().cast()),
+                WasmHeapTopType::Cont => unimplemented!(), // TODO(dhil): Need a raw continuation entity first.
             },
         })
     }
@@ -657,6 +696,45 @@ mod test_vmshared_type_index {
             size_of::<VMSharedTypeIndex>(),
             usize::from(offsets.size_of_vmshared_type_index())
         );
+    }
+}
+
+/// A WebAssembly tag defined within the instance.
+///
+#[derive(Debug)]
+#[repr(C)]
+pub struct VMTagDefinition {
+    /// Function signature's type id.
+    pub type_index: VMSharedTypeIndex,
+}
+
+impl VMTagDefinition {
+    pub fn new(type_index: VMSharedTypeIndex) -> Self {
+        Self { type_index }
+    }
+}
+
+#[cfg(test)]
+mod test_vmtag_definition {
+    use super::VMTagDefinition;
+    use std::mem::size_of;
+    use wasmtime_environ::{Module, PtrSize, VMOffsets};
+
+    #[test]
+    fn check_vmtag_definition_offsets() {
+        let module = Module::new();
+        let offsets = VMOffsets::new(u8::try_from(size_of::<*mut u8>()).unwrap(), &module);
+        assert_eq!(
+            size_of::<VMTagDefinition>(),
+            usize::from(offsets.ptr.size_of_vmtag_definition())
+        );
+    }
+
+    #[test]
+    fn check_vmtag_begins_aligned() {
+        let module = Module::new();
+        let offsets = VMOffsets::new(u8::try_from(size_of::<*mut u8>()).unwrap(), &module);
+        assert_eq!(offsets.vmctx_tags_begin() % 16, 0);
     }
 }
 
@@ -1032,6 +1110,16 @@ impl VMContext {
         // opposed to a regular assertion.
         debug_assert_eq!((*opaque).magic, VMCONTEXT_MAGIC);
         opaque.cast()
+    }
+
+    /// Alternative to `from_opaque` that returns `None` if the given opaque
+    /// context is not actually a `VMContext`.
+    pub unsafe fn try_from_opaque(opaque: *mut VMOpaqueContext) -> Option<*mut VMContext> {
+        if (*opaque).magic == VMCONTEXT_MAGIC {
+            Some(Self::from_opaque(opaque))
+        } else {
+            None
+        }
     }
 }
 

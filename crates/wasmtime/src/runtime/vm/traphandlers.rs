@@ -403,10 +403,22 @@ where
     };
 }
 
+/// Returns true if the first `CallThreadState` in this thread's chain is
+/// running inside a continuation.
+pub unsafe fn head_state_inside_continuation() -> bool {
+    tls::with(|head_state| {
+        head_state.map_or(false, |state| {
+            let stack_chain = &*state.stack_chain;
+            !stack_chain.is_main_stack()
+        })
+    })
+}
+
 // Module to hide visibility of the `CallThreadState::prev` field and force
 // usage of its accessor methods.
 mod call_thread_state {
     use super::*;
+    use crate::runtime::vm::stack_switching::stack_chain::StackChain;
     use crate::runtime::vm::Unwind;
 
     /// Temporary state stored on the stack which is registered in the `tls` module
@@ -422,6 +434,8 @@ mod call_thread_state {
 
         pub(crate) limits: *const VMRuntimeLimits,
         pub(crate) unwinder: &'static dyn Unwind,
+
+        pub(crate) stack_chain: *const StackChain,
 
         pub(super) prev: Cell<tls::Ptr>,
         #[cfg(all(has_native_signals, unix))]
@@ -460,6 +474,7 @@ mod call_thread_state {
         #[inline]
         pub(super) fn new(store: &mut StoreOpaque, caller: *mut VMContext) -> CallThreadState {
             let limits = unsafe { *Instance::from_vmctx(caller, |i| i.runtime_limits()) };
+            let stack_chain = unsafe { (&*store.stack_chain()).0.get() };
 
             // Don't try to plumb #[cfg] everywhere for this field, just pretend
             // we're using it on miri/windows to silence compiler warnings.
@@ -475,6 +490,7 @@ mod call_thread_state {
                 #[cfg(feature = "coredump")]
                 capture_coredump: store.engine().config().coredump_on_trap,
                 limits,
+                stack_chain,
                 #[cfg(all(has_native_signals, unix))]
                 async_guard_range: store.async_guard_range(),
                 prev: Cell::new(ptr::null()),

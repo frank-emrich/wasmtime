@@ -205,6 +205,47 @@ macro_rules! foreach_builtin_function {
             // Raises an unconditional trap where the trap information must have
             // been previously filled in.
             raise(vmctx: vmctx);
+
+            // Creates a new continuation from a funcref.
+            cont_new(vmctx: vmctx, r: pointer, param_count: i32, result_count: i32) -> pointer;
+            // Drops a continuation reference.
+            cont_ref_drop(vmctx: vmctx, contref: pointer);
+
+            // General-purpose allocation. Only used by stack-switching
+            // code at the moment.
+            tc_allocate(vmctx: vmctx, size: i64, align: i64) -> pointer;
+            // General-purpose deallocation. Only used by stack-switching
+            // code at the moment.
+            tc_deallocate(vmctx: vmctx, ptr: pointer, size: i64, align: i64) -> bool;
+            // General-purpose reallocation without preserving existing data. Concretely, behaves like
+            // deallocate followed by allocate.
+            // The only difference is that if `old_size` is 0, then we assume that ptr does not point to allocated memory
+            // and do not actually deallocate.
+            // `old_size` must be smaller than `new_size`
+            tc_reallocate(vmctx: vmctx, ptr: pointer, old_size: i64, new_size: i64, align: i64) -> pointer;
+
+            // General-purpose printing functions.
+            //
+            // Prints a string. Note that we transfer the string not
+            // as C strings, but as 'static str, represented as a
+            // pointer and a length.
+            tc_print_str(vmctx: vmctx, s: pointer, len : i64);
+            // TODO
+            tc_print_int(vmctx: vmctx, arg : i64);
+            // TODO
+            tc_print_pointer(vmctx: vmctx, arg : pointer);
+
+            // Returns an index for Wasm's `table.grow` instruction
+            // for `contobj`s.  Note that the initial
+            // Option<VMContObj> (i.e., the value to fill the new
+            // slots with) is split into two arguments: The underlying
+            // continuation reference and the revision count.  To
+            // denote the continuation being `None`, `init_contref`
+            // may be 0.
+            table_grow_cont_obj(vmctx: vmctx, table: i32, delta: i64, init_contref: pointer, init_revision: i64) -> pointer;
+            // `value_contref` and `value_revision` together encode
+            // the Option<VMContObj>, as in previous libcall.
+            table_fill_cont_obj(vmctx: vmctx, table: i32, dst: i64, value_contref: pointer, value_revision: i64, len: i64) -> bool;
         }
     };
 }
@@ -348,6 +389,7 @@ impl BuiltinFunctionIndex {
             (@get memory32_grow pointer) => (TrapSentinel::NegativeTwo);
             (@get table_grow_func_ref pointer) => (TrapSentinel::NegativeTwo);
             (@get table_grow_gc_ref pointer) => (TrapSentinel::NegativeTwo);
+            (@get table_grow_cont_obj pointer) => (TrapSentinel::NegativeTwo);
 
             // Atomics-related functions return a negative value indicating trap
             // indicate a trap.
@@ -371,6 +413,10 @@ impl BuiltinFunctionIndex {
             (@get get_interned_func_ref pointer) => (return None);
             (@get intern_func_ref_for_gc_heap i64) => (return None);
             (@get is_subtype i32) => (return None);
+
+            (@get cont_new pointer) => (TrapSentinel::Negative);
+            (@get tc_allocate pointer) => (TrapSentinel::Negative);
+            (@get tc_reallocate pointer) => (TrapSentinel::Negative);
 
             // Bool-returning functions use `false` as an indicator of a trap.
             (@get $name:ident bool) => (TrapSentinel::Falsy);

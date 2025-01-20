@@ -3,7 +3,7 @@ use crate::translate::{
     FuncTranslationState, GlobalVariable, Heap, HeapData, StructFieldsVec, TableData, TableSize,
     TargetEnvironment,
 };
-use crate::{gc, BuiltinFunctionSignatures, TRAP_INTERNAL_ASSERT};
+use crate::{gc, stack_switching, BuiltinFunctionSignatures, TRAP_INTERNAL_ASSERT};
 use cranelift_codegen::cursor::FuncCursor;
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::immediates::{Imm64, Offset32};
@@ -22,9 +22,9 @@ use wasmparser::{Operator, WasmFeatures};
 use wasmtime_environ::{
     BuiltinFunctionIndex, DataIndex, ElemIndex, EngineOrModuleTypeIndex, FuncIndex, GlobalIndex,
     IndexType, Memory, MemoryIndex, Module, ModuleInternedTypeIndex, ModuleTranslation,
-    ModuleTypesBuilder, PtrSize, Table, TableIndex, TripleExt, Tunables, TypeConvert, TypeIndex,
-    VMOffsets, WasmCompositeInnerType, WasmFuncType, WasmHeapTopType, WasmHeapType, WasmRefType,
-    WasmResult, WasmValType,
+    ModuleTypesBuilder, PtrSize, Table, TableIndex, TagIndex, TripleExt, Tunables, TypeConvert,
+    TypeIndex, VMOffsets, WasmCompositeInnerType, WasmFuncType, WasmHeapTopType, WasmHeapType,
+    WasmRefType, WasmResult, WasmValType,
 };
 use wasmtime_environ::{FUNCREF_INIT_BIT, FUNCREF_MASK};
 
@@ -85,7 +85,8 @@ wasmtime_environ::foreach_builtin_function!(declare_function_signatures);
 /// The `FuncEnvironment` implementation for use by the `ModuleEnvironment`.
 pub struct FuncEnvironment<'module_environment> {
     compiler: &'module_environment Compiler,
-    isa: &'module_environment (dyn TargetIsa + 'module_environment),
+    /// NOTE(frank-emrich) pub for use in crate::wasmfx::* modules
+    pub(crate) isa: &'module_environment (dyn TargetIsa + 'module_environment),
     pub(crate) module: &'module_environment Module,
     pub(crate) types: &'module_environment ModuleTypesBuilder,
     wasm_func_ty: &'module_environment WasmFuncType,
@@ -131,7 +132,8 @@ pub struct FuncEnvironment<'module_environment> {
     /// VMRuntimeLimits` for this function's vmctx argument. This pointer is stored
     /// in the vmctx itself, but never changes for the lifetime of the function,
     /// so if we load it up front we can continue to use it throughout.
-    vmruntime_limits_ptr: ir::Value,
+    /// NOTE(frank-emrich) pub for use in crate::wasmfx::* modules
+    pub(crate) vmruntime_limits_ptr: ir::Value,
 
     /// A cached epoch deadline value, when performing epoch-based
     /// interruption. Loaded from `VMRuntimeLimits` and reloaded after
@@ -1469,6 +1471,10 @@ impl<'a, 'func, 'module_env> Call<'a, 'func, 'module_env> {
             | WasmHeapType::None => {
                 unreachable!()
             }
+
+            WasmHeapType::NoCont | WasmHeapType::ConcreteCont(_) | WasmHeapType::Cont => {
+                unreachable!()
+            }
         }
 
         // Load the caller's `VMSharedTypeIndex.
@@ -1691,6 +1697,7 @@ impl<'module_environment> TargetEnvironment for FuncEnvironment<'module_environm
         let needs_stack_map = match wasm_ty.top() {
             WasmHeapTopType::Extern | WasmHeapTopType::Any => true,
             WasmHeapTopType::Func => false,
+            WasmHeapTopType::Cont => false,
         };
         (ty, needs_stack_map)
     }
@@ -1760,22 +1767,39 @@ impl FuncEnvironment<'_> {
         let mut pos = builder.cursor();
         let table = self.table(table_index);
         let ty = table.ref_type.heap_type;
+        let vmctx = self.vmctx_val(&mut pos);
+        let index_type = table.idx_type;
+        let delta = self.cast_index_to_i64(&mut builder.cursor(), delta, index_type);
+        let table_index_arg = builder.ins().iconst(I32, table_index.as_u32() as i64);
+        let mut args = vec![vmctx, table_index_arg, delta];
         let grow = if ty.is_vmgcref_type() {
-            gc::builtins::table_grow_gc_ref(self, &mut pos.func)?
+            args.push(init_value);
+            gc::builtins::table_grow_gc_ref(self, &mut builder.cursor().func)?
         } else {
-            debug_assert_eq!(ty.top(), WasmHeapTopType::Func);
-            self.builtin_functions.table_grow_func_ref(&mut pos.func)
+            debug_assert!(matches!(
+                ty.top(),
+                WasmHeapTopType::Func | WasmHeapTopType::Cont
+            ));
+            match ty.top() {
+                WasmHeapTopType::Func => {
+                    args.push(init_value);
+                    self.builtin_functions
+                        .table_grow_func_ref(&mut builder.func)
+                }
+                WasmHeapTopType::Cont => {
+                    let (revision, contref) =
+                        stack_switching::fatpointer::deconstruct(self, builder, init_value);
+                    args.extend_from_slice(&[contref, revision]);
+                    self.builtin_functions
+                        .table_grow_cont_obj(&mut builder.func)
+                }
+
+                _ => panic!("unsupported table type."),
+            }
         };
 
-        let vmctx = self.vmctx_val(&mut pos);
-
-        let index_type = table.idx_type;
-        let delta = self.cast_index_to_i64(&mut pos, delta, index_type);
-        let table_index_arg = pos.ins().iconst(I32, table_index.as_u32() as i64);
-        let call_inst = pos
-            .ins()
-            .call(grow, &[vmctx, table_index_arg, delta, init_value]);
-        let result = pos.func.dfg.first_result(call_inst);
+        let call_inst = builder.ins().call(grow, &args);
+        let result = builder.func.dfg.first_result(call_inst);
         Ok(self.convert_pointer_to_index_type(builder.cursor(), result, index_type, false))
     }
 
@@ -1802,6 +1826,17 @@ impl FuncEnvironment<'_> {
                 )
             }
 
+            // Continuation types.
+            WasmHeapTopType::Cont => {
+                self.ensure_table_exists(builder.func, table_index);
+                let (table_entry_addr, flags) = table_data.prepare_table_addr(self, builder, index);
+                Ok(builder.ins().load(
+                    stack_switching::fatpointer::POINTER_TYPE,
+                    flags,
+                    table_entry_addr,
+                    0,
+                ))
+            }
             // Function types.
             WasmHeapTopType::Func => {
                 Ok(self.get_or_init_func_ref_table_elem(builder, table_index, index, false))
@@ -1852,6 +1887,13 @@ impl FuncEnvironment<'_> {
                     .store(flags, value_with_init_bit, elem_addr, 0);
                 Ok(())
             }
+
+            // Continuation types.
+            WasmHeapTopType::Cont => {
+                let (elem_addr, flags) = table_data.prepare_table_addr(self, builder, index);
+                builder.ins().store(flags, value, elem_addr, 0);
+                Ok(())
+            }
         }
     }
 
@@ -1865,22 +1907,36 @@ impl FuncEnvironment<'_> {
     ) -> WasmResult<()> {
         let mut pos = builder.cursor();
         let table = self.table(table_index);
-        let index_type = table.idx_type;
-        let dst = self.cast_index_to_i64(&mut pos, dst, index_type);
-        let len = self.cast_index_to_i64(&mut pos, len, index_type);
         let ty = table.ref_type.heap_type;
-        let libcall = if ty.is_vmgcref_type() {
-            gc::builtins::table_fill_gc_ref(self, &mut pos.func)?
-        } else {
-            debug_assert_eq!(ty.top(), WasmHeapTopType::Func);
-            self.builtin_functions.table_fill_func_ref(&mut pos.func)
-        };
-
         let vmctx = self.vmctx_val(&mut pos);
+        let index_type = table.idx_type;
+        let table_index_arg = builder.ins().iconst(I32, table_index.as_u32() as i64);
+        let dst = self.cast_index_to_i64(&mut builder.cursor(), dst, index_type);
+        let len = self.cast_index_to_i64(&mut builder.cursor(), len, index_type);
+        let mut args = vec![vmctx, table_index_arg, dst];
+        let libcall = if ty.is_vmgcref_type() {
+            args.push(val);
+            gc::builtins::table_fill_gc_ref(self, &mut builder.cursor().func)?
+        } else {
+            match ty.top() {
+                WasmHeapTopType::Func => {
+                    args.push(val);
+                    self.builtin_functions
+                        .table_fill_func_ref(&mut builder.func)
+                }
+                WasmHeapTopType::Cont => {
+                    let (revision, contref) =
+                        stack_switching::fatpointer::deconstruct(self, builder, val);
+                    args.extend_from_slice(&[contref, revision]);
+                    self.builtin_functions
+                        .table_fill_cont_obj(&mut builder.func)
+                }
+                _ => panic!("unsupported table type"),
+            }
+        };
+        args.push(len);
 
-        let table_index_arg = pos.ins().iconst(I32, table_index.as_u32() as i64);
-        pos.ins()
-            .call(libcall, &[vmctx, table_index_arg, dst, val, len]);
+        builder.ins().call(libcall, &args);
 
         Ok(())
     }
@@ -2227,25 +2283,41 @@ impl FuncEnvironment<'_> {
 
     pub fn translate_ref_null(
         &mut self,
-        mut pos: cranelift_codegen::cursor::FuncCursor,
+        builder: &mut FunctionBuilder,
         ht: WasmHeapType,
     ) -> WasmResult<ir::Value> {
         Ok(match ht.top() {
-            WasmHeapTopType::Func => pos.ins().iconst(self.pointer_type(), 0),
+            WasmHeapTopType::Func => builder.ins().iconst(self.pointer_type(), 0),
             // NB: null GC references don't need to be in stack maps.
-            WasmHeapTopType::Any | WasmHeapTopType::Extern => pos.ins().iconst(types::I32, 0),
+            WasmHeapTopType::Any | WasmHeapTopType::Extern => builder.ins().iconst(types::I32, 0),
+            WasmHeapTopType::Cont => {
+                let zero = builder.ins().iconst(self.pointer_type(), 0);
+                // TODO do this nicer
+                stack_switching::fatpointer::construct(self, builder, zero, zero)
+            }
         })
     }
 
     pub fn translate_ref_is_null(
         &mut self,
-        mut pos: cranelift_codegen::cursor::FuncCursor,
+        builder: &mut FunctionBuilder,
         value: ir::Value,
     ) -> WasmResult<ir::Value> {
-        let byte_is_null =
-            pos.ins()
-                .icmp_imm(cranelift_codegen::ir::condcodes::IntCC::Equal, value, 0);
-        Ok(pos.ins().uextend(ir::types::I32, byte_is_null))
+        let byte_is_null = match builder.func.dfg.value_type(value) {
+            // continuation
+            ty if ty == stack_switching::fatpointer::POINTER_TYPE => {
+                let (_revision, contref) =
+                    stack_switching::fatpointer::deconstruct(self, builder, value);
+                builder
+                    .ins()
+                    .icmp_imm(cranelift_codegen::ir::condcodes::IntCC::Equal, contref, 0)
+            }
+            _ => builder
+                .ins()
+                .icmp_imm(cranelift_codegen::ir::condcodes::IntCC::Equal, value, 0),
+        };
+
+        Ok(builder.ins().uextend(ir::types::I32, byte_is_null))
     }
 
     pub fn translate_ref_func(
@@ -3100,6 +3172,14 @@ impl FuncEnvironment<'_> {
         // If the `vmruntime_limits_ptr` variable will get used then we initialize
         // it here.
         if self.tunables.consume_fuel || self.tunables.epoch_interruption {
+            // TODO(frank-emrich) Ideally, we would like to use this global
+            // variable in the translation of `resume` instructions. However, in
+            // order to decide whether to declare the variable or not we would
+            // have to know if the function body contains a `resume` instruction
+            // before actually translating it. If we instead called
+            // `declare_vmruntime_limits_ptr` unconditionally, we would change
+            // the CLIF output of functions using no wasmfx instructions, which
+            // is undesirable.
             self.declare_vmruntime_limits_ptr(builder);
         }
         // Additionally we initialize `fuel_var` if it will get used.
@@ -3145,6 +3225,135 @@ impl FuncEnvironment<'_> {
 
     pub fn is_x86(&self) -> bool {
         self.isa.triple().architecture == target_lexicon::Architecture::X86_64
+    }
+
+    pub fn translate_cont_bind(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        contobj: ir::Value,
+        args: &[ir::Value],
+        remaining_arg_count: usize,
+    ) -> ir::Value {
+        stack_switching::instructions::translate_cont_bind(
+            self,
+            builder,
+            contobj,
+            args,
+            remaining_arg_count,
+        )
+    }
+
+    pub fn translate_cont_new(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        _state: &FuncTranslationState,
+        func: ir::Value,
+        arg_types: &[WasmValType],
+        return_types: &[WasmValType],
+    ) -> WasmResult<ir::Value> {
+        stack_switching::instructions::translate_cont_new(
+            self,
+            builder,
+            func,
+            arg_types,
+            return_types,
+        )
+    }
+
+    // TODO(dhil): Currently, this function invokes
+    // `translate_load_builtin_function_address` multiple times, which
+    // causes repeated allocation of values pointing to the vmctx. We
+    // should refactor or inline this logic at some point.
+    pub fn translate_resume(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        type_index: u32,
+        contobj: ir::Value,
+        resume_args: &[ir::Value],
+        resumetable: &[(u32, Option<ir::Block>)],
+    ) -> WasmResult<Vec<ir::Value>> {
+        stack_switching::instructions::translate_resume(
+            self,
+            builder,
+            type_index,
+            contobj,
+            resume_args,
+            resumetable,
+        )
+    }
+
+    #[allow(dead_code, reason = "TODO")]
+    pub fn translate_resume_throw(
+        &mut self,
+        _pos: FuncCursor,
+        _state: &FuncTranslationState,
+        _tag_index: u32,
+        _cont: ir::Value,
+    ) -> WasmResult<ir::Value> {
+        todo!()
+    }
+
+    pub fn translate_suspend(
+        &mut self,
+        builder: &mut FunctionBuilder<'_>,
+        tag_index: u32,
+        suspend_args: &[ir::Value],
+        tag_return_types: &[WasmValType],
+    ) -> Vec<ir::Value> {
+        stack_switching::instructions::translate_suspend(
+            self,
+            builder,
+            tag_index,
+            suspend_args,
+            tag_return_types,
+        )
+    }
+
+    /// Translates switch instructions.
+    pub fn translate_switch(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        tag_index: u32,
+        contobj: ir::Value,
+        switch_args: &[ir::Value],
+        return_types: &[WasmValType],
+    ) -> WasmResult<Vec<ir::Value>> {
+        stack_switching::instructions::translate_switch(
+            self,
+            builder,
+            tag_index,
+            contobj,
+            switch_args,
+            return_types,
+        )
+    }
+
+    pub fn continuation_arguments(&self, index: u32) -> &[WasmValType] {
+        let idx = self.module.types[TypeIndex::from_u32(index)];
+        self.types[self.types[idx].unwrap_cont().clone().interned_type_index()]
+            .unwrap_func()
+            .params()
+    }
+
+    pub fn continuation_returns(&self, index: u32) -> &[WasmValType] {
+        let idx = self.module.types[TypeIndex::from_u32(index)];
+        self.types[self.types[idx].unwrap_cont().clone().interned_type_index()]
+            .unwrap_func()
+            .returns()
+    }
+
+    pub fn tag_params(&self, tag_index: u32) -> &[WasmValType] {
+        let idx = self.module.tags[TagIndex::from_u32(tag_index)].signature;
+        self.types[idx.unwrap_module_type_index()]
+            .unwrap_func()
+            .params()
+    }
+
+    pub fn tag_returns(&self, tag_index: u32) -> &[WasmValType] {
+        let idx = self.module.tags[TagIndex::from_u32(tag_index)].signature;
+        self.types[idx.unwrap_module_type_index()]
+            .unwrap_func()
+            .returns()
     }
 
     pub fn use_x86_blendv_for_relaxed_laneselect(&self, ty: Type) -> bool {
