@@ -70,14 +70,14 @@ asm_func!(
         // 1. TOS
         // 2. func_ref
         // 3. caller_vmctx
-        // 4. args_ptr
-        // 5. args_capacity
+        // 4. args (of type *mut ArrayRef<ValRaw>)
+        // 5. return_value_count
         //
         // Note that `fiber_start` never returns: Instead, it resume to the
         // parent using `wasmtime_continuation_switch_to_parent`.
 
-        pop r8  // args_capacity
-        pop rcx // args_ptr
+        pop r8  // return_value_count
+        pop rcx // args
         pop rdx // caller_vmctx
         pop rsi // func_ref
         lea rdi, 0x10[rbp] // TOS

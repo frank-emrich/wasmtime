@@ -69,7 +69,7 @@ pub mod imp {
     };
     use core::cmp;
     use std::marker::PhantomPinned;
-    use wasmtime_environ::stack_switching::HandlerList;
+    use wasmtime_environ::stack_switching::{ArrayRef, HandlerList};
     pub use wasmtime_environ::stack_switching::{Payloads, StackLimits, State};
     #[allow(unused)]
     use wasmtime_environ::{
@@ -229,8 +229,6 @@ pub mod imp {
     ) -> Result<*mut VMContRef, TrapReason> {
         let caller_vmctx = instance.vmctx();
 
-        let capacity = cmp::max(param_count, result_count);
-
         let config = unsafe { &*(store.stack_switching_config()) };
         // TODO(frank-emrich) Currently, the general `stack_limit` configuration
         // option of wasmtime is unrelated to the stack size of our fiber stack.
@@ -248,23 +246,12 @@ pub mod imp {
         let stack_limit = unsafe { tsp.sub(stack_size - red_zone_size) } as usize;
         let limits = StackLimits::with_stack_limit(stack_limit);
 
-        let args_buffer = if capacity == 0 {
-            0
-        } else {
-            (unsafe { tsp.sub(0x20 + capacity as usize * std::mem::size_of::<ValRaw>()) }) as usize
-        };
-
         {
             let contref = unsafe { contref.as_mut().unwrap() };
             let csi = &mut contref.common_stack_information;
             csi.limits = limits;
             csi.state = State::Fresh;
             contref.parent_chain = StackChain::Absent;
-            contref.args = Payloads {
-                length: 0,
-                capacity,
-                data: args_buffer as *mut _,
-            };
             // The continuation is fresh, which is a special case of being suspended.
             // Thus we need to set the correct end of the continuation chain: itself.
             contref.last_ancestor = contref;
@@ -279,11 +266,14 @@ pub mod imp {
             debug_assert!(stack.is_unallocated());
             debug_assert!(!contref.stack.is_unallocated());
 
+            let contref_args_ptr = &mut contref.args as *mut _ as *mut ArrayRef<ValRaw>;
+
             contref.stack.initialize(
                 func.cast::<VMFuncRef>(),
                 caller_vmctx,
-                contref.args.data as *mut ValRaw,
-                contref.args.capacity as usize,
+                contref_args_ptr,
+                param_count,
+                result_count,
             );
         };
 

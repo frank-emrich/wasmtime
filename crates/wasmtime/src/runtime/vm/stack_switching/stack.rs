@@ -6,6 +6,8 @@
 use std::io;
 use std::ops::Range;
 
+use wasmtime_environ::stack_switching::ArrayRef;
+
 use crate::runtime::vm::{VMContext, VMFuncRef, ValRaw};
 
 cfg_if::cfg_if! {
@@ -94,10 +96,16 @@ impl ContinuationStack {
         &self,
         func_ref: *const VMFuncRef,
         caller_vmctx: *mut VMContext,
-        args_ptr: *mut ValRaw,
-        args_capacity: usize,
+        args: *mut ArrayRef<ValRaw>,
+        parameter_count: u32,
+        return_value_count: u32,
     ) {
-        self.0
-            .initialize(func_ref, caller_vmctx, args_ptr, args_capacity)
+        self.0.initialize(
+            func_ref,
+            caller_vmctx,
+            args,
+            parameter_count,
+            return_value_count,
+        )
     }
 }

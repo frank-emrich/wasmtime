@@ -64,6 +64,8 @@ use std::io;
 use std::ops::Range;
 use std::ptr;
 
+use wasmtime_environ::stack_switching::ArrayRef;
+
 use crate::runtime::vm::{VMContext, VMFuncRef, VMOpaqueContext, ValRaw};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -185,10 +187,13 @@ impl ContinuationStack {
     /// calls `fiber_start` with  the following arguments:
     /// TOS, func_ref, caller_vmctx, args_ptr, args_capacity
     ///
-    /// Note that the layout of the stack near its top depends on the size of the args buffer
-    /// (see picture at the top of this file), its size S can be calculated as follows:
-    /// S = size of ValRaw * `args_capacity`
-    /// Note that this value is used below, and we may have S = 0.
+    /// Note that at this point we also allocate the args buffer
+    /// (see picture at the top of this file).
+    /// We define `args_capacity` as the max of parameter and return value count.
+    /// Then the size s of the actual buffer size s is calculated as follows:
+    /// s = size of ValRaw * `args_capacity`,
+    ///
+    /// Note that this value is used below, and we may have s = 0.
     ///
     /// The layout of the ContinuationStack near the top of stack (TOS) *after* running
     /// this function is as follows:
@@ -199,17 +204,18 @@ impl ContinuationStack {
     ///       -0x08     | address of wasmtime_continuation_start function (future PC)
     ///       -0x10     | TOS - 0x10 (future RBP)
     ///       -0x18     | TOS - 0x40 - s (future RSP)
-    ///       -0x20     | 0 (alignment)
+    ///       -0x20     | args_capacity
     ///       -0x28 - s | func_ref
     ///       -0x30 - s | caller_vmctx
-    ///       -0x38 - s | args_ptr (must be equal to TOS - 0x20 - s, if args_capacity > 0)
-    ///       -0x40 - s | args_capacity
+    ///       -0x38 - s | args (of type *mut ArrayRef<ValRaw>)
+    ///       -0x40 - s | return_value_count
     pub fn initialize(
         &self,
         func_ref: *const VMFuncRef,
         caller_vmctx: *mut VMContext,
-        args_ptr: *mut ValRaw,
-        args_capacity: usize,
+        args: *mut ArrayRef<ValRaw>,
+        parameter_count: u32,
+        return_value_count: u32,
     ) {
         let tos = self.top;
 
@@ -219,23 +225,34 @@ impl ContinuationStack {
                 target.write(value)
             };
 
-            let s = args_capacity * std::mem::size_of::<ValRaw>();
+            let args = &mut *args;
+            let args_capacity = std::cmp::max(parameter_count, return_value_count);
+            // The args object must currently be empty.
+            debug_assert_eq!(args.capacity, 0);
+            debug_assert_eq!(args.length, 0);
 
-            // if args_capacity > 0 {
-            //     assert_eq!(args_ptr as usize, tos as usize - 0x20 - s);
-            // }
+            // The size of the args buffer
+            let s = args_capacity as usize * std::mem::size_of::<ValRaw>();
 
-            // Yes, these offsets are technically redundant, but they make
-            // things more readable.
+            // The actual pointer to the buffer
+            let args_data_ptr = if args_capacity == 0 {
+                0
+            } else {
+                tos as usize - 0x20 - s
+            };
+
+            args.capacity = args_capacity;
+            args.data = args_data_ptr as *mut ValRaw;
+
             let to_store = [
                 (0x08, wasmtime_continuation_start as usize),
                 (0x10, tos.sub(0x10) as usize),
                 (0x18, tos.sub(0x40 + s) as usize),
-                (0x20, args_capacity),
+                (0x20, args_capacity as usize),
                 (0x28 + s, func_ref as usize),
                 (0x30 + s, caller_vmctx as usize),
-                (0x38 + s, args_ptr as usize),
-                (0x40 + s, args_capacity),
+                (0x38 + s, args as *mut ArrayRef<ValRaw> as usize),
+                (0x40 + s, return_value_count as usize),
             ];
 
             for (offset, data) in to_store {
@@ -278,16 +295,17 @@ unsafe extern "C" fn fiber_start(
     top_of_stack: *mut u8,
     func_ref: *const VMFuncRef,
     caller_vmctx: *mut VMContext,
-    args_ptr: *mut ValRaw,
-    args_capacity: usize,
+    args: *mut ArrayRef<ValRaw>,
+    return_value_count: u32,
 ) {
     unsafe {
         let func_ref = func_ref.as_ref().expect("Non-null function reference");
         let caller_vmxtx = VMOpaqueContext::from_vmcontext(caller_vmctx);
-        let params_and_returns = if args_ptr.is_null() {
+        let args = &mut *args;
+        let params_and_returns = if args.capacity == 0 {
             &mut []
         } else {
-            std::slice::from_raw_parts_mut(args_ptr, args_capacity)
+            std::slice::from_raw_parts_mut(args.data, args.capacity as usize)
         };
 
         // NOTE(frank-emrich) The usage of the `caller_vmctx` is probably not
@@ -302,6 +320,11 @@ unsafe extern "C" fn fiber_start(
         // value we set.
         func_ref.array_call(None, caller_vmxtx, params_and_returns); // TODO(dhil): we are ignoring the boolean return value
                                                                      // here... we probably shouldn't.
+
+        // The array call trampoline should have just written
+        // `return_value_count` values to the `args` buffer. Let's reflect that
+        // in its length field, to make various bounds checks happy.
+        args.length = return_value_count;
 
         // Switch back to parent, indicating that the continuation returned.
         switch_to_parent(top_of_stack);
