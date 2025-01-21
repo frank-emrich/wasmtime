@@ -9,9 +9,12 @@
 //! 0xAff0 +-----------------------+
 //!        | saved RSP             |
 //! 0xAfe8 +-----------------------+   <- beginning of "control context",
-//!        | 0                     |
-//! 0xAfe0 +-----------------------+   <- beginning of usable stack space
-//!        |                       |      below (16-byte aligned)
+//!        | args capacity         |
+//! 0xAfe0 +-----------------------+
+//!        | args buffer, size:    |
+//!        | (16 * args capacity)  |
+//! 0xAfc0 +-----------------------+   <- below: beginning of usable stack space
+//!        |                       |      (16-byte aligned)
 //!        |                       |
 //!        ~        ...            ~   <- actual native stack space to use
 //!        |                       |
@@ -46,6 +49,14 @@
 //! pointer chains. However, it understands continuations and does not rely on
 //! the trickery outlined here to go from the frames in one continuation to the
 //! parent.
+//!
+//! The args buffer is used as follows: It is used by the array calling
+//! trampoline to read and store the arguments and return values of the function
+//! running inside the continuation. If this function has m parameters and n
+//! return values, then args_capacity is defined as max(m, n) and the size of
+//! the args buffer is args_capacity * 16 bytes. The start address (0xAfc0 in
+//! the example above, thus assuming args_capacity = 2) is saved as the `data`
+//! field of the VMContRef's `args` object.
 
 #![allow(unused_macros)]
 
@@ -174,21 +185,25 @@ impl ContinuationStack {
     /// calls `fiber_start` with  the following arguments:
     /// TOS, func_ref, caller_vmctx, args_ptr, args_capacity
     ///
+    /// Note that the layout of the stack near its top depends on the size of the args buffer
+    /// (see picture at the top of this file), its size S can be calculated as follows:
+    /// S = size of ValRaw * `args_capacity`
+    /// Note that this value is used below, and we may have S = 0.
+    ///
     /// The layout of the ContinuationStack near the top of stack (TOS) *after* running
     /// this function is as follows:
     ///
     ///  Offset from    |
     ///       TOS       | Contents
     ///  ---------------|-------------------------------------------------------
-    ///          -0x08   address of wasmtime_continuation_start function (future PC)
-    ///          -0x10   TOS - 0x10 (future RBP)
-    ///          -0x18   TOS - 0x40 (future RSP)
-    ///          -0x20   0 (alignment and wasmtime_continuation_start can't return)
-    ///          -0x28   func_ref
-    ///          -0x30   caller_vmctx
-    ///          -0x38   args_ptr
-    ///          -0x40   args_capacity
-    ///          -0x48   undefined
+    ///       -0x08     | address of wasmtime_continuation_start function (future PC)
+    ///       -0x10     | TOS - 0x10 (future RBP)
+    ///       -0x18     | TOS - 0x40 - s (future RSP)
+    ///       -0x20     | 0 (alignment)
+    ///       -0x28 - s | func_ref
+    ///       -0x30 - s | caller_vmctx
+    ///       -0x38 - s | args_ptr (must be equal to TOS - 0x20 - s, if args_capacity > 0)
+    ///       -0x40 - s | args_capacity
     pub fn initialize(
         &self,
         func_ref: *const VMFuncRef,
@@ -204,17 +219,23 @@ impl ContinuationStack {
                 target.write(value)
             };
 
+            let s = args_capacity * std::mem::size_of::<ValRaw>();
+
+            // if args_capacity > 0 {
+            //     assert_eq!(args_ptr as usize, tos as usize - 0x20 - s);
+            // }
+
             // Yes, these offsets are technically redundant, but they make
             // things more readable.
             let to_store = [
                 (0x08, wasmtime_continuation_start as usize),
                 (0x10, tos.sub(0x10) as usize),
-                (0x18, tos.sub(0x40) as usize),
-                (0x20, 0),
-                (0x28, func_ref as usize),
-                (0x30, caller_vmctx as usize),
-                (0x38, args_ptr as usize),
-                (0x40, args_capacity),
+                (0x18, tos.sub(0x40 + s) as usize),
+                (0x20, args_capacity),
+                (0x28 + s, func_ref as usize),
+                (0x30 + s, caller_vmctx as usize),
+                (0x38 + s, args_ptr as usize),
+                (0x40 + s, args_capacity),
             ];
 
             for (offset, data) in to_store {

@@ -55,7 +55,7 @@ asm_func!(
 // described in the comment on `FiberStack::initialize` leads to the following
 // values in various registers when execution of wasmtime_continuation_start begins:
 //
-// RSP: TOS - 0x40
+// RSP: TOS - 0x40 - (16 * `args_capacity`)
 // RBP: TOS - 0x10
 asm_func!(
     "wasmtime_continuation_start",
@@ -80,7 +80,7 @@ asm_func!(
         pop rcx // args_ptr
         pop rdx // caller_vmctx
         pop rsi // func_ref
-        lea rdi, 0x20[rsp] // TOS
+        lea rdi, 0x10[rbp] // TOS
         call {fiber_start}
 
         // We should never get here and purposely emit an invalid instruction.
