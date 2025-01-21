@@ -3,12 +3,7 @@ use core::{
     convert::From,
     default::Default,
     marker::{Send, Sync},
-    ptr,
 };
-
-extern crate alloc;
-use alloc::vec::Vec;
-use core::mem::drop;
 
 /// TODO
 #[allow(dead_code)]
