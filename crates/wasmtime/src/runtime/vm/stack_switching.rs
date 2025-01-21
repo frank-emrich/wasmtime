@@ -101,7 +101,7 @@ pub mod imp {
         /// 1. The arguments to the function passed to cont.new
         /// 2. The return values of that function
         /// Note that this is *not* used for tag payloads.
-        pub args: PayloadsVector,
+        pub args: Payloads,
 
         /// Once a continuation has been suspended (using suspend or switch),
         /// this buffer is used to hold payloads provided by cont.bind, resume,
@@ -143,7 +143,7 @@ pub mod imp {
             let parent_chain = StackChain::Absent;
             let last_ancestor = std::ptr::null_mut();
             let stack = ContinuationStack::unallocated();
-            let args = PayloadsVector::new(0);
+            let args = Payloads::empty();
             let values = Payloads::empty();
             let revision = 0;
             let _marker = PhantomPinned;
@@ -165,9 +165,6 @@ pub mod imp {
         fn drop(&mut self) {
             // Note that continuation references do not own their parents, and we
             // don't drop them here.
-
-            // `PayloadsVector` must be deallocated explicitly, they are considered non-owning.
-            self.args.deallocate();
 
             // We would like to enforce the invariant that any continuation that
             // was created for a cont.new (rather than, say, just living in a
@@ -251,13 +248,23 @@ pub mod imp {
         let stack_limit = unsafe { tsp.sub(stack_size - red_zone_size) } as usize;
         let limits = StackLimits::with_stack_limit(stack_limit);
 
+        let args_buffer = if capacity == 0 {
+            0
+        } else {
+            (unsafe { tsp.sub(0x20 + capacity as usize * std::mem::size_of::<ValRaw>()) }) as usize
+        };
+
         {
             let contref = unsafe { contref.as_mut().unwrap() };
             let csi = &mut contref.common_stack_information;
             csi.limits = limits;
             csi.state = State::Fresh;
             contref.parent_chain = StackChain::Absent;
-            contref.args.ensure_capacity(capacity);
+            contref.args = Payloads {
+                length: 0,
+                capacity,
+                data: args_buffer as *mut _,
+            };
             // The continuation is fresh, which is a special case of being suspended.
             // Thus we need to set the correct end of the continuation chain: itself.
             contref.last_ancestor = contref;

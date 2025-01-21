@@ -389,9 +389,9 @@ pub(crate) mod stack_switching_helpers {
         }
 
         #[allow(clippy::cast_possible_truncation, reason = "TODO")]
-        pub fn args(&self) -> PayloadsVector {
+        pub fn args(&self) -> Payloads {
             let offset = super::stack_switching_environ::offsets::vm_cont_ref::ARGS;
-            PayloadsVector::new(self.address, offset as i32)
+            Payloads::new(self.address, offset as i32)
         }
 
         #[allow(clippy::cast_possible_truncation, reason = "TODO")]
