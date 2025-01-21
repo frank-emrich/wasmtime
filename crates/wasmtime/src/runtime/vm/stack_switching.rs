@@ -67,7 +67,6 @@ pub mod imp {
         vmcontext::{VMFuncRef, ValRaw},
         Instance, TrapReason, VMStore,
     };
-    use core::cmp;
     use std::marker::PhantomPinned;
     use wasmtime_environ::stack_switching::{ArrayRef, HandlerList};
     pub use wasmtime_environ::stack_switching::{Payloads, StackLimits, State};
