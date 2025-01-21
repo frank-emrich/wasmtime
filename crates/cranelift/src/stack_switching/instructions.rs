@@ -1640,15 +1640,18 @@ pub(crate) mod stack_switching_helpers {
             &self,
             env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
+            zero_allocation: bool,
         ) {
             let zero32 = builder.ins().iconst(I32, 0);
             self.set_length(builder, zero32);
 
-            let zero32 = builder.ins().iconst(I32, 0);
-            self.set_capacity(builder, zero32);
+            if zero_allocation {
+                let zero32 = builder.ins().iconst(I32, 0);
+                self.set_capacity(builder, zero32);
 
-            let zero_ptr = builder.ins().iconst(env.pointer_type(), 0);
-            self.set_data(builder, zero_ptr);
+                let zero_ptr = builder.ins().iconst(env.pointer_type(), 0);
+                self.set_data(builder, zero_ptr);
+            }
         }
     }
 }
@@ -1726,10 +1729,9 @@ pub(crate) fn vmcontref_load_values<'a>(
     let memflags = ir::MemFlags::trusted();
     let mut result = vec![];
 
+    let co = helpers::VMContRef::new(contref);
+    let values = co.values();
     if valtypes.len() > 0 {
-        let co = helpers::VMContRef::new(contref);
-        let values = co.values();
-
         if cfg!(debug_assertions) {
             let count = builder.ins().iconst(I32, valtypes.len() as i64);
             let length = values.get_length(env, builder);
@@ -1749,9 +1751,8 @@ pub(crate) fn vmcontref_load_values<'a>(
             result.push(val);
             offset += env.offsets.ptr.maximum_value_size() as i32;
         }
-
-        values.clear(env, builder);
     }
+    values.clear(env, builder, true);
 
     result
 }
@@ -2356,7 +2357,7 @@ pub(crate) fn translate_resume<'a>(
         parent_csi.set_state(env, builder, stack_switching_environ::State::Running);
 
         // Just for consistency: Clear the handler list.
-        handler_list.clear(env, builder);
+        handler_list.clear(env, builder, true);
         parent_csi.set_first_switch_handler_index(env, builder, zero);
 
         // Extract the result and signal bit.
@@ -2386,7 +2387,7 @@ pub(crate) fn translate_resume<'a>(
 
     // The suspend block: Only used when we suspended, not for returns.
     // Here we extract the index of the handler to use.
-    let (handler_index, suspended_contobj) = {
+    let (handler_index, suspended_contref, suspended_contobj) = {
         builder.switch_to_block(suspend_block);
         builder.seal_block(suspend_block);
 
@@ -2427,7 +2428,7 @@ pub(crate) fn translate_resume<'a>(
         // another one.
         builder.ins().jump(dispatch_block, &[]);
 
-        (handler_index, suspended_contobj)
+        (handler_index, suspended_continuation, suspended_contobj)
     };
 
     // For technical reasons, the jump table needs to have a default
@@ -2458,10 +2459,21 @@ pub(crate) fn translate_resume<'a>(
                 .iter()
                 .map(|wty| crate::value_type(env.isa, *wty))
                 .collect();
-            let mut args = vmctx_load_payloads(env, builder, &param_types);
-            args.push(suspended_contobj);
 
-            builder.ins().jump(target_block, &args);
+            let values = suspended_contref.values();
+            let mut suspend_args = values.load_data_entries(env, builder, &param_types);
+
+            // At the suspend site, we store the suspend args in the the
+            // `values` buffer of the VMContRef that was active at the time that
+            // the suspend instruction was performed.
+            suspend_args.push(suspended_contobj);
+
+            // We clear the suspend args. This is mostly for consistency. Note
+            // that we don't zero out the data buffer, we still need it for the
+
+            values.clear(env, builder, false);
+
+            builder.ins().jump(target_block, &suspend_args);
         }
 
         preamble_blocks
@@ -2532,8 +2544,6 @@ pub(crate) fn translate_suspend<'a>(
     suspend_args: &[ir::Value],
     tag_return_types: &[WasmValType],
 ) -> Vec<ir::Value> {
-    vmctx_store_payloads(env, builder, suspend_args);
-
     let tag_addr = tag_address(env, builder, tag_index);
     emit_debug_println!(env, builder, "[suspend] suspending with tag {:p}", tag_addr);
 
@@ -2562,11 +2572,20 @@ pub(crate) fn translate_suspend<'a>(
     active_contref.set_last_ancestor(env, builder, end_of_chain_contref.address);
 
     // In the active_contref's `values` buffer, stack-allocate enough room so that we can
-    // later store `tag_return_types.len()` when resuming the continuation.
+    // later store the following:
+    // 1. The suspend arguments
+    // 2. Afterwards, the tag return values
     let values = active_contref.values();
-    let required_capacity = u32::try_from(tag_return_types.len()).unwrap();
+    let required_capacity =
+        u32::try_from(std::cmp::max(suspend_args.len(), tag_return_types.len()))
+            .expect("Number of stack switching payloads should fit in u32");
+
     if required_capacity > 0 {
         values.allocate(env, builder, required_capacity);
+    }
+
+    if suspend_args.len() > 0 {
+        values.store_data_entries(env, builder, suspend_args, true)
     }
 
     // Set current continuation to suspended and break up handler chain.
