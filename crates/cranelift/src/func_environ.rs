@@ -3232,15 +3232,8 @@ impl FuncEnvironment<'_> {
         builder: &mut FunctionBuilder<'_>,
         contobj: ir::Value,
         args: &[ir::Value],
-        remaining_arg_count: usize,
     ) -> ir::Value {
-        stack_switching::instructions::translate_cont_bind(
-            self,
-            builder,
-            contobj,
-            args,
-            remaining_arg_count,
-        )
+        stack_switching::instructions::translate_cont_bind(self, builder, contobj, args)
     }
 
     pub fn translate_cont_new(

@@ -2877,8 +2877,7 @@ pub fn translate_operator(
 
             let (original_contobj, args) = state.peekn(arg_count + 1).split_last().unwrap();
 
-            let new_contobj =
-                environ.translate_cont_bind(builder, *original_contobj, args, src_arity);
+            let new_contobj = environ.translate_cont_bind(builder, *original_contobj, args);
 
             state.popn(arg_count + 1);
             state.push1(new_contobj);

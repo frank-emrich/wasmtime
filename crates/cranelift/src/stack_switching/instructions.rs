@@ -1736,7 +1736,6 @@ pub(crate) fn vmcontref_store_payloads<'a>(
     env: &mut crate::func_environ::FuncEnvironment<'a>,
     builder: &mut FunctionBuilder,
     values: &[ir::Value],
-    remaining_arg_count: ir::Value,
     contref: ir::Value,
 ) {
     if values.len() > 0 {
@@ -2010,7 +2009,6 @@ pub(crate) fn translate_cont_bind<'a>(
     builder: &mut FunctionBuilder,
     contobj: ir::Value,
     args: &[ir::Value],
-    remaining_arg_count: usize,
 ) -> ir::Value {
     let (witness, contref) = fatpointer::deconstruct(env, builder, contobj);
 
@@ -2032,8 +2030,7 @@ pub(crate) fn translate_cont_bind<'a>(
         .ins()
         .trapz(evidence, crate::TRAP_CONTINUATION_ALREADY_CONSUMED);
 
-    let remaining_arg_count = builder.ins().iconst(I32, remaining_arg_count as i64);
-    vmcontref_store_payloads(env, builder, args, remaining_arg_count, contref);
+    vmcontref_store_payloads(env, builder, args, contref);
 
     let revision = vmcontref.incr_revision(env, builder, revision);
     emit_debug_println!(env, builder, "new revision = {}", revision);
@@ -2166,8 +2163,7 @@ pub(crate) fn translate_resume<'a>(
 
         if resume_args.len() > 0 {
             // We store the arguments in the `VMContRef` to be resumed.
-            let count = builder.ins().iconst(I32, resume_args.len() as i64);
-            vmcontref_store_payloads(env, builder, resume_args, count, resume_contref);
+            vmcontref_store_payloads(env, builder, resume_args, resume_contref);
         }
 
         // Splice together stack chains:
@@ -2694,14 +2690,7 @@ pub(crate) fn translate_switch<'a>(
     let (switchee_contref_csi, switchee_contref_last_ancestor) = {
         let mut combined_payloads = switch_args.to_vec();
         combined_payloads.push(switcher_contobj);
-        let count = builder.ins().iconst(I32, combined_payloads.len() as i64);
-        vmcontref_store_payloads(
-            env,
-            builder,
-            &combined_payloads,
-            count,
-            switchee_contref.address,
-        );
+        vmcontref_store_payloads(env, builder, &combined_payloads, switchee_contref.address);
 
         let switchee_contref_csi = switchee_contref.common_stack_information(env, builder);
 
