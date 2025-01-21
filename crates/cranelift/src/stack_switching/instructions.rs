@@ -394,24 +394,6 @@ pub(crate) mod stack_switching_helpers {
             CommonStackInformation { address }
         }
 
-        /// Returns pointer to buffer where results are stored after a
-        /// continuation has returned.
-        pub fn get_results<'a>(
-            &self,
-            env: &mut crate::func_environ::FuncEnvironment<'a>,
-            builder: &mut FunctionBuilder,
-        ) -> ir::Value {
-            if cfg!(debug_assertions) {
-                let has_returned = self.common_stack_information(env, builder).has_state(
-                    env,
-                    builder,
-                    super::stack_switching_environ::State::Returned,
-                );
-                emit_debug_assert!(env, builder, has_returned);
-            }
-            return self.args().get_data(env, builder);
-        }
-
         /// Stores the parent of this continuation, which may either be another
         /// continuation or the main stack. It is therefore represented as a
         /// `StackChain` element.
@@ -1321,35 +1303,6 @@ use stack_switching_environ::{
 };
 use stack_switching_helpers as helpers;
 
-#[allow(clippy::cast_possible_truncation, reason = "TODO")]
-fn vmcontref_load_return_values<'a>(
-    env: &mut crate::func_environ::FuncEnvironment<'a>,
-    builder: &mut FunctionBuilder,
-    valtypes: &[WasmValType],
-    contref: ir::Value,
-) -> std::vec::Vec<ir::Value> {
-    let co = helpers::VMContRef::new(contref);
-    let mut values = vec![];
-
-    if valtypes.len() > 0 {
-        let result_buffer_addr = co.get_results(env, builder);
-
-        let mut offset = 0;
-        let memflags = ir::MemFlags::trusted();
-        for valtype in valtypes {
-            let val = builder.ins().load(
-                crate::value_type(env.isa, *valtype),
-                memflags,
-                result_buffer_addr,
-                offset,
-            );
-            values.push(val);
-            offset += env.offsets.ptr.maximum_value_size() as i32;
-        }
-    }
-    return values;
-}
-
 /// Loads values of the given types from the continuation's `values` field.
 #[allow(clippy::cast_possible_truncation, reason = "TODO")]
 pub(crate) fn vmcontref_load_values<'a>(
@@ -2127,9 +2080,15 @@ pub(crate) fn translate_resume<'a>(
         let returned_csi = returned_contref.common_stack_information(env, builder);
         returned_csi.set_state(env, builder, stack_switching_environ::State::Returned);
 
-        // Load and push the results.
-        let returns = env.continuation_returns(type_index).to_vec();
-        let values = vmcontref_load_return_values(env, builder, &returns, returned_contref.address);
+        // Load the values returned by the continuation.
+        let return_types = env.continuation_returns(type_index).to_vec();
+        let return_types: Vec<_> = return_types
+            .into_iter()
+            .map(|ty| crate::value_type(env.isa, ty))
+            .collect();
+        let payloads = returned_contref.args();
+        let return_values = payloads.load_data_entries(env, builder, &return_types);
+        payloads.clear(env, builder, true);
 
         // The continuation has returned and all `VMContObjs` to it
         // should have been be invalidated. We may safely deallocate
@@ -2139,7 +2098,7 @@ pub(crate) fn translate_resume<'a>(
         // repurposed).
         call_builtin!(builder, env, cont_ref_drop(returned_contref.address));
 
-        Ok(values)
+        Ok(return_values)
     }
 }
 
