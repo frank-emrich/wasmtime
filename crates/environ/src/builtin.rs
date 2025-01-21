@@ -211,19 +211,6 @@ macro_rules! foreach_builtin_function {
             // Drops a continuation reference.
             cont_ref_drop(vmctx: vmctx, contref: pointer);
 
-            // General-purpose allocation. Only used by stack-switching
-            // code at the moment.
-            tc_allocate(vmctx: vmctx, size: i64, align: i64) -> pointer;
-            // General-purpose deallocation. Only used by stack-switching
-            // code at the moment.
-            tc_deallocate(vmctx: vmctx, ptr: pointer, size: i64, align: i64) -> bool;
-            // General-purpose reallocation without preserving existing data. Concretely, behaves like
-            // deallocate followed by allocate.
-            // The only difference is that if `old_size` is 0, then we assume that ptr does not point to allocated memory
-            // and do not actually deallocate.
-            // `old_size` must be smaller than `new_size`
-            tc_reallocate(vmctx: vmctx, ptr: pointer, old_size: i64, new_size: i64, align: i64) -> pointer;
-
             // General-purpose printing functions.
             //
             // Prints a string. Note that we transfer the string not

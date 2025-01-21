@@ -1442,63 +1442,6 @@ fn cont_ref_drop(_store: &mut dyn VMStore, instance: &mut Instance, contref: *mu
     );
 }
 
-fn tc_allocate(
-    _store: &mut dyn VMStore,
-    _instance: &mut Instance,
-    size: u64,
-    align: u64,
-) -> Result<Option<AllocationSize>, TrapReason> {
-    debug_assert!(size > 0);
-    let size = usize::try_from(size)
-        .map_err(|_error| TrapReason::User(anyhow::anyhow!("size too large!")))?;
-    let align = usize::try_from(align)
-        .map_err(|_error| TrapReason::User(anyhow::anyhow!("align too large!")))?;
-    let layout = std::alloc::Layout::from_size_align(size, align).map_err(|_error| {
-        TrapReason::User(anyhow::anyhow!("Continuation layout construction failed!"))
-    })?;
-    let ptr = unsafe { alloc::alloc::alloc(layout) };
-    // TODO(dhil): We can consider making this a debug-build only
-    // check.
-    if ptr.is_null() {
-        Err(TrapReason::User(anyhow::anyhow!(
-            "Memory allocation failed!"
-        )))
-    } else {
-        Ok(Some(AllocationSize(ptr as usize)))
-    }
-}
-
-fn tc_deallocate(
-    _store: &mut dyn VMStore,
-    _instance: &mut Instance,
-    ptr: *mut u8,
-    size: u64,
-    align: u64,
-) -> Result<()> {
-    debug_assert!(size > 0);
-    let size = usize::try_from(size)?;
-    let align = usize::try_from(align)?;
-    let layout = std::alloc::Layout::from_size_align(size, align)?;
-    Ok(unsafe { std::alloc::dealloc(ptr, layout) })
-}
-
-fn tc_reallocate(
-    store: &mut dyn VMStore,
-    instance: &mut Instance,
-    ptr: *mut u8,
-    old_size: u64,
-    new_size: u64,
-    align: u64,
-) -> Result<Option<AllocationSize>, TrapReason> {
-    debug_assert!(old_size < new_size);
-
-    if old_size > 0 {
-        tc_deallocate(store, instance, ptr, old_size, align)?;
-    }
-
-    tc_allocate(store, instance, new_size, align)
-}
-
 fn tc_print_str(_store: &mut dyn VMStore, _instance: &mut Instance, s: *const u8, len: u64) {
     let len =
         usize::try_from(len).map_err(|_error| TrapReason::User(anyhow::anyhow!("len too large!")));
