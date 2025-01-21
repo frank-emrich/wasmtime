@@ -1303,45 +1303,6 @@ use stack_switching_environ::{
 };
 use stack_switching_helpers as helpers;
 
-/// Loads values of the given types from the continuation's `values` field.
-#[allow(clippy::cast_possible_truncation, reason = "TODO")]
-pub(crate) fn vmcontref_load_values<'a>(
-    env: &mut crate::func_environ::FuncEnvironment<'a>,
-    builder: &mut FunctionBuilder,
-    contref: ir::Value,
-    valtypes: &[WasmValType],
-) -> Vec<ir::Value> {
-    let memflags = ir::MemFlags::trusted();
-    let mut result = vec![];
-
-    let co = helpers::VMContRef::new(contref);
-    let values = co.values();
-    if valtypes.len() > 0 {
-        if cfg!(debug_assertions) {
-            let count = builder.ins().iconst(I32, valtypes.len() as i64);
-            let length = values.get_length(env, builder);
-            emit_debug_assert_ule!(env, builder, count, length);
-        }
-
-        let payload_ptr = values.get_data(env, builder);
-
-        let mut offset = 0;
-        for valtype in valtypes {
-            let val = builder.ins().load(
-                crate::value_type(env.isa, *valtype),
-                memflags,
-                payload_ptr,
-                offset,
-            );
-            result.push(val);
-            offset += env.offsets.ptr.maximum_value_size() as i32;
-        }
-    }
-    values.clear(env, builder, true);
-
-    result
-}
-
 /// Stores the given arguments in the appropriate `Payloads` object in the continuation.
 /// If the continuation was never invoked, use the `args` object.
 /// Otherwise, use the `values` object.
@@ -2081,10 +2042,10 @@ pub(crate) fn translate_resume<'a>(
         returned_csi.set_state(env, builder, stack_switching_environ::State::Returned);
 
         // Load the values returned by the continuation.
-        let return_types = env.continuation_returns(type_index).to_vec();
-        let return_types: Vec<_> = return_types
-            .into_iter()
-            .map(|ty| crate::value_type(env.isa, ty))
+        let return_types: Vec<_> = env
+            .continuation_returns(type_index)
+            .iter()
+            .map(|ty| crate::value_type(env.isa, *ty))
             .collect();
         let payloads = returned_contref.args();
         let return_values = payloads.load_data_entries(env, builder, &return_types);
@@ -2107,7 +2068,7 @@ pub(crate) fn translate_suspend<'a>(
     builder: &mut FunctionBuilder,
     tag_index: u32,
     suspend_args: &[ir::Value],
-    tag_return_types: &[WasmValType],
+    tag_return_types: &[ir::Type],
 ) -> Vec<ir::Value> {
     let tag_addr = tag_address(env, builder, tag_index);
     emit_debug_println!(env, builder, "[suspend] suspending with tag {:p}", tag_addr);
@@ -2179,8 +2140,11 @@ pub(crate) fn translate_suspend<'a>(
         .ins()
         .stack_switch(control_context_ptr, control_context_ptr, suspend_payload);
 
-    let return_values =
-        vmcontref_load_values(env, builder, active_contref.address, tag_return_types);
+    // The return values of the suspend instruction are the tag return values, saved in the `args` buffer.
+    let values = active_contref.values();
+    let return_values = values.load_data_entries(env, builder, tag_return_types);
+    // We effectively consume the values and discard the stack allocated buffer.
+    values.clear(env, builder, true);
 
     return_values
 }
@@ -2192,7 +2156,7 @@ pub(crate) fn translate_switch<'a>(
     tag_index: u32,
     switchee_contobj: ir::Value,
     switch_args: &[ir::Value],
-    return_types: &[WasmValType],
+    return_types: &[ir::Type],
 ) -> WasmResult<Vec<ir::Value>> {
     let vmctx = helpers::VMContext::new(env.vmctx_val(&mut builder.cursor()), env.pointer_type());
 
@@ -2476,7 +2440,11 @@ pub(crate) fn translate_switch<'a>(
             emit_debug_assert_eq!(env, builder, switcher_contref.address, active_contref);
         }
 
-        vmcontref_load_values(env, builder, switcher_contref.address, return_types)
+        let payloads = switcher_contref.values();
+        let return_values = payloads.load_data_entries(env, builder, return_types);
+        // We consume the values and discard the buffer (allocated on this stack)
+        payloads.clear(env, builder, true);
+        return_values
     };
 
     Ok(return_values)

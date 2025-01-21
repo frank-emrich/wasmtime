@@ -3291,7 +3291,7 @@ impl FuncEnvironment<'_> {
         builder: &mut FunctionBuilder<'_>,
         tag_index: u32,
         suspend_args: &[ir::Value],
-        tag_return_types: &[WasmValType],
+        tag_return_types: &[ir::Type],
     ) -> Vec<ir::Value> {
         stack_switching::instructions::translate_suspend(
             self,
@@ -3309,7 +3309,7 @@ impl FuncEnvironment<'_> {
         tag_index: u32,
         contobj: ir::Value,
         switch_args: &[ir::Value],
-        return_types: &[WasmValType],
+        return_types: &[ir::Type],
     ) -> WasmResult<Vec<ir::Value>> {
         stack_switching::instructions::translate_switch(
             self,
