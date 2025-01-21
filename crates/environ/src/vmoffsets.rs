@@ -107,7 +107,6 @@ pub struct VMOffsets<P> {
     // The head of the chain is the
     // currently executing stack (main stack or a continuation).
     stack_switching_stack_chain: u32,
-    stack_switching_payloads: u32,
 }
 
 /// Trait used for the `ptr` representation of the field of `VMOffsets`
@@ -457,7 +456,6 @@ impl<P: PtrSize> VMOffsets<P> {
         }
 
         calculate_sizes! {
-            stack_switching_payloads: "stack switching payloads object",
             stack_switching_stack_chain: "stack switching stack chain",
             defined_func_refs: "module functions",
             defined_tags: "defined tags",
@@ -502,7 +500,6 @@ impl<P: PtrSize> From<VMOffsetsFields<P>> for VMOffsets<P> {
             defined_func_refs: 0,
             size: 0,
             stack_switching_stack_chain: 0,
-            stack_switching_payloads: 0,
         };
 
         // Convenience functions for checked addition and multiplication.
@@ -563,9 +560,6 @@ impl<P: PtrSize> From<VMOffsetsFields<P>> for VMOffsets<P> {
             ),
             size(stack_switching_stack_chain)
                 = ret.ptr.size(),
-            align(core::mem::align_of::<crate::stack_switching::PayloadsVector>() as u32),
-            size(stack_switching_payloads) =
-                core::mem::size_of::<crate::stack_switching::PayloadsVector>() as u32,
 
             align(16), // TODO(dhil): This could probably be done more
                        // efficiently by packing the pointer into the above 16 byte
@@ -797,15 +791,6 @@ impl<P: PtrSize> VMOffsets<P> {
     #[inline]
     pub fn vmctx_stack_switching_stack_chain(&self) -> u32 {
         self.stack_switching_stack_chain
-    }
-
-    /// The offset of the stack switching payloads object, stored as a
-    /// as a wasmtime_environ::stack_switching::Payloads object. Used
-    /// to transfer payloads from suspend calls to the corresponding
-    /// handler/resume instructions.
-    #[inline]
-    pub fn vmctx_stack_switching_payloads(&self) -> u32 {
-        self.stack_switching_payloads
     }
 
     /// Return the size of the `VMContext` allocation.

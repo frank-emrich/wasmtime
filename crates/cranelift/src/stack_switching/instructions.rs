@@ -1691,33 +1691,6 @@ fn vmcontref_load_return_values<'a>(
     return values;
 }
 
-/// Loads values of the given types from the `Payloads` object in the `VMContext`.
-#[allow(clippy::cast_possible_truncation, reason = "TODO")]
-fn vmctx_load_payloads<'a>(
-    env: &mut crate::func_environ::FuncEnvironment<'a>,
-    builder: &mut FunctionBuilder,
-    valtypes: &[ir::Type],
-) -> Vec<ir::Value> {
-    let mut values = vec![];
-
-    if valtypes.len() > 0 {
-        let vmctx = env.vmctx_val(&mut builder.cursor());
-        let vmctx_payloads = helpers::PayloadsVector::new(
-            vmctx,
-            env.offsets.vmctx_stack_switching_payloads() as i32,
-        );
-
-        values = vmctx_payloads.load_data_entries(env, builder, valtypes);
-
-        // In theory, we way want to deallocate the buffer instead of just
-        // clearing it if its size is above a certain threshold. That would
-        // avoid keeping a large object unnecessarily long.
-        vmctx_payloads.clear(builder);
-    }
-
-    values
-}
-
 /// Loads values of the given types from the continuation's `values` field.
 #[allow(clippy::cast_possible_truncation, reason = "TODO")]
 pub(crate) fn vmcontref_load_values<'a>(
@@ -1817,28 +1790,6 @@ pub(crate) fn vmcontref_store_payloads<'a>(
                 offset += env.offsets.ptr.maximum_value_size() as i32;
             }
         }
-    }
-}
-
-/// Stores the given values in the `Payloads` object of the `VMContext`.
-//TODO(frank-emrich) Consider removing `valtypes` argument, as values are inherently typed
-#[allow(clippy::cast_possible_truncation, reason = "TODO")]
-pub(crate) fn vmctx_store_payloads<'a>(
-    env: &mut crate::func_environ::FuncEnvironment<'a>,
-    builder: &mut FunctionBuilder,
-    values: &[ir::Value],
-) {
-    if values.len() > 0 {
-        let vmctx = env.vmctx_val(&mut builder.cursor());
-        let payloads = helpers::PayloadsVector::new(
-            vmctx,
-            env.offsets.vmctx_stack_switching_payloads() as i32,
-        );
-
-        let nargs = builder.ins().iconst(I32, values.len() as i64);
-        payloads.ensure_capacity(env, builder, nargs);
-
-        payloads.store_data_entries(env, builder, values, true);
     }
 }
 
