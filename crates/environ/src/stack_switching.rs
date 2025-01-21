@@ -144,76 +144,76 @@ unsafe impl Sync for StackLimits {}
 unsafe impl Send for HandlerList {}
 unsafe impl Sync for HandlerList {}
 
-#[repr(C)]
-#[derive(Debug, Clone)]
-/// A growable container type. Unlike Rust's `Vec`, we consider `Vector`
-/// objects NOT to own the underlying data buffer. As a result, it does not
-/// implement `Drop`, all (de)allocation must be done manually.
-pub struct Vector<T> {
-    /// Number of currently occupied slots.
-    pub length: u32,
-    /// Number of slots in the data buffer. Note that this is *not* the size of
-    /// the buffer in bytes!
-    pub capacity: u32,
-    /// This is null if and only if capacity (and thus also `length`) are 0.
-    pub data: *mut T,
-}
+// #[repr(C)]
+// #[derive(Debug, Clone)]
+// /// A growable container type. Unlike Rust's `Vec`, we consider `Vector`
+// /// objects NOT to own the underlying data buffer. As a result, it does not
+// /// implement `Drop`, all (de)allocation must be done manually.
+// pub struct Vector<T> {
+//     /// Number of currently occupied slots.
+//     pub length: u32,
+//     /// Number of slots in the data buffer. Note that this is *not* the size of
+//     /// the buffer in bytes!
+//     pub capacity: u32,
+//     /// This is null if and only if capacity (and thus also `length`) are 0.
+//     pub data: *mut T,
+// }
 
-impl<T> Vector<T> {
-    /// TODO(dhil): Write documentation.
-    #[inline]
-    pub fn new(capacity: u32) -> Self {
-        let data = if capacity == 0 {
-            ptr::null_mut()
-        } else {
-            let mut args = Vec::with_capacity(capacity as usize);
-            let args_ptr = args.as_mut_ptr();
-            args.leak();
-            args_ptr
-        };
-        Self {
-            length: 0,
-            capacity,
-            data,
-        }
-    }
+// impl<T> Vector<T> {
+//     /// TODO(dhil): Write documentation.
+//     #[inline]
+//     pub fn new(capacity: u32) -> Self {
+//         let data = if capacity == 0 {
+//             ptr::null_mut()
+//         } else {
+//             let mut args = Vec::with_capacity(capacity as usize);
+//             let args_ptr = args.as_mut_ptr();
+//             args.leak();
+//             args_ptr
+//         };
+//         Self {
+//             length: 0,
+//             capacity,
+//             data,
+//         }
+//     }
 
-    /// Ensures that we can hold at least the required number of elements.
-    /// Does not preserve existing elements and can therefore only be called on empty `Vector`.
-    #[inline]
-    pub fn ensure_capacity(&mut self, required_capacity: u32) {
-        assert_eq!(self.length, 0);
-        if self.capacity < required_capacity {
-            self.deallocate();
+//     /// Ensures that we can hold at least the required number of elements.
+//     /// Does not preserve existing elements and can therefore only be called on empty `Vector`.
+//     #[inline]
+//     pub fn ensure_capacity(&mut self, required_capacity: u32) {
+//         assert_eq!(self.length, 0);
+//         if self.capacity < required_capacity {
+//             self.deallocate();
 
-            *self = Self::new(required_capacity)
-        }
-    }
+//             *self = Self::new(required_capacity)
+//         }
+//     }
 
-    /// TODO(dhil): Write documentation.
-    #[inline]
-    pub fn deallocate(&mut self) {
-        if self.data.is_null() {
-            debug_assert_eq!(self.length, 0);
-            debug_assert_eq!(self.capacity, 0);
-        } else {
-            drop(unsafe {
-                Vec::from_raw_parts(self.data, self.length as usize, self.capacity as usize)
-            });
+//     /// TODO(dhil): Write documentation.
+//     #[inline]
+//     pub fn deallocate(&mut self) {
+//         if self.data.is_null() {
+//             debug_assert_eq!(self.length, 0);
+//             debug_assert_eq!(self.capacity, 0);
+//         } else {
+//             drop(unsafe {
+//                 Vec::from_raw_parts(self.data, self.length as usize, self.capacity as usize)
+//             });
 
-            // Just for safety:
-            self.data = core::ptr::null_mut();
-            self.capacity = 0;
-            self.length = 0;
-        }
-    }
+//             // Just for safety:
+//             self.data = core::ptr::null_mut();
+//             self.capacity = 0;
+//             self.length = 0;
+//         }
+//     }
 
-    /// TODO(dhil): Write documentation.
-    #[inline]
-    pub fn clear(&mut self) {
-        self.length = 0;
-    }
-}
+//     /// TODO(dhil): Write documentation.
+//     #[inline]
+//     pub fn clear(&mut self) {
+//         self.length = 0;
+//     }
+// }
 
 #[repr(C)]
 #[derive(Debug, Clone)]
@@ -244,13 +244,10 @@ impl<T> ArrayRef<T> {
     }
 }
 
+/// TODO(frank-emrich)
 /// Type of vectors used for handling payloads passed between continuations.
-///
 /// The actual type argument should be wasmtime::runtime::vm::vmcontext::ValRaw,
 /// but we don't have access to that here.
-pub type PayloadsVector = Vector<u128>;
-
-/// TODO(frank-emrich)
 pub type Payloads = ArrayRef<u128>;
 
 /// List of handlers, represented by the handled tag.
@@ -306,19 +303,19 @@ impl From<State> for i32 {
 
 /// Defines offsets of the fields in the continuation-related types
 pub mod offsets {
-    /// Offsets of fields in `Vector`.
-    /// Note that these are independent from the type parameter `T`.
-    pub mod vector {
-        use crate::stack_switching::*;
-        use memoffset::offset_of;
+    // /// Offsets of fields in `Vector`.
+    // /// Note that these are independent from the type parameter `T`.
+    // pub mod vector {
+    //     use crate::stack_switching::*;
+    //     use memoffset::offset_of;
 
-        /// Offset of `capacity` field
-        pub const CAPACITY: usize = offset_of!(Vector<()>, capacity);
-        /// Offset of `data` field
-        pub const DATA: usize = offset_of!(Vector<()>, data);
-        /// Offset of `length` field
-        pub const LENGTH: usize = offset_of!(Vector<()>, length);
-    }
+    //     /// Offset of `capacity` field
+    //     pub const CAPACITY: usize = offset_of!(Vector<()>, capacity);
+    //     /// Offset of `data` field
+    //     pub const DATA: usize = offset_of!(Vector<()>, data);
+    //     /// Offset of `length` field
+    //     pub const LENGTH: usize = offset_of!(Vector<()>, length);
+    // }
 
     /// Offsets of fields in `ArrayRef`.
     /// Note that these are independent from the type parameter `T`.
@@ -351,9 +348,9 @@ pub mod offsets {
         /// Offset of `args` field
         pub const ARGS: usize = STACK + super::FIBER_STACK_SIZE;
         /// Offset of `values` field
-        pub const VALUES: usize = ARGS + core::mem::size_of::<PayloadsVector>();
+        pub const VALUES: usize = ARGS + core::mem::size_of::<Payloads>();
         /// Offset of `revision` field
-        pub const REVISION: usize = VALUES + core::mem::size_of::<PayloadsVector>();
+        pub const REVISION: usize = VALUES + core::mem::size_of::<Payloads>();
     }
 
     /// TODO(dhil): Write documentation.

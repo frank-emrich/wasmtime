@@ -70,7 +70,7 @@ pub mod imp {
     use core::cmp;
     use std::marker::PhantomPinned;
     use wasmtime_environ::stack_switching::HandlerList;
-    pub use wasmtime_environ::stack_switching::{Payloads, PayloadsVector, StackLimits, State};
+    pub use wasmtime_environ::stack_switching::{Payloads, StackLimits, State};
     #[allow(unused)]
     use wasmtime_environ::{
         debug_println,
