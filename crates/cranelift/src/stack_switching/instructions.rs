@@ -751,12 +751,12 @@ pub(crate) mod stack_switching_helpers {
             &self,
             env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
-            zero_allocation: bool,
+            discard_buffer: bool,
         ) {
             let zero32 = builder.ins().iconst(I32, 0);
             self.set_length(builder, zero32);
 
-            if zero_allocation {
+            if discard_buffer {
                 let zero32 = builder.ins().iconst(I32, 0);
                 self.set_capacity(builder, zero32);
 
