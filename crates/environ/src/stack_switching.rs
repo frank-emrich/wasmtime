@@ -6,7 +6,7 @@ use core::{
 };
 
 /// TODO
-#[allow(dead_code)]
+#[allow(dead_code, reason = "Only accessed in debug builds")]
 pub const ENABLE_DEBUG_PRINTING: bool = false;
 
 /// TODO(dhil): Write documentation.

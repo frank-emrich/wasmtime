@@ -1850,7 +1850,7 @@ pub(crate) fn translate_resume<'a>(
                     env,
                     builder,
                     handler_count,
-                    env.stack_switching_handler_list_buffer.clone(),
+                    env.stack_switching_handler_list_buffer,
                 ));
 
             let suspend_handler_count = suspend_handlers.len();
@@ -2150,7 +2150,7 @@ pub(crate) fn translate_suspend<'a>(
             env,
             builder,
             required_capacity,
-            env.stack_switching_values_buffer.clone(),
+            env.stack_switching_values_buffer,
         ));
     }
 
@@ -2272,7 +2272,7 @@ pub(crate) fn translate_switch<'a>(
                 env,
                 builder,
                 required_capacity,
-                env.stack_switching_values_buffer.clone(),
+                env.stack_switching_values_buffer,
             ));
         }
 
