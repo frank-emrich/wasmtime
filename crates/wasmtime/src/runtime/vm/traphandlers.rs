@@ -444,6 +444,14 @@ mod call_thread_state {
         #[cfg(all(has_native_signals, unix))]
         pub(crate) async_guard_range: Range<*mut u8>,
 
+        // The state of the runtime for the *previous* `CallThreadState` for
+        // this same store. Our *current* state is saved in `self.limits`,
+        // `self.stack_chain`, etc. We need access to the old values of these
+        // fields because the `VMRuntimeLimits` typically doesn't change across
+        // nested calls into Wasm (i.e. they are typically calls back into the
+        // same store and `self.limits == self.prev.limits`) and we must to
+        // maintain the list of contiguous-Wasm-frames stack regions for
+        // backtracing purposes.
         pub(crate) old_state: *const RuntimeEntryState,
     }
 

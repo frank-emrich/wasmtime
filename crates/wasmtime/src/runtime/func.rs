@@ -1629,23 +1629,44 @@ pub(crate) fn invoke_wasm_and_catch_traps<T>(
     }
 }
 
-/// TODO
+/// This type helps managing the state of the runtime when entering and exicting
+/// Wasm. Upon entering Wasm, it updates various runtime fields and their
+/// original values saved in this struct. Upon exiting Wasm, the previous values
+/// are restored.
 pub struct RuntimeEntryState {
-    /// TODO
+    /// If set, contains value of `stack_limit` field to restore in
+    /// `VMRuntimeLimits` when exiting Wasm.
     pub stack_limit: Option<usize>,
-    /// TODO
+    /// Contains value of `last_wasm_exit_pc` field to restore in
+    /// `VMRuntimeLimits` when exiting Wasm.
     pub last_wasm_exit_pc: usize,
-    /// TODO
+    /// Contains value of `last_wasm_exit_fp` field to restore in
+    /// `VMRuntimeLimits` when exiting Wasm.
     pub last_wasm_exit_fp: usize,
-    /// TODO
+    /// Contains value of `last_wasm_entry_fp` field to restore in
+    /// `VMRuntimeLimits` when exiting Wasm.
     pub last_wasm_entry_fp: usize,
 
+    /// We need a pointer to the runtime limits, so we can update them from
+    /// `drop`/`exit_wasm`.
     runtime_limits: *const VMRuntimeLimits,
 }
 
 impl RuntimeEntryState {
-    /// TODO
-    pub fn enter_wasm<T>(store: &mut StoreContextMut<'_, T>) -> Self {
+    /// This function is called to update and save state when
+    /// WebAssembly is entered within the `Store`.
+    ///
+    /// This updates various fields such as:
+    ///
+    /// * The stack limit. This is what ensures that we limit the stack space
+    ///   allocated by WebAssembly code and it's relative to the initial stack
+    ///   pointer that called into wasm.
+    ///
+    /// It also saves the different last_wasm_* values in the `VMRuntimeLimits`.
+    pub fn enter_wasm<T>(
+        store: &mut StoreContextMut<'_, T>,
+        main_stack_information: *mut CommonStackInformation,
+    ) -> Self {
         let stack_limit;
 
         // If this is a recursive call, e.g. our stack limit is already set, then
@@ -1712,16 +1733,16 @@ impl RuntimeEntryState {
         }
     }
 
+    /// This function restores the values stored in this struct. We invoke this
+    /// function through this type's `Drop` implementation. This ensures that we
+    /// even restore the values if we unwind the stack (e.g., because we are
+    /// panicing out of a Wasm execution).
     fn exit_wasm(&mut self) {
-        match self.stack_limit {
-            Some(limit) => unsafe {
-                *(&*self.runtime_limits).stack_limit.get() = limit;
-                //(&*self.runtime_limits).stack_limit.get() = limit;
-            },
-            None => (),
-        };
-
         unsafe {
+            self.stack_limit.inspect(|limit| {
+                *(&*self.runtime_limits).stack_limit.get() = *limit;
+            });
+
             *(*self.runtime_limits).last_wasm_exit_fp.get() = self.last_wasm_exit_fp;
             *(*self.runtime_limits).last_wasm_exit_pc.get() = self.last_wasm_exit_pc;
             *(*self.runtime_limits).last_wasm_entry_fp.get() = self.last_wasm_entry_fp;
