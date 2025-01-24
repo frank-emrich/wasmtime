@@ -105,7 +105,7 @@ pub struct VMOffsets<P> {
     // The following field stores a pointer into the StoreOpauqe, to value of
     // type `crate::stack_switching::StackChain`.
     // The head of the chain is the
-    // currently executing stack (main stack or a continuation).
+    // currently executing stack (initial stack or a continuation).
     stack_switching_stack_chain: u32,
 }
 

@@ -83,7 +83,7 @@ pub mod imp {
         pub common_stack_information: CommonStackInformation,
 
         /// The parent of this continuation, which may be another continuation, the
-        /// main stack, or absent (in case of a suspended continuation).
+        /// initial stack, or absent (in case of a suspended continuation).
         pub parent_chain: StackChain,
 
         /// Only used if `common_stack_information.state` is `Suspended` or `Fresh`. In
@@ -332,8 +332,12 @@ pub mod stack_chain {
     pub use wasmtime_environ::stack_switching::StackLimits;
 
     /// This type represents a linked lists of stacks, additionally associating a
-    /// `StackLimits` object with each element of the list. Here, a "stack" is
-    /// either a continuation or the main stack. Note that the linked list character
+    /// `CommonStackInformation` object with each element of the list. Here, a "stack" is
+    /// either a continuation or the initial stack.
+    /// The initial stack is the one we were on when entering Wasm (i.e., executing `invoke_wasm_and_catch_traps).
+    /// This may either be the initial stack, or yet another continuation stack.
+    ///
+    /// Note that the linked list character
     /// arises from the fact that `StackChain::Continuation` variants have a pointer
     /// to have `VMContRef`, which in turn has a `parent_chain` value of
     /// type `StackChain`.
@@ -343,11 +347,11 @@ pub mod stack_chain {
     /// 1. The `stack_switching_stack_chain` field in the VMContext
     /// contains such a chain of stacks, where the head of the list
     /// denotes the stack that is currently executing (either a
-    /// continuation or the main stack), as well as the parent stacks,
+    /// continuation or the initial stack), as well as the parent stacks,
     /// in case of a continuation currently running. Note that in this
-    /// case, the linked list must contains 0 or more `Continuation`
-    /// elements, followed by a final `MainStack` element. In
-    /// particular, this list always ends with `MainStack` and never
+    /// case, the linked list must contain 0 or more `Continuation`
+    /// elements, followed by a final `InitialStack` element. In
+    /// particular, this list always ends with `InitialStack` and never
     /// contains an `Absent` variant.
     ///
     /// 2. When a continuation is suspended, its chain of parents
@@ -357,11 +361,10 @@ pub mod stack_chain {
     ///
     ///
     /// As mentioned before, each stack in a `StackChain` has a
-    /// corresponding `StackLimits` object. For continuations, this is
-    /// stored in the `limits` fields of the corresponding
-    /// `VMContRef`. For the main stack, the `MainStack` variant
-    /// contains a pointer to the `stack_switching_main_stack_limits`
-    /// field of the VMContext.
+    /// corresponding `CommonStackInformation` object. For continuations, this is
+    /// stored in the `common_stack_information` field of the corresponding
+    /// `VMContRef`. For the initial stack, the `InitialStack` variant
+    /// contains a pointer to a  `CommonStackInformation` struct allocated by `invoke_wasm_and_catch_traps`.
     ///
     /// The following invariants hold for these `StackLimits` objects,
     /// and the data in `VMRuntimeLimits`.
@@ -388,7 +391,7 @@ pub mod stack_chain {
     ///
     /// Suspended continuations: For suspended continuations
     /// (including their parents), we have the following. Note that
-    /// the main stack can never be in this state. The `stack_limit`
+    /// the initial stack can never be in this state. The `stack_limit`
     /// and `last_enter_wasm_sp` fields of the corresponding
     /// `StackLimits` object contain valid data, while the
     /// `last_exit_wasm_*` fields contain arbitrary values.  There is
@@ -403,22 +406,20 @@ pub mod stack_chain {
     #[derive(Debug, Clone, PartialEq)]
     #[repr(usize, C)]
     pub enum StackChain {
-        /// If stored in the VMContext, used to indicate that the MainStack entry
-        /// has not been set, yet. If stored in a VMContRef's parent_chain
-        /// field, means that there is currently no parent.
+        /// If stored in the Store, used to indicate that we are not executing Wasm.
         Absent = wasmtime_environ::stack_switching::STACK_CHAIN_ABSENT_DISCRIMINANT,
-        /// Represents the main stack.
-        MainStack(*mut CommonStackInformation) =
-            wasmtime_environ::stack_switching::STACK_CHAIN_MAIN_STACK_DISCRIMINANT,
+        /// Represents the initial stack.
+        InitialStack(*mut CommonStackInformation) =
+            wasmtime_environ::stack_switching::STACK_CHAIN_INITIAL_STACK_DISCRIMINANT,
         /// Represents a continuation's stack.
         Continuation(*mut VMContRef) =
             wasmtime_environ::stack_switching::STACK_CHAIN_CONTINUATION_DISCRIMINANT,
     }
 
     impl StackChain {
-        /// Indicates if `self` is a `MainStack` variant.
-        pub fn is_main_stack(&self) -> bool {
-            matches!(self, StackChain::MainStack(_))
+        /// Indicates if `self` is a `InitialStack` variant.
+        pub fn is_initial_stack(&self) -> bool {
+            matches!(self, StackChain::InitialStack(_))
         }
 
         /// Returns an iterator over the continuations in this chain.
@@ -459,7 +460,7 @@ pub mod stack_chain {
 
         fn next(&mut self) -> Option<Self::Item> {
             match self.0 {
-                StackChain::Absent | StackChain::MainStack(_) => None,
+                StackChain::Absent | StackChain::InitialStack(_) => None,
                 StackChain::Continuation(ptr) => {
                     let continuation = unsafe { ptr.as_mut().unwrap() };
                     self.0 = continuation.parent_chain.clone();
@@ -475,7 +476,7 @@ pub mod stack_chain {
         fn next(&mut self) -> Option<Self::Item> {
             match self.0 {
                 StackChain::Absent => None,
-                StackChain::MainStack(csi) => {
+                StackChain::InitialStack(csi) => {
                     let stack_limits = unsafe { &mut (*csi).limits } as *mut StackLimits;
                     self.0 = StackChain::Absent;
                     Some(stack_limits)

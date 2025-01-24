@@ -136,7 +136,7 @@ impl Backtrace {
         // traverse the potential continuation stacks. For the subsequent
         // activations, we unconditionally use `None` as the corresponding stack
         // chain. This is justified because only the most recent execution of
-        // wasm may execute off the main stack (see comments in
+        // wasm may execute off the initial stack (see comments in
         // `wasmtime::invoke_wasm_and_catch_traps` for details).
         let activations = core::iter::once((
             Some(stack_chain),
@@ -181,11 +181,11 @@ impl Backtrace {
     /// Traces through a sequence of stacks, creating a backtracr for each one,
     /// beginning at the given `pc` and `fp`.
     ///
-    /// If `chain` is `None`, we are tracing through the main stack, and this
+    /// If `chain` is `None`, we are tracing through the initial stack, and this
     /// function behaves like `trace_through_wasm`.
     /// Otherwise, we can interpret `chain` as a linked list of stacks, which
-    /// ends with the main stack. We then trace through each of these stacks
-    /// individually, up to (and including) the main stack.
+    /// ends with the initial stack. We then trace through each of these stacks
+    /// individually, up to (and including) the initial stack.
     unsafe fn trace_through_continuations(
         unwind: &dyn Unwind,
         chain: Option<&StackChain>,
@@ -198,12 +198,12 @@ impl Backtrace {
         use wasmtime_environ::stack_switching::StackLimits;
 
         // Handle the stack that is currently running (which may be a
-        // continuation or the main stack).
+        // continuation or the initial stack).
         Self::trace_through_wasm(unwind, pc, fp, trampoline_sp, &mut f)?;
 
         // Note that the following has no effect if either `chain` is None or `chain` is
         // `Some(StackChain::MainStack(_))` (i.e., there is only one stack to trace
-        // through: the main stack)
+        // through: the initial stack)
         chain.map_or(ControlFlow::Continue(()), |chain| {
             assert_ne!(*chain, StackChain::Absent);
 
@@ -213,7 +213,7 @@ impl Backtrace {
                 chain.clone().into_continuation_iter().collect();
 
             // The StackLimits of the currently running stack (whether that's a
-            // continuation or the main stack) contains undefined data, the
+            // continuation or the initial stack) contains undefined data, the
             // information about that stack is saved in the Store's
             // `VMRuntimeLimits` and handled at the top of this function
             // already. That's why we ignore `stack_limits_vec[0]`.
@@ -225,7 +225,7 @@ impl Backtrace {
             // particular stack.
             //
             // There must be exactly one more `StackLimits` object than there
-            // are continuations, due to the main stack having one, too.
+            // are continuations, due to the initial stack having one, too.
             assert_eq!(stack_limits_vec.len(), continuations_vec.len() + 1);
 
             for i in 0..continuations_vec.len() {
@@ -240,7 +240,7 @@ impl Backtrace {
 
                     // The parent of `continuation`, if the parent is itself a
                     // continuation. Otherwise, if `continuation` is the last
-                    // continuation (i.e., its parent is the main stack), this is
+                    // continuation (i.e., its parent is the initial stack), this is
                     // None.
                     let parent_continuation = if i + 1 < continuations_vec.len() {
                         Some(&*continuations_vec[i + 1])

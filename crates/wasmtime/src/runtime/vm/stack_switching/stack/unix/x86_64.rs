@@ -40,7 +40,7 @@ asm_func!(
 //
 // We also use this function as a persistent frame on the stack to emit dwarf
 // information to unwind into the caller. This allows us to unwind from the
-// fiber's stack back to the main stack that the fiber was called from. We use
+// fiber's stack back to the initial stack that the fiber was called from. We use
 // special dwarf directives here to do so since this is a pretty nonstandard
 // function.
 //

@@ -17,6 +17,7 @@ use core::mem::{self, MaybeUninit};
 use core::num::NonZeroUsize;
 use core::pin::Pin;
 use core::ptr::NonNull;
+use wasmtime_environ::stack_switching::CommonStackInformation;
 use wasmtime_environ::VMSharedTypeIndex;
 
 /// A reference to the abstract `nofunc` heap value.
@@ -359,6 +360,7 @@ macro_rules! for_each_function_signature {
 }
 
 mod typed;
+use crate::runtime::vm::stack_switching::stack_chain::{StackChain, StackChainCell};
 pub use typed::*;
 
 impl Func {
@@ -1600,13 +1602,13 @@ pub(crate) fn invoke_wasm_and_catch_traps<T>(
     unsafe {
         if crate::runtime::vm::head_state_inside_continuation() {
             // We currently don't support (re-)entering Wasm while running
-            // inside a continuation/off the main stack. The necessary
+            // inside a continuation/off the initial stack. The necessary
             // bookeeping is not implemented.
             //
             // We check that we are not inside a continuation by inspecting this
             // thread's chain of `CallThreadState`s, which is a linked list of
             // all (nested) invocations of wasm (and certain host calls). If the
-            // head state is not on the main stack, we fail below. Since we
+            // head state is not on the initial stack, we fail below. Since we
             // check this on every call to `invoke_wasm_and_catch_traps` and the
             // latter function is the only place where we add elements to the
             // `CallThreadState` list, it is sufficient to inspect the head of
@@ -1617,7 +1619,8 @@ pub(crate) fn invoke_wasm_and_catch_traps<T>(
             ));
         }
 
-        let previous_runtime_state = RuntimeEntryState::enter_wasm(store);
+        let mut initial_stack_csi = CommonStackInformation::running_default();
+        let previous_runtime_state = RuntimeEntryState::enter_wasm(store, &mut initial_stack_csi);
 
         if let Err(trap) = store.0.call_hook(CallHook::CallingWasm) {
             return Err(trap);
@@ -1646,10 +1649,16 @@ pub struct RuntimeEntryState {
     /// Contains value of `last_wasm_entry_fp` field to restore in
     /// `VMRuntimeLimits` when exiting Wasm.
     pub last_wasm_entry_fp: usize,
+    /// Contains value of `stack_chain` field to restore in
+    /// `Store` when exiting Wasm.
+    pub stack_chain: StackChain,
 
     /// We need a pointer to the runtime limits, so we can update them from
     /// `drop`/`exit_wasm`.
     runtime_limits: *const VMRuntimeLimits,
+    /// We need a pointer to the stack chain in the store, so we can update it from
+    /// `drop`/`exit_wasm`.
+    stack_chain_ptr: *const StackChainCell,
 }
 
 impl RuntimeEntryState {
@@ -1723,12 +1732,19 @@ impl RuntimeEntryState {
 
             let runtime_limits = store.0.runtime_limits();
 
+            let stack_chain_ptr = store.0.stack_chain();
+            let old_stack_chain = (*stack_chain_ptr.as_ref().unwrap().0.get()).clone();
+            let new_stack_chain = StackChain::InitialStack(main_stack_information);
+            *(*store.0.stack_chain()).0.get() = new_stack_chain;
+
             Self {
                 stack_limit,
                 last_wasm_exit_pc,
                 last_wasm_exit_fp,
                 last_wasm_entry_fp,
+                stack_chain: old_stack_chain,
                 runtime_limits,
+                stack_chain_ptr,
             }
         }
     }
@@ -1746,6 +1762,8 @@ impl RuntimeEntryState {
             *(*self.runtime_limits).last_wasm_exit_fp.get() = self.last_wasm_exit_fp;
             *(*self.runtime_limits).last_wasm_exit_pc.get() = self.last_wasm_exit_pc;
             *(*self.runtime_limits).last_wasm_entry_fp.get() = self.last_wasm_entry_fp;
+
+            *(*self.stack_chain_ptr).0.get() = self.stack_chain.clone();
         }
     }
 }

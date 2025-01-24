@@ -64,13 +64,13 @@ pub struct StackLimits {
 }
 
 /// This type represents "common" information that we need to save both for the
-/// main stack and each continuation.
+/// initial stack and each continuation.
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct CommonStackInformation {
     /// TODO(dhil): Write documentation.
     pub limits: StackLimits,
-    /// For the main stack, this field must only have one of the following values:
+    /// For the initial stack, this field must only have one of the following values:
     /// - Running
     /// - Parent
     pub state: State,
@@ -185,9 +185,9 @@ pub type HandlerList = Array<*mut u8>;
 /// Discriminant of variant `Absent` in
 /// `wasmtime_runtime::continuation::StackChain`.
 pub const STACK_CHAIN_ABSENT_DISCRIMINANT: usize = 0;
-/// Discriminant of variant `MainStack` in
+/// Discriminant of variant `InitialStack` in
 /// `wasmtime_runtime::continuation::StackChain`.
-pub const STACK_CHAIN_MAIN_STACK_DISCRIMINANT: usize = 1;
+pub const STACK_CHAIN_INITIAL_STACK_DISCRIMINANT: usize = 1;
 /// Discriminant of variant `Continiation` in
 /// `wasmtime_runtime::continuation::StackChain`.
 pub const STACK_CHAIN_CONTINUATION_DISCRIMINANT: usize = 2;

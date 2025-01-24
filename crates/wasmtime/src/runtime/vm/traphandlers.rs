@@ -411,7 +411,7 @@ pub unsafe fn head_state_inside_continuation() -> bool {
     tls::with(|head_state| {
         head_state.map_or(false, |state| {
             let stack_chain = &*state.stack_chain;
-            !stack_chain.is_main_stack()
+            !stack_chain.is_initial_stack()
         })
     })
 }
