@@ -410,7 +410,7 @@ pub(crate) mod stack_switching_helpers {
         }
 
         /// Loads the parent of this continuation, which may either be another
-        /// continuation or the initial. It is therefore represented as a
+        /// continuation or the initial stack. It is therefore represented as a
         /// `StackChain` element.
         #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         pub fn get_parent_stack_chain<'a>(
