@@ -20,7 +20,7 @@ use crate::runtime::module::lookup_code;
 use crate::runtime::store::StoreOpaque;
 use crate::runtime::vm::sys::traphandlers;
 use crate::runtime::vm::{Instance, InterpreterRef, VMContext, VMRuntimeLimits};
-use crate::{RuntimeState, StoreContextMut, WasmBacktrace};
+use crate::{RuntimeEntryState, StoreContextMut, WasmBacktrace};
 use core::cell::Cell;
 use core::ops::Range;
 use core::ptr::{self, NonNull};
@@ -351,7 +351,7 @@ impl From<wasmtime_environ::Trap> for TrapReason {
 /// longjmp'd over and none of its destructors on the stack may be run.
 pub unsafe fn catch_traps<T, F>(
     store: &mut StoreContextMut<'_, T>,
-    old_state: &RuntimeState,
+    old_state: &RuntimeEntryState,
     mut closure: F,
 ) -> Result<(), Box<Trap>>
 where
@@ -422,7 +422,7 @@ mod call_thread_state {
     use super::*;
     use crate::runtime::vm::stack_switching::stack_chain::StackChain;
     use crate::runtime::vm::Unwind;
-    use crate::RuntimeState;
+    use crate::RuntimeEntryState;
 
     /// Temporary state stored on the stack which is registered in the `tls` module
     /// below for calls into wasm.
@@ -444,7 +444,7 @@ mod call_thread_state {
         #[cfg(all(has_native_signals, unix))]
         pub(crate) async_guard_range: Range<*mut u8>,
 
-        pub(crate) old_state: *const RuntimeState,
+        pub(crate) old_state: *const RuntimeEntryState,
     }
 
     impl Drop for CallThreadState {
@@ -462,7 +462,7 @@ mod call_thread_state {
         pub(super) fn new(
             store: &mut StoreOpaque,
             caller: *mut VMContext,
-            old_state: *const RuntimeState,
+            old_state: *const RuntimeEntryState,
         ) -> CallThreadState {
             let limits = unsafe { *Instance::from_vmctx(caller, |i| i.runtime_limits()) };
             let stack_chain = unsafe { (&*store.stack_chain()).0.get() };

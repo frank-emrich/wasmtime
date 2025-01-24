@@ -1617,7 +1617,7 @@ pub(crate) fn invoke_wasm_and_catch_traps<T>(
             ));
         }
 
-        let previous_runtime_state = RuntimeState::enter_wasm(store);
+        let previous_runtime_state = RuntimeEntryState::enter_wasm(store);
 
         if let Err(trap) = store.0.call_hook(CallHook::CallingWasm) {
             return Err(trap);
@@ -1630,7 +1630,7 @@ pub(crate) fn invoke_wasm_and_catch_traps<T>(
 }
 
 /// TODO
-pub struct RuntimeState {
+pub struct RuntimeEntryState {
     /// TODO
     pub stack_limit: Option<usize>,
     /// TODO
@@ -1643,7 +1643,7 @@ pub struct RuntimeState {
     runtime_limits: *const VMRuntimeLimits,
 }
 
-impl RuntimeState {
+impl RuntimeEntryState {
     /// TODO
     pub fn enter_wasm<T>(store: &mut StoreContextMut<'_, T>) -> Self {
         let stack_limit;
@@ -1729,7 +1729,7 @@ impl RuntimeState {
     }
 }
 
-impl Drop for RuntimeState {
+impl Drop for RuntimeEntryState {
     fn drop(&mut self) {
         self.exit_wasm();
     }
