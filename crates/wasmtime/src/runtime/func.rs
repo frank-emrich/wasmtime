@@ -1,7 +1,7 @@
 use crate::prelude::*;
 use crate::runtime::vm::{
     ExportFunction, InterpreterRef, SendSyncPtr, StoreBox, VMArrayCallHostFuncContext, VMContext,
-    VMFuncRef, VMFunctionImport, VMOpaqueContext,
+    VMFuncRef, VMFunctionImport, VMOpaqueContext, VMRuntimeLimits,
 };
 use crate::runtime::Uninhabited;
 use crate::store::{AutoAssertNoGc, StoreData, StoreOpaque, Stored};
@@ -1617,16 +1617,109 @@ pub(crate) fn invoke_wasm_and_catch_traps<T>(
             ));
         }
 
-        let exit = enter_wasm(store);
+        let previous_runtime_state = RuntimeState::enter_wasm(store);
 
         if let Err(trap) = store.0.call_hook(CallHook::CallingWasm) {
-            exit_wasm(store, exit);
             return Err(trap);
         }
         let result = crate::runtime::vm::catch_traps(store, closure);
-        exit_wasm(store, exit);
+        std::mem::drop(previous_runtime_state);
         store.0.call_hook(CallHook::ReturningFromWasm)?;
         result.map_err(|t| crate::trap::from_runtime_box(store.0, t))
+    }
+}
+
+struct RuntimeState {
+    stack_limit: Option<usize>,
+    last_wasm_exit_pc: usize,
+    last_wasm_exit_fp: usize,
+    last_wasm_entry_fp: usize,
+
+    runtime_limits: *const VMRuntimeLimits,
+}
+
+impl RuntimeState {
+    pub fn enter_wasm<T>(store: &mut StoreContextMut<'_, T>) -> Self {
+        let stack_limit;
+
+        // If this is a recursive call, e.g. our stack limit is already set, then
+        // we may be able to skip this function.
+        //
+        // For synchronous stores there's nothing else to do because all wasm calls
+        // happen synchronously and on the same stack. This means that the previous
+        // stack limit will suffice for the next recursive call.
+        //
+        // For asynchronous stores then each call happens on a separate native
+        // stack. This means that the previous stack limit is no longer relevant
+        // because we're on a separate stack.
+        if unsafe { *store.0.runtime_limits().stack_limit.get() } != usize::MAX
+            && !store.0.async_support()
+        {
+            stack_limit = None;
+        }
+        // Ignore this stack pointer business on miri since we can't execute wasm
+        // anyway and the concept of a stack pointer on miri is a bit nebulous
+        // regardless.
+        else if cfg!(miri) {
+            stack_limit = None;
+        } else {
+            let stack_pointer = crate::runtime::vm::get_stack_pointer();
+
+            // Determine the stack pointer where, after which, any wasm code will
+            // immediately trap. This is checked on the entry to all wasm functions.
+            //
+            // Note that this isn't 100% precise. We are requested to give wasm
+            // `max_wasm_stack` bytes, but what we're actually doing is giving wasm
+            // probably a little less than `max_wasm_stack` because we're
+            // calculating the limit relative to this function's approximate stack
+            // pointer. Wasm will be executed on a frame beneath this one (or next
+            // to it). In any case it's expected to be at most a few hundred bytes
+            // of slop one way or another. When wasm is typically given a MB or so
+            // (a million bytes) the slop shouldn't matter too much.
+            //
+            // After we've got the stack limit then we store it into the `stack_limit`
+            // variable.
+            let wasm_stack_limit = stack_pointer - store.engine().config().max_wasm_stack;
+            let prev_stack = unsafe {
+                mem::replace(
+                    &mut *store.0.runtime_limits().stack_limit.get(),
+                    wasm_stack_limit,
+                )
+            };
+            stack_limit = Some(prev_stack);
+        }
+
+        unsafe {
+            let last_wasm_exit_pc = *store.0.runtime_limits().last_wasm_exit_pc.get();
+            let last_wasm_exit_fp = *store.0.runtime_limits().last_wasm_exit_fp.get();
+            let last_wasm_entry_fp = *store.0.runtime_limits().last_wasm_entry_fp.get();
+
+            let runtime_limits = store.0.runtime_limits();
+
+            Self {
+                stack_limit,
+                last_wasm_exit_pc,
+                last_wasm_exit_fp,
+                last_wasm_entry_fp,
+                runtime_limits,
+            }
+        }
+    }
+
+    fn exit_wasm(&mut self) {
+        match self.stack_limit {
+            Some(limit) => unsafe {
+                *(&*self.runtime_limits).stack_limit.get() = limit;
+                //(&*self.runtime_limits).stack_limit.get() = limit;
+            },
+            None => (),
+        };
+    }
+}
+
+impl Drop for RuntimeState {
+    fn drop(&mut self) {
+        self.exit_wasm();
     }
 }
 
