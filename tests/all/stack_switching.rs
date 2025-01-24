@@ -124,6 +124,26 @@ mod test_utils {
         )
     }
 
+    /// Creates a function without parameters or return values that simply calls
+    /// the given function.
+    pub fn make_call_export_host_func(runner: &mut Runner, export_func: &'static str) -> Func {
+        Func::new(
+            &mut runner.store,
+            FuncType::new(&runner.engine, vec![], vec![]),
+            |mut caller, args: &[Val], results: &mut [Val]| {
+                let export = caller
+                    .get_export(export_func)
+                    .ok_or(anyhow::anyhow!("could not get export"))?;
+                let func = export
+                    .into_func()
+                    .ok_or(anyhow::anyhow!("export is not a Func"))?;
+                let func_typed = func.typed::<(), ()>(caller.as_context())?;
+                let res = func_typed.call(caller.as_context_mut(), ())?;
+                Ok(())
+            },
+        )
+    }
+
     pub fn make_panicking_host_func(store: &mut Store<()>, msg: &'static str) -> Func {
         Func::wrap(store, move || -> () { std::panic::panic_any(msg) })
     }
@@ -667,6 +687,20 @@ mod traps {
     use super::test_utils::*;
     use wasmtime::*;
 
+    fn backtrace_from_err(err: &Error) -> impl Iterator<Item = &'_ str> {
+        let trace = err.downcast_ref::<WasmBacktrace>().unwrap();
+
+        trace
+            .frames()
+            .iter()
+            .map(|frame| {
+                frame
+                    .func_name()
+                    .expect("Expecting all functions in actual backtrace to have names")
+            })
+            .rev()
+    }
+
     /// Runs the module given as `wat`. We expect execution to cause the
     /// `expected_trap` and a backtrace containing exactly the function names
     /// given by `expected_backtrace`.
@@ -679,17 +713,7 @@ mod traps {
         assert!(err.root_cause().is::<Trap>());
         assert_eq!(*err.downcast_ref::<Trap>().unwrap(), expected_trap);
 
-        let trace = err.downcast_ref::<WasmBacktrace>().unwrap();
-
-        let actual_func_name_it = trace
-            .frames()
-            .iter()
-            .map(|frame| {
-                frame
-                    .func_name()
-                    .expect("Expecting all functions in actual backtrace to have names")
-            })
-            .rev();
+        let actual_func_name_it = backtrace_from_err(&err);
 
         let expected_func_name_it = expected_backtrace.iter().copied();
         assert!(actual_func_name_it.eq(expected_func_name_it));
@@ -1120,8 +1144,72 @@ mod traps {
         Ok(())
     }
 
+    // Test that we get correct backtraces after trapping inside a continuation after re-entering Wasm while already inside a different continuation.
     #[test]
-    /// Tests that we get correct panic payloads  if we panic deep inside multiple
+    fn trap_after_re_enter() -> Result<()> {
+        let wat = r#"
+        (module
+            (type $ft (func))
+            (type $ct (cont $ft))
+            (tag $t)
+
+            (import "" "" (func $host_func_a))
+            (import "" "" (func $host_func_b))
+
+            (func $entry (export "entry")
+                (call $a)
+            )
+
+            (func $a (export "a")
+                (resume $ct (cont.new $ct (ref.func $b)))
+            )
+
+            (func $b (export "b")
+                 (call $host_func_a)
+            )
+
+            (func $c (export "c")
+                (resume $ct (cont.new $ct (ref.func $d)))
+
+            )
+
+            (func $d (export "d")
+                (i32.const 0)
+                (call $host_func_b)
+                (drop)
+            )
+
+            (func $e (export "e")
+                (resume $ct (cont.new $ct (ref.func $f)))
+            )
+
+           (func $f  (export "f")
+               (unreachable)
+           )
+        )
+       "#;
+
+        let mut runner = Runner::new();
+        let host_func_a = make_call_export_host_func(&mut runner, "c");
+        let host_func_b = make_call_export_host_func(&mut runner, "e");
+
+        let result = runner.run_test::<()>(wat, &[host_func_a.into(), host_func_b.into()]);
+        let err = result.unwrap_err();
+
+        assert!(err.root_cause().is::<Trap>());
+        assert_eq!(
+            *err.downcast_ref::<Trap>().unwrap(),
+            Trap::UnreachableCodeReached
+        );
+
+        let backtrace = backtrace_from_err(&err);
+        assert!(backtrace.eq(["entry", "a", "b", "c", "d", "e", "f"].into_iter()));
+
+        Ok(())
+    }
+
+    #[test]
+    /// Tests that we get correct panic payloads if we panic deep inside multiple
     /// continuations. Note that wasmtime does not create its own backtraces for panics.
     fn panic_in_continuation() -> Result<()> {
         let wat = r#"
