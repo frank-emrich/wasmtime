@@ -124,6 +124,26 @@ mod test_utils {
         )
     }
 
+    /// Creates a function without parameters or return values that simply calls
+    /// the given function.
+    pub fn make_call_export_host_func(runner: &mut Runner, export_func: &'static str) -> Func {
+        Func::new(
+            &mut runner.store,
+            FuncType::new(&runner.engine, vec![], vec![]),
+            |mut caller, args: &[Val], results: &mut [Val]| {
+                let export = caller
+                    .get_export(export_func)
+                    .ok_or(anyhow::anyhow!("could not get export"))?;
+                let func = export
+                    .into_func()
+                    .ok_or(anyhow::anyhow!("export is not a Func"))?;
+                let func_typed = func.typed::<(), ()>(caller.as_context())?;
+                let res = func_typed.call(caller.as_context_mut(), ())?;
+                Ok(())
+            },
+        )
+    }
+
     pub fn make_panicking_host_func(store: &mut Store<()>, msg: &'static str) -> Func {
         Func::wrap(store, move || -> () { std::panic::panic_any(msg) })
     }
@@ -484,7 +504,7 @@ mod host {
     /// allowed in the future.
     /// Call chain:
     /// $entry -resume-> $a -call-> $host_func_a -call-> $b
-    fn re_enter_wasm_bad() -> Result<()> {
+    fn re_enter_wasm_ok3() -> Result<()> {
         let wat = r#"
         (module
             (type $ft (func (param i32) (result i32)))
@@ -503,9 +523,8 @@ mod host {
             )
 
 
-            (func $entry (export "entry")
+            (func $entry (export "entry") (result i32)
                 (resume $ct (i32.const 120) (cont.new $ct (ref.func $a)))
-                (drop)
             )
         )
     "#;
@@ -513,11 +532,8 @@ mod host {
 
         let host_func_a = make_i32_inc_via_export_host_func(&mut runner, "b");
 
-        runner.run_test_expect_str_error(
-            &wat,
-            &[host_func_a.into()],
-            RE_ENTER_ON_CONTINUATION_ERROR,
-        );
+        let result = runner.run_test::<i32>(wat, &[host_func_a.into()]).unwrap();
+        assert_eq!(result, 123);
         Ok(())
     }
 
@@ -525,8 +541,6 @@ mod host {
     /// After crossing from the host back into wasm, we suspend to a tag that is
     /// handled by the surrounding function (i.e., without needing to cross the
     /// host frame to reach the handler).
-    /// This is currently forbidden (see wasmfx/wasmfxtime#109), but could be
-    /// allowed in the future.
     /// Call chain:
     /// $entry -resume-> $a -call-> $host_func_a -call-> $b -resume-> $c
     fn call_host_from_continuation_nested_suspend_ok() -> Result<()> {
@@ -559,9 +573,8 @@ mod host {
             )
 
 
-            (func $entry (export "entry")
+            (func $entry (export "entry") (result i32)
                 (resume $ct (i32.const 120) (cont.new $ct (ref.func $a)))
-                (drop)
             )
         )
     "#;
@@ -570,23 +583,16 @@ mod host {
 
         let host_func_a = make_i32_inc_via_export_host_func(&mut runner, "b");
 
-        runner.run_test_expect_str_error(
-            &wat,
-            &[host_func_a.into()],
-            RE_ENTER_ON_CONTINUATION_ERROR,
-        );
+        let result = runner.run_test::<i32>(wat, &[host_func_a.into()]).unwrap();
+        assert_eq!(result, 123);
         Ok(())
     }
 
     #[test]
-    /// Similar to `call_host_from_continuation_nested_suspend_ok`. However,
-    /// we suspend to a tag that is only handled if we were to cross a host function
-    /// boundary.
-    /// This currently triggers the check that we must not re-enter wasm while
-    /// on a continuation (see wasmfx/wasmfxtime#109), but will most likely stay
-    /// forbidden if host calls acts as barriers for suspensions. In that case,
-    /// the test case will exhibit a case of suspending to an unhandled tag.
-    ///
+    /// Similar to `call_host_from_continuation_nested_suspend_ok`. However, we
+    /// suspend to a tag that is only handled if we were to cross a host
+    /// function boundary. That's not allowed, so we effectively suspend with an
+    /// unhandled tag.
     /// Call chain:
     /// $entry -resume-> $a -call-> $host_func_a -call-> $b -resume-> $c
     fn call_host_from_continuation_nested_suspend_unhandled() -> Result<()> {
@@ -613,28 +619,60 @@ mod host {
             )
 
 
-            (func $entry (export "entry")
+            (func $entry (export "entry") (result i32)
                 (block $h (result (ref $ct))
-                    (return
-                        (resume $ct
-                            (on $t $h)
-                            (i32.const 123)
-                            (cont.new $ct (ref.func $a))))
+                    (resume $ct
+                        (on $t $h)
+                        (i32.const 122)
+                        (cont.new $ct (ref.func $a)))
+                    (return)
                 )
-                (drop)
+                (unreachable)
             )
         )
     "#;
 
         let mut runner = Runner::new();
 
-        let host_func_a = make_i32_inc_via_export_host_func(&mut runner, "b");
+        let host_func_a = Func::new(
+            &mut runner.store,
+            FuncType::new(&runner.engine, vec![ValType::I32], vec![ValType::I32]),
+            |mut caller, args: &[Val], results: &mut [Val]| {
+                let export = caller
+                    .get_export("b")
+                    .ok_or(anyhow::anyhow!("could not get export"))?;
+                let func = export
+                    .into_func()
+                    .ok_or(anyhow::anyhow!("export is not a Func"))?;
 
-        runner.run_test_expect_str_error(
-            &wat,
-            &[host_func_a.into()],
-            RE_ENTER_ON_CONTINUATION_ERROR,
+                let func_typed = func.typed::<i32, i32>(caller.as_context())?;
+                let arg = args[0].unwrap_i32();
+                let res = func_typed.call(caller.as_context_mut(), arg + 1);
+                let err = res.unwrap_err();
+
+                assert!(err.root_cause().is::<Trap>());
+                assert_eq!(*err.downcast_ref::<Trap>().unwrap(), Trap::UnhandledTag);
+
+                let trace = err.downcast_ref::<WasmBacktrace>().unwrap();
+                let frames: Vec<_> = trace
+                    .frames()
+                    .iter()
+                    .map(|frame| {
+                        frame
+                            .func_name()
+                            .expect("Expecting all functions in actual backtrace to have names")
+                    })
+                    .rev()
+                    .collect();
+                assert_eq!(frames, &["entry", "a", "b", "c"]);
+
+                results[0] = Val::I32(arg + 1);
+                Ok(())
+            },
         );
+
+        let result = runner.run_test::<i32>(wat, &[host_func_a.into()]).unwrap();
+        assert_eq!(result, 123);
         Ok(())
     }
 }
@@ -642,6 +680,20 @@ mod host {
 mod traps {
     use super::test_utils::*;
     use wasmtime::*;
+
+    fn backtrace_from_err(err: &Error) -> impl Iterator<Item = &'_ str> {
+        let trace = err.downcast_ref::<WasmBacktrace>().unwrap();
+
+        trace
+            .frames()
+            .iter()
+            .map(|frame| {
+                frame
+                    .func_name()
+                    .expect("Expecting all functions in actual backtrace to have names")
+            })
+            .rev()
+    }
 
     /// Runs the module given as `wat`. We expect execution to cause the
     /// `expected_trap` and a backtrace containing exactly the function names
@@ -655,17 +707,7 @@ mod traps {
         assert!(err.root_cause().is::<Trap>());
         assert_eq!(*err.downcast_ref::<Trap>().unwrap(), expected_trap);
 
-        let trace = err.downcast_ref::<WasmBacktrace>().unwrap();
-
-        let actual_func_name_it = trace
-            .frames()
-            .iter()
-            .map(|frame| {
-                frame
-                    .func_name()
-                    .expect("Expecting all functions in actual backtrace to have names")
-            })
-            .rev();
+        let actual_func_name_it = backtrace_from_err(&err);
 
         let expected_func_name_it = expected_backtrace.iter().copied();
         assert!(actual_func_name_it.eq(expected_func_name_it));
@@ -1096,8 +1138,220 @@ mod traps {
         Ok(())
     }
 
+    // Test that we get correct backtraces after trapping inside a continuation
+    // after re-entering Wasm while already inside a different continuation.
     #[test]
-    /// Tests that we get correct panic payloads  if we panic deep inside multiple
+    fn trap_after_re_enter() -> Result<()> {
+        let wat = r#"
+        (module
+            (type $ft (func))
+            (type $ct (cont $ft))
+            (tag $t)
+
+            (import "" "" (func $host_func_a))
+            (import "" "" (func $host_func_b))
+
+            (func $entry (export "entry")
+                (call $a)
+            )
+
+            (func $a (export "a")
+                (resume $ct (cont.new $ct (ref.func $b)))
+            )
+
+            (func $b (export "b")
+                 (call $host_func_a)
+            )
+
+            (func $c (export "c")
+                (resume $ct (cont.new $ct (ref.func $d)))
+
+            )
+
+            (func $d (export "d")
+                (i32.const 0)
+                (call $host_func_b)
+                (drop)
+            )
+
+            (func $e (export "e")
+                (resume $ct (cont.new $ct (ref.func $f)))
+            )
+
+           (func $f  (export "f")
+               (unreachable)
+           )
+        )
+       "#;
+
+        let mut runner = Runner::new();
+        let host_func_a = make_call_export_host_func(&mut runner, "c");
+        let host_func_b = make_call_export_host_func(&mut runner, "e");
+
+        let result = runner.run_test::<()>(wat, &[host_func_a.into(), host_func_b.into()]);
+        let err = result.unwrap_err();
+
+        assert!(err.root_cause().is::<Trap>());
+        assert_eq!(
+            *err.downcast_ref::<Trap>().unwrap(),
+            Trap::UnreachableCodeReached
+        );
+
+        let backtrace = backtrace_from_err(&err);
+        assert!(backtrace.eq(["entry", "a", "b", "c", "d", "e", "f"].into_iter()));
+
+        Ok(())
+    }
+
+    // Tests that we properly clean up the instance/store after trapping while
+    // running inside a continuation: There must be no leftovers of the old
+    // stack chain if we re-use the instance later.
+    #[test]
+    fn reuse_instance_after_trap1() -> Result<()> {
+        let wat = r#"
+        (module
+            (type $ft (func))
+            (type $ct (cont $ft))
+
+            (tag $t)
+
+            (func $entry1 (export "entry1")
+              (local $c (ref $ct))
+              (local.set $c (cont.new $ct (ref.func $a)))
+              (block $handlet (result (ref $ct))
+                (resume $ct (on $t $handlet) (local.get $c))
+                (return)
+              )
+              (unreachable)
+            )
+
+            (func $a (export "a")
+              (unreachable)
+            )
+
+            (func $entry2 (export "entry2")
+              (suspend $t)
+            )
+        )
+        "#;
+
+        let mut config = Config::default();
+        config.wasm_function_references(true);
+        config.wasm_exceptions(true);
+        config.wasm_stack_switching(true);
+
+        let engine = Engine::new(&config).unwrap();
+        let mut store = Store::<()>::new(&engine, ());
+        let module = Module::new(&engine, wat)?;
+
+        let instance = Instance::new(&mut store, &module, &[])?;
+
+        // We execute entry 1, which traps with (unreachable) while $a is running inside a continuation.
+        let entry1 = instance.get_typed_func::<(), ()>(&mut store, "entry1")?;
+        let result1 = entry1.call(&mut store, ());
+        let err1 = result1.expect_err("Was expecting wasm execution to yield error");
+        assert!(err1.root_cause().is::<Trap>());
+        assert_eq!(
+            *err1.downcast_ref::<Trap>().unwrap(),
+            Trap::UnreachableCodeReached
+        );
+        let trace1 = backtrace_from_err(&err1);
+        assert!(trace1.eq(["entry1", "a"].into_iter()));
+
+        // Now we re-enter the instance and immediately suspend with tag $t.
+        // This should trap, as there is no handler for it.
+        // In particular, we must not try to use the handler for $t installed by $entry1.
+        let entry2 = instance.get_typed_func::<(), ()>(&mut store, "entry2")?;
+        let result2 = entry2.call(&mut store, ());
+        let err2 = result2.unwrap_err();
+        assert!(err2.root_cause().is::<Trap>());
+        assert_eq!(*err2.downcast_ref::<Trap>().unwrap(), Trap::UnhandledTag);
+        let trace2 = backtrace_from_err(&err2);
+        assert!(trace2.eq(["entry2"].into_iter()));
+
+        Ok(())
+    }
+
+    // Tests that we properly clean up the instance/store after trapping while
+    // running inside a continuation:
+    // This test is similar to `reuse_instance_after_trap1`, but here we don't
+    // trap the second time we enter the instance.
+    #[test]
+    fn reuse_instance_after_trap2() -> Result<()> {
+        let wat = r#"
+        (module
+            (type $ft (func))
+            (type $ct (cont $ft))
+
+            (tag $t)
+
+            (func $entry1 (export "entry1")
+              (local $c (ref $ct))
+              (local.set $c (cont.new $ct (ref.func $a)))
+              (block $handlet (result (ref $ct))
+                (resume $ct (on $t $handlet) (local.get $c))
+                (return)
+              )
+              (unreachable)
+            )
+
+            (func $entry2 (export "entry2") (param $x i32) (result i32)
+              (local $c (ref $ct))
+              (local.set $c (cont.new $ct (ref.func $b)))
+              (block $handlet (result (ref $ct))
+                (resume $ct (on $t $handlet) (local.get $c))
+                (unreachable)
+              )
+              ;; note that we don't run the continuation to completion.
+              (drop)
+              (i32.add (local.get $x) (i32.const 1))
+            )
+
+            (func $a (export "a")
+              (unreachable)
+            )
+
+            (func $b (export "b")
+              (suspend $t)
+            )
+
+        )
+        "#;
+
+        let mut config = Config::default();
+        config.wasm_function_references(true);
+        config.wasm_exceptions(true);
+        config.wasm_stack_switching(true);
+
+        let engine = Engine::new(&config).unwrap();
+        let mut store = Store::<()>::new(&engine, ());
+        let module = Module::new(&engine, wat)?;
+
+        let instance = Instance::new(&mut store, &module, &[])?;
+
+        // We execute entry 1, which traps with (unreachable) while $a is running inside a continuation.
+        let entry1 = instance.get_typed_func::<(), ()>(&mut store, "entry1")?;
+        let result1 = entry1.call(&mut store, ());
+        let err1 = result1.expect_err("Was expecting wasm execution to yield error");
+        assert!(err1.root_cause().is::<Trap>());
+        assert_eq!(
+            *err1.downcast_ref::<Trap>().unwrap(),
+            Trap::UnreachableCodeReached
+        );
+        let trace1 = backtrace_from_err(&err1);
+        assert!(trace1.eq(["entry1", "a"].into_iter()));
+
+        // Now we re-enter the instance and succesfully run some stack-switchy code.
+        let entry1 = instance.get_typed_func::<i32, i32>(&mut store, "entry2")?;
+        let result1 = entry1.call(&mut store, 122);
+        let result_value = result1.unwrap();
+        assert_eq!(result_value, 123);
+
+        Ok(())
+    }
+
+    #[test]
+    /// Tests that we get correct panic payloads if we panic deep inside multiple
     /// continuations. Note that wasmtime does not create its own backtraces for panics.
     fn panic_in_continuation() -> Result<()> {
         let wat = r#"

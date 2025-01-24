@@ -318,18 +318,8 @@ pub struct StoreOpaque {
     engine: Engine,
     runtime_limits: VMRuntimeLimits,
 
-    // Stack information used by stack switching instructions. See
-    // documentation on `wasmtime_environ::stack_switching::StackChain` for details.
-    //
-    // Note that in terms of (interior) mutability, we generally follow the same
-    // pattern as the `VMRuntimeLimits` object above: In the case of
-    // `StackLimits`, all of its fields are `UnsafeCell`s. For the stack chain,
-    // we wrap the entire `StackChainObject` in an `UnsafeCell`.
-    //
-    // Finally, observe that the stack chain adds more internal self references:
-    // The stack chain always contains a `MainStack` element at the ends which
-    // has a pointer to the `main_stack_limits` field of the same `StoreOpaque`.
-    main_stack_information: CommonStackInformation,
+    // Stack information used by stack switching instructions. See documentation
+    // on `wasmtime_environ::stack_switching::StackChain` for details.
     stack_chain: StackChainCell,
 
     instances: Vec<StoreInstance>,
@@ -564,7 +554,6 @@ impl<T> Store<T> {
                 _marker: marker::PhantomPinned,
                 engine: engine.clone(),
                 runtime_limits: Default::default(),
-                main_stack_information: CommonStackInformation::running_default(),
                 stack_chain: StackChainCell::absent(),
                 instances: Vec::new(),
                 #[cfg(feature = "component-model")]
@@ -656,15 +645,6 @@ impl<T> Store<T> {
                 instance
             }
         };
-
-        unsafe {
-            // NOTE(frank-emrich) The setup code for `default_caller` above
-            // together with the comment on the `PhantomPinned` marker inside
-            // `Store` indicates that `inner` is supposed to be at a stable
-            // location at this point, without explicitly being `Pin`-ed.
-            let stack_chain = inner.stack_chain.0.get();
-            *stack_chain = StackChain::MainStack(inner.main_stack_information());
-        }
 
         Self {
             inner: ManuallyDrop::new(inner),
@@ -1958,13 +1938,6 @@ impl StoreOpaque {
     }
 
     #[inline]
-    pub fn main_stack_information(&self) -> *mut CommonStackInformation {
-        // NOTE(frank-emrich) This looks dogdy, but follows the same pattern as
-        // `vmruntime_limits()` above.
-        &self.main_stack_information as *const CommonStackInformation as *mut CommonStackInformation
-    }
-
-    #[inline]
     pub fn stack_chain(&self) -> *mut StackChainCell {
         // NOTE(frank-emrich) This looks dogdy, but follows the same pattern as
         // `vmruntime_limits()` above.
@@ -2898,13 +2871,6 @@ impl Drop for StoreOpaque {
                     allocator.decrement_component_instance_count();
                 }
             }
-
-            // FIXME(frank-emrich) The handlers can only be non-empty at this
-            // point if we trapped while inside a continuation (i.e., the main
-            // stack was a parent of the trapping continuation). Once we
-            // properly clean up the Store/Instance at that point (see issue
-            // #253), this `clear` should no longer be necessary.
-            self.main_stack_information.handlers.clear();
 
             // See documentation for these fields on `StoreOpaque` for why they
             // must be dropped in this order.

@@ -396,7 +396,7 @@ pub(crate) mod stack_switching_helpers {
         }
 
         /// Stores the parent of this continuation, which may either be another
-        /// continuation or the main stack. It is therefore represented as a
+        /// continuation or the initial stack. It is therefore represented as a
         /// `StackChain` element.
         #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         pub fn set_parent_stack_chain<'a>(
@@ -410,7 +410,7 @@ pub(crate) mod stack_switching_helpers {
         }
 
         /// Loads the parent of this continuation, which may either be another
-        /// continuation or the main stack. It is therefore represented as a
+        /// continuation or the initial stack. It is therefore represented as a
         /// `StackChain` element.
         #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         pub fn get_parent_stack_chain<'a>(
@@ -808,7 +808,7 @@ pub(crate) mod stack_switching_helpers {
         }
 
         /// Returns the stack chain saved in this `VMContext`. Note that the
-        /// head of the list is the actively running stack (main stack or
+        /// head of the list is the actively running stack (initial stack or
         /// continuation).
         pub fn load_stack_chain<'a>(
             &self,
@@ -930,7 +930,7 @@ pub(crate) mod stack_switching_helpers {
             emit_debug_assert_ne!(env, builder, self.discriminant, discriminant);
         }
 
-        pub fn is_main_stack<'a>(
+        pub fn is_initial_stack<'a>(
             &self,
             _env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
@@ -938,7 +938,7 @@ pub(crate) mod stack_switching_helpers {
             builder.ins().icmp_imm(
                 IntCC::Equal,
                 self.discriminant,
-                super::stack_switching_environ::STACK_CHAIN_MAIN_STACK_DISCRIMINANT as i64,
+                super::stack_switching_environ::STACK_CHAIN_INITIAL_STACK_DISCRIMINANT as i64,
             )
         }
 
@@ -1033,9 +1033,9 @@ pub(crate) mod stack_switching_helpers {
             self.payload
         }
 
-        /// Must only be called if `self` represents a `MainStack` or `Continuation` variant.
-        /// Returns a pointer to the associated `CommonStackInformation` object either stored in
-        /// the `MainStackInfo` object (if `MainStack`) or the `VMContRef` (if `Continuation`)
+        /// Must only be called if `self` represents a `InitialStack` or
+        /// `Continuation` variant. Returns a pointer to the associated
+        /// `CommonStackInformation` object.
         pub fn get_common_stack_information<'a>(
             &self,
             env: &mut crate::func_environ::FuncEnvironment<'a>,
@@ -1045,7 +1045,7 @@ pub(crate) mod stack_switching_helpers {
 
             self.assert_not_absent(env, builder);
 
-            // `self` corresponds to a StackChain::MainStack or
+            // `self` corresponds to a StackChain::InitialStack or
             // StackChain::Continuation.
             // In both cases, the payload is a pointer.
             let address = self.payload;
@@ -1054,7 +1054,7 @@ pub(crate) mod stack_switching_helpers {
             // 1. A `VMContRef` struct (in the case of a
             // StackChain::Continuation)
             // 2. A CommonStackInformation struct (in the case of
-            // StackChain::MainStack)
+            // StackChain::InitialStack)
             //
             // Since a `VMContRef` starts with an (inlined) CommonStackInformation
             // object at offset 0, we actually have in both cases that `ptr` is
@@ -1431,7 +1431,7 @@ pub(crate) fn tag_address<'a>(
 /// We trap if no handler was found.
 ///
 /// The returned values are:
-/// 1. The stack (continuation or main stack, represented as a StackChain) in
+/// 1. The stack (continuation or initial stack, represented as a StackChain) in
 ///    whose handler list we found the tag (i.e., the stack that performed the
 ///    resume instruction that installed handler for the tag).
 /// 2. The continuation whose parent is the stack mentioned in 1.
@@ -1441,7 +1441,7 @@ pub(crate) fn tag_address<'a>(
 /// follows:
 ///
 /// chain_link = start
-/// while !chain_link.is_main_stack() {
+/// while !chain_link.is_initial_stack() {
 ///   contref = chain_link.get_contref()
 ///   parent_link = contref.parent
 ///   parent_csi = parent_link.get_common_stack_information();
@@ -1489,9 +1489,9 @@ fn search_handler<'a>(
         let raw_parts = builder.block_params(handle_link);
         let chain_link =
             helpers::StackChain::from_raw_parts([raw_parts[0], raw_parts[1]], env.pointer_type());
-        let is_main_stack = chain_link.is_main_stack(env, builder);
+        let is_initial_stack = chain_link.is_initial_stack(env, builder);
         builder.ins().brif(
-            is_main_stack,
+            is_initial_stack,
             on_no_match,
             &[],
             begin_search_handler_list,
@@ -1911,7 +1911,7 @@ pub(crate) fn translate_resume<'a>(
         // about the now active continuation from the VMContext.
         let new_stack_chain = vmctx.load_stack_chain(env, builder);
 
-        // Now the parent contref (or main stack) is active again
+        // Now the parent contref (or initial stack) is active again
         vmctx.store_stack_chain(env, builder, &original_stack_chain);
         parent_csi.set_state(env, builder, stack_switching_environ::State::Running);
 
@@ -2128,7 +2128,7 @@ pub(crate) fn translate_suspend<'a>(
     );
 
     // If we get here, the search_handler logic succeeded (i.e., did not trap).
-    // Thus, there is at least one parent, so we are not on the main stack.
+    // Thus, there is at least one parent, so we are not on the initial stack.
     // Can therefore extract continuation directly.
     let active_contref = active_stack_chain.unchecked_get_continuation(env, builder);
     let active_contref = helpers::VMContRef::new(active_contref);
@@ -2256,7 +2256,7 @@ pub(crate) fn translate_switch<'a>(
         let mut last_ancestor = helpers::VMContRef::new(last_ancestor);
 
         // If we get here, the search_handler logic succeeded (i.e., did not trap).
-        // Thus, there is at least one parent, so we are not on the main stack.
+        // Thus, there is at least one parent, so we are not on the initial stack.
         // Can therefore extract continuation directly.
         let switcher_contref = active_stack_chain.unchecked_get_continuation(env, builder);
         let mut switcher_contref = helpers::VMContRef::new(switcher_contref);

@@ -83,7 +83,7 @@ pub mod imp {
         pub common_stack_information: CommonStackInformation,
 
         /// The parent of this continuation, which may be another continuation, the
-        /// main stack, or absent (in case of a suspended continuation).
+        /// initial stack, or absent (in case of a suspended continuation).
         pub parent_chain: StackChain,
 
         /// Only used if `common_stack_information.state` is `Suspended` or `Fresh`. In
@@ -331,94 +331,106 @@ pub mod stack_chain {
     use wasmtime_environ::stack_switching::CommonStackInformation;
     pub use wasmtime_environ::stack_switching::StackLimits;
 
-    /// This type represents a linked lists of stacks, additionally associating a
-    /// `StackLimits` object with each element of the list. Here, a "stack" is
-    /// either a continuation or the main stack. Note that the linked list character
-    /// arises from the fact that `StackChain::Continuation` variants have a pointer
-    /// to have `VMContRef`, which in turn has a `parent_chain` value of
-    /// type `StackChain`.
+    /// This type represents a linked lists ("chain") of stacks, where the a
+    /// node's successor denotes its parent.
+    /// A additionally, a `CommonStackInformation` object is associated with
+    /// each stack in the list.
+    /// Here, a "stack" is one of the following:
+    /// - A continuation (i.e., created with cont.new).
+    /// - The initial stack. This is the stack that we were on when entering
+    ///   Wasm (i.e., when executing
+    ///   `crate::runtime::func::invoke_wasm_and_catch_traps`).
+    ///   This stack never has a parent.
+    ///   In terms of the memory allocation that this stack resides on, it will
+    ///   usually be the main stack, but doesn't have to: If we are running
+    ///   inside a continuation while executing a host call, which in turn
+    ///   re-renters Wasm, the initial stack is actually the stack of that
+    ///   continuation.
     ///
-    /// There are generally two uses of such chains:
+    /// Note that the linked list character of `StackChain` arises from the fact
+    /// that `StackChain::Continuation` variants have a pointer to a
+    /// `VMContRef`, which in turn has a `parent_chain` value of type
+    /// `StackChain`. This is how the stack chain reflects the parent-child
+    /// relationships between continuations/stacks. This also shows how the
+    /// initial stack (mentioned above) cannot have a parent.
     ///
-    /// 1. The `stack_switching_stack_chain` field in the VMContext
-    /// contains such a chain of stacks, where the head of the list
-    /// denotes the stack that is currently executing (either a
-    /// continuation or the main stack), as well as the parent stacks,
-    /// in case of a continuation currently running. Note that in this
-    /// case, the linked list must contains 0 or more `Continuation`
-    /// elements, followed by a final `MainStack` element. In
-    /// particular, this list always ends with `MainStack` and never
-    /// contains an `Absent` variant.
+    /// There are generally two uses of `StackChain`:
     ///
-    /// 2. When a continuation is suspended, its chain of parents
-    /// eventually ends with an `Absent` variant in its `parent_chain`
-    /// field. Note that a suspended continuation never appears in the
-    /// stack chain in the VMContext!
+    /// 1. The `stack_chain` field in the `StoreOpaque` contains such a
+    /// chain of stacks, where the head of the list denotes the stack that is
+    /// currently executing (either a continuation or the initial stack). Note
+    /// that in this case, the linked list must contain 0 or more `Continuation`
+    /// elements, followed by a final `InitialStack` element. In particular,
+    /// this list always ends with `InitialStack` and never contains an `Absent`
+    /// variant.
+    ///
+    /// 2. When a continuation is suspended, its chain of parents eventually
+    /// ends with an `Absent` variant in its `parent_chain` field. Note that a
+    /// suspended continuation never appears in the stack chain in the
+    /// VMContext!
     ///
     ///
-    /// As mentioned before, each stack in a `StackChain` has a
-    /// corresponding `StackLimits` object. For continuations, this is
-    /// stored in the `limits` fields of the corresponding
-    /// `VMContRef`. For the main stack, the `MainStack` variant
-    /// contains a pointer to the `stack_switching_main_stack_limits`
-    /// field of the VMContext.
+    /// As mentioned before, each stack in a `StackChain` has a corresponding
+    /// `CommonStackInformation` object. For continuations, this is stored in
+    /// the `common_stack_information` field of the corresponding `VMContRef`.
+    /// For the initial stack, the `InitialStack` variant contains a pointer to
+    /// a `CommonStackInformation`. The latter will be allocated allocated on
+    /// the stack frame that executed by `invoke_wasm_and_catch_traps`.
     ///
     /// The following invariants hold for these `StackLimits` objects,
     /// and the data in `VMRuntimeLimits`.
     ///
-    /// Currently executing stack: For the currently executing stack
-    /// (i.e., the stack that is at the head of the VMContext's
-    /// `stack_switching_stack_chain` list), the associated
-    /// `StackLimits` object contains stale/undefined data. Instead,
-    /// the live data describing the limits for the currently
-    /// executing stack is always maintained in
-    /// `VMRuntimeLimits`. Note that as a general rule independently
-    /// from any execution of continuations, the `last_wasm_exit*`
-    /// fields in the `VMRuntimeLimits` contain undefined values while
-    /// executing wasm.
+    /// Currently executing stack: For the currently executing stack (i.e., the
+    /// stack that is at the head of the store's `stack_chain` list), the
+    /// associated `StackLimits` object contains stale/undefined data. Instead,
+    /// the live data describing the limits for the currently executing stack is
+    /// always maintained in `VMRuntimeLimits`. Note that as a general rule
+    /// independently from any execution of continuations, the `last_wasm_exit*`
+    /// fields in the `VMRuntimeLimits` contain undefined values while executing
+    /// wasm.
     ///
-    /// Parents of currently executing stack: For stacks that appear
-    /// in the tail of the VMContext's `stack_switching_stack_chain`
-    /// list (i.e., stacks that are not currently executing
-    /// themselves, but are a parent of the currently executing
+    /// Parents of currently executing stack: For stacks that appear in the tail
+    /// of the store's `stack_chain` list (i.e., stacks that are not currently
+    /// executing themselves, but are an ancestor of the currently executing
     /// stack), we have the following: All the fields in the stack's
-    /// StackLimits are valid, describing the stack's stack limit, and
-    /// pointers where executing for that stack entered and exited
-    /// WASM.
+    /// `StackLimits` are valid, describing the stack's stack limit, and
+    /// pointers where executing for that stack entered and exited WASM.
     ///
-    /// Suspended continuations: For suspended continuations
-    /// (including their parents), we have the following. Note that
-    /// the main stack can never be in this state. The `stack_limit`
-    /// and `last_enter_wasm_sp` fields of the corresponding
-    /// `StackLimits` object contain valid data, while the
-    /// `last_exit_wasm_*` fields contain arbitrary values.  There is
-    /// only one exception to this: Note that a continuation that has
-    /// been created with cont.new, but never been resumed so far, is
-    /// considered "suspended". However, its `last_enter_wasm_sp`
-    /// field contains undefined data. This is justified, because when
-    /// resume-ing a continuation for the first time, a native-to-wasm
-    /// trampoline is called, which sets up the `last_wasm_entry_sp`
-    /// in the `VMRuntimeLimits` with the correct value, thus
-    /// restoring the necessary invariant.
+    /// Suspended continuations: For suspended continuations (including their
+    /// ancestors), we have the following. Note that the initial stack can never
+    /// be in this state. The `stack_limit` and `last_enter_wasm_sp` fields of
+    /// the corresponding `StackLimits` object contain valid data, while the
+    /// `last_exit_wasm_*` fields contain arbitrary values. There is only one
+    /// exception to this: Note that a continuation that has been created with
+    /// cont.new, but never been resumed so far, is considered "suspended".
+    /// However, its `last_enter_wasm_sp` field contains undefined data. This is
+    /// justified, because when resume-ing a continuation for the first time, a
+    /// native-to-wasm trampoline is called, which sets up the
+    /// `last_wasm_entry_sp` in the `VMRuntimeLimits` with the correct value,
+    /// thus restoring the necessary invariant.
     #[derive(Debug, Clone, PartialEq)]
     #[repr(usize, C)]
     pub enum StackChain {
-        /// If stored in the VMContext, used to indicate that the MainStack entry
-        /// has not been set, yet. If stored in a VMContRef's parent_chain
-        /// field, means that there is currently no parent.
+        /// For suspended continuations, denotes the end of their chain of
+        /// ancestors.
         Absent = wasmtime_environ::stack_switching::STACK_CHAIN_ABSENT_DISCRIMINANT,
-        /// Represents the main stack.
-        MainStack(*mut CommonStackInformation) =
-            wasmtime_environ::stack_switching::STACK_CHAIN_MAIN_STACK_DISCRIMINANT,
+        /// Represents the initial stack (i.e., where we entered Wasm from the
+        /// host by executing
+        /// `crate::runtime::func::invoke_wasm_and_catch_traps`). Therefore, it
+        /// does not have a parent. The `CommonStackInformation` that this
+        /// variant points to is stored in the stack frame of
+        /// `invoke_wasm_and_catch_traps`.
+        InitialStack(*mut CommonStackInformation) =
+            wasmtime_environ::stack_switching::STACK_CHAIN_INITIAL_STACK_DISCRIMINANT,
         /// Represents a continuation's stack.
         Continuation(*mut VMContRef) =
             wasmtime_environ::stack_switching::STACK_CHAIN_CONTINUATION_DISCRIMINANT,
     }
 
     impl StackChain {
-        /// Indicates if `self` is a `MainStack` variant.
-        pub fn is_main_stack(&self) -> bool {
-            matches!(self, StackChain::MainStack(_))
+        /// Indicates if `self` is a `InitialStack` variant.
+        pub fn is_initial_stack(&self) -> bool {
+            matches!(self, StackChain::InitialStack(_))
         }
 
         /// Returns an iterator over the continuations in this chain.
@@ -459,7 +471,7 @@ pub mod stack_chain {
 
         fn next(&mut self) -> Option<Self::Item> {
             match self.0 {
-                StackChain::Absent | StackChain::MainStack(_) => None,
+                StackChain::Absent | StackChain::InitialStack(_) => None,
                 StackChain::Continuation(ptr) => {
                     let continuation = unsafe { ptr.as_mut().unwrap() };
                     self.0 = continuation.parent_chain.clone();
@@ -475,7 +487,7 @@ pub mod stack_chain {
         fn next(&mut self) -> Option<Self::Item> {
             match self.0 {
                 StackChain::Absent => None,
-                StackChain::MainStack(csi) => {
+                StackChain::InitialStack(csi) => {
                     let stack_limits = unsafe { &mut (*csi).limits } as *mut StackLimits;
                     self.0 = StackChain::Absent;
                     Some(stack_limits)
