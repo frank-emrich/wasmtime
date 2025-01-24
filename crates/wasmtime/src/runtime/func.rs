@@ -1622,23 +1622,29 @@ pub(crate) fn invoke_wasm_and_catch_traps<T>(
         if let Err(trap) = store.0.call_hook(CallHook::CallingWasm) {
             return Err(trap);
         }
-        let result = crate::runtime::vm::catch_traps(store, closure);
+        let result = crate::runtime::vm::catch_traps(store, &previous_runtime_state, closure);
         std::mem::drop(previous_runtime_state);
         store.0.call_hook(CallHook::ReturningFromWasm)?;
         result.map_err(|t| crate::trap::from_runtime_box(store.0, t))
     }
 }
 
-struct RuntimeState {
-    stack_limit: Option<usize>,
-    last_wasm_exit_pc: usize,
-    last_wasm_exit_fp: usize,
-    last_wasm_entry_fp: usize,
+/// TODO
+pub struct RuntimeState {
+    /// TODO
+    pub stack_limit: Option<usize>,
+    /// TODO
+    pub last_wasm_exit_pc: usize,
+    /// TODO
+    pub last_wasm_exit_fp: usize,
+    /// TODO
+    pub last_wasm_entry_fp: usize,
 
     runtime_limits: *const VMRuntimeLimits,
 }
 
 impl RuntimeState {
+    /// TODO
     pub fn enter_wasm<T>(store: &mut StoreContextMut<'_, T>) -> Self {
         let stack_limit;
 
@@ -1714,6 +1720,12 @@ impl RuntimeState {
             },
             None => (),
         };
+
+        unsafe {
+            *(*self.runtime_limits).last_wasm_exit_fp.get() = self.last_wasm_exit_fp;
+            *(*self.runtime_limits).last_wasm_exit_pc.get() = self.last_wasm_exit_pc;
+            *(*self.runtime_limits).last_wasm_entry_fp.get() = self.last_wasm_entry_fp;
+        }
     }
 }
 
