@@ -484,7 +484,7 @@ mod host {
     /// allowed in the future.
     /// Call chain:
     /// $entry -resume-> $a -call-> $host_func_a -call-> $b
-    fn re_enter_wasm_bad() -> Result<()> {
+    fn re_enter_wasm_ok3() -> Result<()> {
         let wat = r#"
         (module
             (type $ft (func (param i32) (result i32)))
@@ -503,9 +503,8 @@ mod host {
             )
 
 
-            (func $entry (export "entry")
+            (func $entry (export "entry") (result i32)
                 (resume $ct (i32.const 120) (cont.new $ct (ref.func $a)))
-                (drop)
             )
         )
     "#;
@@ -513,11 +512,8 @@ mod host {
 
         let host_func_a = make_i32_inc_via_export_host_func(&mut runner, "b");
 
-        runner.run_test_expect_str_error(
-            &wat,
-            &[host_func_a.into()],
-            RE_ENTER_ON_CONTINUATION_ERROR,
-        );
+        let result = runner.run_test::<i32>(wat, &[host_func_a.into()]).unwrap();
+        assert_eq!(result, 123);
         Ok(())
     }
 
@@ -559,9 +555,8 @@ mod host {
             )
 
 
-            (func $entry (export "entry")
+            (func $entry (export "entry") (result i32)
                 (resume $ct (i32.const 120) (cont.new $ct (ref.func $a)))
-                (drop)
             )
         )
     "#;
@@ -570,11 +565,8 @@ mod host {
 
         let host_func_a = make_i32_inc_via_export_host_func(&mut runner, "b");
 
-        runner.run_test_expect_str_error(
-            &wat,
-            &[host_func_a.into()],
-            RE_ENTER_ON_CONTINUATION_ERROR,
-        );
+        let result = runner.run_test::<i32>(wat, &[host_func_a.into()]).unwrap();
+        assert_eq!(result, 123);
         Ok(())
     }
 
@@ -613,28 +605,60 @@ mod host {
             )
 
 
-            (func $entry (export "entry")
+            (func $entry (export "entry") (result i32)
                 (block $h (result (ref $ct))
-                    (return
-                        (resume $ct
-                            (on $t $h)
-                            (i32.const 123)
-                            (cont.new $ct (ref.func $a))))
+                    (resume $ct
+                        (on $t $h)
+                        (i32.const 122)
+                        (cont.new $ct (ref.func $a)))
+                    (return)
                 )
-                (drop)
+                (unreachable)
             )
         )
     "#;
 
         let mut runner = Runner::new();
 
-        let host_func_a = make_i32_inc_via_export_host_func(&mut runner, "b");
+        let host_func_a = Func::new(
+            &mut runner.store,
+            FuncType::new(&runner.engine, vec![ValType::I32], vec![ValType::I32]),
+            |mut caller, args: &[Val], results: &mut [Val]| {
+                let export = caller
+                    .get_export("b")
+                    .ok_or(anyhow::anyhow!("could not get export"))?;
+                let func = export
+                    .into_func()
+                    .ok_or(anyhow::anyhow!("export is not a Func"))?;
 
-        runner.run_test_expect_str_error(
-            &wat,
-            &[host_func_a.into()],
-            RE_ENTER_ON_CONTINUATION_ERROR,
+                let func_typed = func.typed::<i32, i32>(caller.as_context())?;
+                let arg = args[0].unwrap_i32();
+                let res = func_typed.call(caller.as_context_mut(), arg + 1);
+                let err = res.unwrap_err();
+
+                assert!(err.root_cause().is::<Trap>());
+                assert_eq!(*err.downcast_ref::<Trap>().unwrap(), Trap::UnhandledTag);
+
+                let trace = err.downcast_ref::<WasmBacktrace>().unwrap();
+                let frames: Vec<_> = trace
+                    .frames()
+                    .iter()
+                    .map(|frame| {
+                        frame
+                            .func_name()
+                            .expect("Expecting all functions in actual backtrace to have names")
+                    })
+                    .rev()
+                    .collect();
+                assert_eq!(frames, &["entry", "a", "b", "c"]);
+
+                results[0] = Val::I32(arg + 1);
+                Ok(())
+            },
         );
+
+        let result = runner.run_test::<i32>(wat, &[host_func_a.into()]).unwrap();
+        assert_eq!(result, 123);
         Ok(())
     }
 }

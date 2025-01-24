@@ -1600,25 +1600,6 @@ pub(crate) fn invoke_wasm_and_catch_traps<T>(
     closure: impl FnMut(*mut VMContext, Option<InterpreterRef<'_>>) -> bool,
 ) -> Result<()> {
     unsafe {
-        if crate::runtime::vm::head_state_inside_continuation() {
-            // We currently don't support (re-)entering Wasm while running
-            // inside a continuation/off the initial stack. The necessary
-            // bookeeping is not implemented.
-            //
-            // We check that we are not inside a continuation by inspecting this
-            // thread's chain of `CallThreadState`s, which is a linked list of
-            // all (nested) invocations of wasm (and certain host calls). If the
-            // head state is not on the initial stack, we fail below. Since we
-            // check this on every call to `invoke_wasm_and_catch_traps` and the
-            // latter function is the only place where we add elements to the
-            // `CallThreadState` list, it is sufficient to inspect the head of
-            // the list to ensure that none of the existing states are running
-            // inside a continuation.
-            return Err(anyhow::anyhow!(
-                "Re-entering wasm while already executing on a continuation stack"
-            ));
-        }
-
         let mut initial_stack_csi = CommonStackInformation::running_default();
         let previous_runtime_state = RuntimeEntryState::enter_wasm(store, &mut initial_stack_csi);
 

@@ -405,17 +405,6 @@ where
     };
 }
 
-/// Returns true if the first `CallThreadState` in this thread's chain is
-/// running inside a continuation.
-pub unsafe fn head_state_inside_continuation() -> bool {
-    tls::with(|head_state| {
-        head_state.map_or(false, |state| {
-            let stack_chain = &*state.stack_chain;
-            !stack_chain.is_initial_stack()
-        })
-    })
-}
-
 // Module to hide visibility of the `CallThreadState::prev` field and force
 // usage of its accessor methods.
 mod call_thread_state {
@@ -452,7 +441,7 @@ mod call_thread_state {
         // same store and `self.limits == self.prev.limits`) and we must to
         // maintain the list of contiguous-Wasm-frames stack regions for
         // backtracing purposes.
-        pub(crate) old_state: *const RuntimeEntryState,
+        old_state: *const RuntimeEntryState,
     }
 
     impl Drop for CallThreadState {
@@ -510,6 +499,11 @@ mod call_thread_state {
         /// Get the saved FP upon entry into Wasm for the previous `CallThreadState`.
         pub unsafe fn old_last_wasm_entry_fp(&self) -> usize {
             (&*self.old_state).last_wasm_entry_fp
+        }
+
+        /// Get the saved `StackChain` for the previous `CallThreadState`.
+        pub unsafe fn old_stack_chain(&self) -> StackChain {
+            (&*self.old_state).stack_chain.clone()
         }
 
         /// Get the previous `CallThreadState`.
