@@ -1208,6 +1208,153 @@ mod traps {
         Ok(())
     }
 
+    // Tests that we properly clean up the instance/store after trapping while
+    // running inside a continuation: There must be no leftovers of the old
+    // stack chain if we re-use the instance later.
+    #[test]
+    fn reuse_instance_after_trap1() -> Result<()> {
+        let wat = r#"
+        (module
+            (type $ft (func))
+            (type $ct (cont $ft))
+
+            (tag $t)
+
+            (func $entry1 (export "entry1")
+              (local $c (ref $ct))
+              (local.set $c (cont.new $ct (ref.func $a)))
+              (block $handlet (result (ref $ct))
+                (resume $ct (on $t $handlet) (local.get $c))
+                (return)
+              )
+              (unreachable)
+            )
+
+            (func $a (export "a")
+              (unreachable)
+            )
+
+            (func $entry2 (export "entry2")
+              (suspend $t)
+            )
+        )
+        "#;
+
+        let mut config = Config::default();
+        config.wasm_function_references(true);
+        config.wasm_exceptions(true);
+        config.wasm_stack_switching(true);
+
+        let engine = Engine::new(&config).unwrap();
+        let mut store = Store::<()>::new(&engine, ());
+        let module = Module::new(&engine, wat)?;
+
+        let instance = Instance::new(&mut store, &module, &[])?;
+
+        // We execute entry 1, which traps with (unreachable) while $a is running inside a continuation.
+        let entry1 = instance.get_typed_func::<(), ()>(&mut store, "entry1")?;
+        let result1 = entry1.call(&mut store, ());
+        let err1 = result1.expect_err("Was expecting wasm execution to yield error");
+        assert!(err1.root_cause().is::<Trap>());
+        assert_eq!(
+            *err1.downcast_ref::<Trap>().unwrap(),
+            Trap::UnreachableCodeReached
+        );
+        let trace1 = backtrace_from_err(&err1);
+        assert!(trace1.eq(["entry1", "a"].into_iter()));
+
+        // Now we re-enter the instance and immediately suspend with tag $t.
+        // This should trap, as there is no handler for it.
+        // In particular, we must not try to use the handler for $t installed by $entry1.
+        let entry2 = instance.get_typed_func::<(), ()>(&mut store, "entry2")?;
+        let result2 = entry2.call(&mut store, ());
+        let err2 = result2.unwrap_err();
+        assert!(err2.root_cause().is::<Trap>());
+        assert_eq!(*err2.downcast_ref::<Trap>().unwrap(), Trap::UnhandledTag);
+        let trace2 = backtrace_from_err(&err2);
+        assert!(trace2.eq(["entry2"].into_iter()));
+
+        Ok(())
+    }
+
+    // Tests that we properly clean up the instance/store after trapping while
+    // running inside a continuation:
+    // This test is similar to `reuse_instance_after_trap1`, but here we don't
+    // trap the second time we enter the instance.
+    #[test]
+    fn reuse_instance_after_trap2() -> Result<()> {
+        let wat = r#"
+        (module
+            (type $ft (func))
+            (type $ct (cont $ft))
+
+            (tag $t)
+
+            (func $entry1 (export "entry1")
+              (local $c (ref $ct))
+              (local.set $c (cont.new $ct (ref.func $a)))
+              (block $handlet (result (ref $ct))
+                (resume $ct (on $t $handlet) (local.get $c))
+                (return)
+              )
+              (unreachable)
+            )
+
+            (func $entry2 (export "entry2") (param $x i32) (result i32)
+              (local $c (ref $ct))
+              (local.set $c (cont.new $ct (ref.func $b)))
+              (block $handlet (result (ref $ct))
+                (resume $ct (on $t $handlet) (local.get $c))
+                (unreachable)
+              )
+              ;; note that we don't run the continuation to completion.
+              (drop)
+              (i32.add (local.get $x) (i32.const 1))
+            )
+
+            (func $a (export "a")
+              (unreachable)
+            )
+
+            (func $b (export "b")
+              (suspend $t)
+            )
+
+        )
+        "#;
+
+        let mut config = Config::default();
+        config.wasm_function_references(true);
+        config.wasm_exceptions(true);
+        config.wasm_stack_switching(true);
+
+        let engine = Engine::new(&config).unwrap();
+        let mut store = Store::<()>::new(&engine, ());
+        let module = Module::new(&engine, wat)?;
+
+        let instance = Instance::new(&mut store, &module, &[])?;
+
+        // We execute entry 1, which traps with (unreachable) while $a is running inside a continuation.
+        let entry1 = instance.get_typed_func::<(), ()>(&mut store, "entry1")?;
+        let result1 = entry1.call(&mut store, ());
+        let err1 = result1.expect_err("Was expecting wasm execution to yield error");
+        assert!(err1.root_cause().is::<Trap>());
+        assert_eq!(
+            *err1.downcast_ref::<Trap>().unwrap(),
+            Trap::UnreachableCodeReached
+        );
+        let trace1 = backtrace_from_err(&err1);
+        assert!(trace1.eq(["entry1", "a"].into_iter()));
+
+        // Now we re-enter the instance and succesfully run some stack-switchy code.
+        let entry1 = instance.get_typed_func::<i32, i32>(&mut store, "entry2")?;
+        let result1 = entry1.call(&mut store, 122);
+        let result_value = result1.unwrap();
+        assert_eq!(result_value, 123);
+
+        Ok(())
+    }
+
     #[test]
     /// Tests that we get correct panic payloads if we panic deep inside multiple
     /// continuations. Note that wasmtime does not create its own backtraces for panics.
