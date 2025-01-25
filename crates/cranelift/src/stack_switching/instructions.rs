@@ -930,7 +930,7 @@ pub(crate) mod stack_switching_helpers {
             emit_debug_assert_ne!(env, builder, self.discriminant, discriminant);
         }
 
-        pub fn is_main_stack<'a>(
+        pub fn is_initial_stack<'a>(
             &self,
             _env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
@@ -1441,7 +1441,7 @@ pub(crate) fn tag_address<'a>(
 /// follows:
 ///
 /// chain_link = start
-/// while !chain_link.is_main_stack() {
+/// while !chain_link.is_initial_stack() {
 ///   contref = chain_link.get_contref()
 ///   parent_link = contref.parent
 ///   parent_csi = parent_link.get_common_stack_information();
@@ -1489,9 +1489,9 @@ fn search_handler<'a>(
         let raw_parts = builder.block_params(handle_link);
         let chain_link =
             helpers::StackChain::from_raw_parts([raw_parts[0], raw_parts[1]], env.pointer_type());
-        let is_main_stack = chain_link.is_main_stack(env, builder);
+        let is_initial_stack = chain_link.is_initial_stack(env, builder);
         builder.ins().brif(
-            is_main_stack,
+            is_initial_stack,
             on_no_match,
             &[],
             begin_search_handler_list,

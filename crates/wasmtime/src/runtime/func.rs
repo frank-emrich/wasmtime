@@ -1655,7 +1655,7 @@ impl RuntimeEntryState {
     /// It also saves the different last_wasm_* values in the `VMRuntimeLimits`.
     pub fn enter_wasm<T>(
         store: &mut StoreContextMut<'_, T>,
-        main_stack_information: *mut CommonStackInformation,
+        initial_stack_information: *mut CommonStackInformation,
     ) -> Self {
         let stack_limit;
 
@@ -1715,7 +1715,7 @@ impl RuntimeEntryState {
 
             let stack_chain_ptr = store.0.stack_chain();
             let old_stack_chain = (*stack_chain_ptr.as_ref().unwrap().0.get()).clone();
-            let new_stack_chain = StackChain::InitialStack(main_stack_information);
+            let new_stack_chain = StackChain::InitialStack(initial_stack_information);
             *(*store.0.stack_chain()).0.get() = new_stack_chain;
 
             Self {
