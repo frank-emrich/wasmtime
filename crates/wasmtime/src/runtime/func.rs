@@ -1600,7 +1600,14 @@ pub(crate) fn invoke_wasm_and_catch_traps<T>(
     closure: impl FnMut(*mut VMContext, Option<InterpreterRef<'_>>) -> bool,
 ) -> Result<()> {
     unsafe {
+        /// The `enter_wasm` call below will reset the store's `stack_chain` to
+        /// a new `InitialStack`, pointing to the stack-allocated
+        /// `initial_stack_csi`.
         let mut initial_stack_csi = CommonStackInformation::running_default();
+        /// Stores some state of the runtime just before entering Wasm. Will be
+        /// restored upon exiting Wasm. Note that the `CallThreadState` that is
+        /// created by the `catch_traps` call below will store a pointer to this
+        /// stack-allocated `previous_runtime_state`.
         let previous_runtime_state = RuntimeEntryState::enter_wasm(store, &mut initial_stack_csi);
 
         if let Err(trap) = store.0.call_hook(CallHook::CallingWasm) {
