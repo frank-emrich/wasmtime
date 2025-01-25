@@ -541,8 +541,6 @@ mod host {
     /// After crossing from the host back into wasm, we suspend to a tag that is
     /// handled by the surrounding function (i.e., without needing to cross the
     /// host frame to reach the handler).
-    /// This is currently forbidden (see wasmfx/wasmfxtime#109), but could be
-    /// allowed in the future.
     /// Call chain:
     /// $entry -resume-> $a -call-> $host_func_a -call-> $b -resume-> $c
     fn call_host_from_continuation_nested_suspend_ok() -> Result<()> {
@@ -591,14 +589,10 @@ mod host {
     }
 
     #[test]
-    /// Similar to `call_host_from_continuation_nested_suspend_ok`. However,
-    /// we suspend to a tag that is only handled if we were to cross a host function
-    /// boundary.
-    /// This currently triggers the check that we must not re-enter wasm while
-    /// on a continuation (see wasmfx/wasmfxtime#109), but will most likely stay
-    /// forbidden if host calls acts as barriers for suspensions. In that case,
-    /// the test case will exhibit a case of suspending to an unhandled tag.
-    ///
+    /// Similar to `call_host_from_continuation_nested_suspend_ok`. However, we
+    /// suspend to a tag that is only handled if we were to cross a host
+    /// function boundary. That's not allowed, so we effectively suspend with an
+    /// unhandled tag.
     /// Call chain:
     /// $entry -resume-> $a -call-> $host_func_a -call-> $b -resume-> $c
     fn call_host_from_continuation_nested_suspend_unhandled() -> Result<()> {
@@ -1144,7 +1138,8 @@ mod traps {
         Ok(())
     }
 
-    // Test that we get correct backtraces after trapping inside a continuation after re-entering Wasm while already inside a different continuation.
+    // Test that we get correct backtraces after trapping inside a continuation
+    // after re-entering Wasm while already inside a different continuation.
     #[test]
     fn trap_after_re_enter() -> Result<()> {
         let wat = r#"
