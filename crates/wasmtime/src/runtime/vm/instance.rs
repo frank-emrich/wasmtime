@@ -1520,7 +1520,7 @@ impl Instance {
                     (&mut self.vmctx) as *mut VMContext,
                     |i| -> Result<_, Error> {
                         let (_, store) = i.unpack_mut();
-                        let config = &*(store.stack_switching_config());
+                        let config = &store.engine().config().stack_switching_config;
                         self.stacks_allocator = Some(Box::new(StacksAllocator::new(config)?));
                         self.stacks_allocator.as_mut().unwrap().allocate()
                     },

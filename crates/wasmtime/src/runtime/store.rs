@@ -105,7 +105,7 @@ use core::ops::{Deref, DerefMut, Range};
 use core::pin::Pin;
 use core::ptr;
 use core::task::{Context, Poll};
-use wasmtime_environ::{stack_switching::StackSwitchingConfig, TripleExt};
+use wasmtime_environ::TripleExt;
 
 mod context;
 pub use self::context::*;
@@ -2569,10 +2569,6 @@ unsafe impl<T> crate::runtime::vm::VMStore for StoreInner<T> {
 
     fn stack_chain(&self) -> *mut StackChainCell {
         <StoreOpaque>::stack_chain(self)
-    }
-
-    fn stack_switching_config(&self) -> *const StackSwitchingConfig {
-        &<StoreOpaque>::engine(&self).config().stack_switching_config
     }
 
     fn store_opaque_mut(&mut self) -> &mut StoreOpaque {

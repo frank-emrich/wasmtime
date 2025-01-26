@@ -234,8 +234,7 @@ pub mod imp {
     ) -> Result<*mut VMContRef, TrapReason> {
         let caller_vmctx = instance.vmctx();
 
-        let config = unsafe { &*(store.stack_switching_config()) };
-        let stack_size = config.stack_size;
+        let stack_size = store.engine().config().stack_switching_config.stack_size;
 
         let (contref, mut stack) =
             instance
