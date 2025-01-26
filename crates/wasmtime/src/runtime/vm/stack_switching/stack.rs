@@ -92,6 +92,11 @@ impl ContinuationStack {
         self.0.control_context_frame_pointer()
     }
 
+    /// Returns the stack pointer stored in the Fiber's ControlContext.
+    pub fn control_context_stack_pointer(&self) -> usize {
+        self.0.control_context_stack_pointer()
+    }
+
     /// Initializes this stack, such that it will execute the function denoted
     /// by `func_ref`. `parameter_count` and `return_value_count` must be the
     /// corresponding number of parameters and return values of `func_ref`.

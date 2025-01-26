@@ -235,10 +235,7 @@ pub mod imp {
         let caller_vmctx = instance.vmctx();
 
         let config = unsafe { &*(store.stack_switching_config()) };
-        // TODO(frank-emrich) Currently, the general `stack_limit` configuration
-        // option of wasmtime is unrelated to the stack size of our fiber stack.
         let stack_size = config.stack_size;
-        let red_zone_size = config.red_zone_size;
 
         let (contref, mut stack) =
             instance
@@ -248,14 +245,9 @@ pub mod imp {
                 })?;
 
         let tsp = stack.top().unwrap();
-        let stack_limit = unsafe { tsp.sub(stack_size - red_zone_size) } as usize;
-        let limits = StackLimits::with_stack_limit(stack_limit);
 
         {
             let contref = unsafe { contref.as_mut().unwrap() };
-            let csi = &mut contref.common_stack_information;
-            csi.limits = limits;
-            csi.state = State::Fresh;
             contref.parent_chain = StackChain::Absent;
             // The continuation is fresh, which is a special case of being suspended.
             // Thus we need to set the correct end of the continuation chain: itself.
@@ -282,6 +274,20 @@ pub mod imp {
                 param_count,
                 result_count,
             );
+
+            // Now that the initial stack pointer was set by the initialization
+            // function, use it to determine stack limit.
+            let stack_pointer = contref.stack.control_context_stack_pointer();
+            // Same caveat regarding stack_limit here as descibed in
+            // `wasmtime::runtime::func::RuntimeEntryState::enter_wasm`.
+            let wasm_stack_limit = std::cmp::max(
+                stack_pointer - store.engine().config().max_wasm_stack,
+                tsp as usize - stack_size,
+            );
+            let limits = StackLimits::with_stack_limit(wasm_stack_limit);
+            let csi = &mut contref.common_stack_information;
+            csi.state = State::Fresh;
+            csi.limits = limits;
         };
 
         // TODO(dhil): we need memory clean up of

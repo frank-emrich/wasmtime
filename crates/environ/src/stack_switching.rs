@@ -28,11 +28,6 @@ macro_rules! debug_println {
 pub struct StackSwitchingConfig {
     /// The (fixed) size of a continuation stack.
     pub stack_size: usize,
-
-    /// Space that must be left on stack when starting execution of a
-    /// function while running on a continuation stack.
-    /// Must be smaller than the value of `stack_size` above.
-    pub red_zone_size: usize,
 }
 
 impl Default for StackSwitchingConfig {
@@ -40,14 +35,8 @@ impl Default for StackSwitchingConfig {
         /// Default size for continuation stacks
         const DEFAULT_FIBER_SIZE: usize = 2097152; // 2MB = 512 pages of 4k
 
-        /// Default size of the red zone at the bottom of a fiber stack. This means that
-        /// whenever we are executing on a fiber stack and starting (!) execution of a
-        /// wasm (!) function, the stack pointer must be at least this many bytes away
-        /// from the bottom of the fiber stack.
-        const DEFAULT_RED_ZONE_SIZE: usize = 32768; // 32K = 8 pages of 4k size
         Self {
             stack_size: DEFAULT_FIBER_SIZE,
-            red_zone_size: DEFAULT_RED_ZONE_SIZE,
         }
     }
 }

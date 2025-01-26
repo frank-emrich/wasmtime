@@ -791,13 +791,6 @@ impl Config {
         self
     }
 
-    /// Configures the amount of space that must be left on stack when starting
-    /// execution of a function while running on a continuation stack.
-    pub fn stack_switching_red_zone_size(&mut self, size: usize) -> &mut Self {
-        self.stack_switching_config.red_zone_size = size;
-        self
-    }
-
     fn wasm_feature(&mut self, flag: WasmFeatures, enable: bool) -> &mut Self {
         self.enabled_features.set(flag, enable);
         self.disabled_features.set(flag, !enable);

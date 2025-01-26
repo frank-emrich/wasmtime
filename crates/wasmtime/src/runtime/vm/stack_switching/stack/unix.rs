@@ -178,6 +178,15 @@ impl ContinuationStack {
         }
     }
 
+    pub fn control_context_stack_pointer(&self) -> usize {
+        // See picture at top of this file:
+        // RBP is stored 24 bytes below top of stack.
+        unsafe {
+            let ptr = self.top.sub(24) as *mut usize;
+            *ptr
+        }
+    }
+
     /// This function installs the launchpad for the computation to run on the
     /// fiber, such that executing a `stack_switch` instruction on the stack
     /// actually runs the desired computation.
