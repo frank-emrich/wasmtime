@@ -272,12 +272,6 @@ impl ContinuationStack {
     }
 }
 
-pub fn switch_to_parent(top_of_stack: *mut u8) {
-    unsafe {
-        wasmtime_continuation_switch_to_parent(top_of_stack);
-    }
-}
-
 impl Drop for ContinuationStack {
     fn drop(&mut self) {
         unsafe {
@@ -293,7 +287,6 @@ impl Drop for ContinuationStack {
 }
 
 unsafe extern "C" {
-    fn wasmtime_continuation_switch_to_parent(top_of_stack: *mut u8);
     #[allow(dead_code)] // only used in inline assembly for some platforms
     fn wasmtime_continuation_start();
 }
@@ -302,7 +295,6 @@ unsafe extern "C" {
 /// continuation. It is only ever called from `wasmtime_continuation_start`. Hence, it
 /// must never return.
 unsafe extern "C" fn fiber_start(
-    top_of_stack: *mut u8,
     func_ref: *const VMFuncRef,
     caller_vmctx: *mut VMContext,
     args: *mut Array<ValRaw>,
@@ -336,8 +328,8 @@ unsafe extern "C" fn fiber_start(
         // in its length field, to make various bounds checks happy.
         args.length = return_value_count;
 
-        // Switch back to parent, indicating that the continuation returned.
-        switch_to_parent(top_of_stack);
+        // Note that after this function returns, wasmtime_continuation_start
+        // will switch back to the parent stack.
     }
 }
 

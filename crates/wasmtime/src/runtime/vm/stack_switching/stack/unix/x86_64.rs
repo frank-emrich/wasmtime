@@ -7,33 +7,6 @@
 
 use wasmtime_asm_macros::asm_func;
 
-// fn(
-//    top_of_stack(rdi): *mut u8
-// )
-//
-// Switches to the parent of the stack identified by `top_of_stack`. This
-// functions is only intended for the case where we have finished execution on
-// the current stack and are returning to the parent.
-// Thus, this function never returns.
-asm_func!(
-    "wasmtime_continuation_switch_to_parent",
-    "
-        // We need RDI later on, use RSI for top of stack instead.
-        mov rsi, rdi
-
-        mov rbp, -0x10[rsi]
-        mov rsp, -0x18[rsi]
-
-        // The stack_switch instruction uses register RDI for the payload.
-        // Here, the payload indicates that we are returning (value 0).
-        // See the test case at the end of this file to keep this in sync with
-        // ControlEffect::return_()
-        mov rdi, 0
-
-        jmp -0x08[rsi]
-    ",
-);
-
 // This is a pretty special function that has no real signature. Its use is to
 // be the "base" function of all fibers. This entrypoint is used in
 // `wasmtime_continuation_init` to bootstrap the execution of a new fiber.
@@ -65,33 +38,47 @@ asm_func!(
 
 
         //
-        // Note that the next 5 instructions amount to calling fiber_start
+        // Note that the next 4 instructions amount to calling fiber_start
         // with the following arguments:
-        // 1. TOS
-        // 2. func_ref
-        // 3. caller_vmctx
-        // 4. args (of type *mut ArrayRef<ValRaw>)
-        // 5. return_value_count
+        // 1. func_ref
+        // 2. caller_vmctx
+        // 3. args (of type *mut ArrayRef<ValRaw>)
+        // 4. return_value_count
         //
-        // Note that `fiber_start` never returns: Instead, it resume to the
-        // parent using `wasmtime_continuation_switch_to_parent`.
 
-        pop r8  // return_value_count
-        pop rcx // args
-        pop rdx // caller_vmctx
-        pop rsi // func_ref
-        lea rdi, 0x10[rbp] // TOS
+        pop rcx // return_value_count
+        pop rdx // args
+        pop rsi // caller_vmctx
+        pop rdi // func_ref
+        // Note that RBP already contains the right frame pointer to build a
+        // frame pointer chain including the parent continuation:
+        // The current value of RBP is where we store the parent RBP in the
+        // control context!
         call {fiber_start}
 
-        // We should never get here and would trap on this invalid instruction.
-        ud2
+        // Return to the parent continuation.
+        // RBP is callee-saved (no matter if it's used as a frame pointe or
+        // not), so its value is still TOS - 0x10.
+        // Use that fact to obtain saved parent RBP, RSP, and RIP from control
+        // context near TOS.
+        mov rsi,  0x08[rbp] // putting new RIP in temp register
+        mov rsp, -0x08[rbp]
+        mov rbp,      [rbp]
+
+        // The stack_switch instruction uses register RDI for the payload.
+        // Here, the payload indicates that we are returning (value 0).
+        // See the test case below to keep this in sync with
+        // ControlEffect::return_()
+        mov rdi, 0
+
+        jmp rsi
     ",
     fiber_start = sym super::fiber_start,
 );
 
 #[test]
 fn test_return_payload() {
-    // The following assumption is baked into `wasmtime_continuation_switch_to_parent`.
+    // The following assumption is baked into `wasmtime_continuation_start`.
     assert_eq!(
         wasmtime_environ::stack_switching::CONTROL_EFFECT_RETURN_DISCRIMINANT,
         0
