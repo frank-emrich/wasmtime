@@ -46,20 +46,6 @@ mod test_utils {
 
         /// Uses this `Runner` to run the module defined in `wat`, satisfying
         /// its imports using `imports`. The module must export a function
-        /// `entry`, taking no parameters and without return values . Execution
-        /// of `entry` is expected to yield a runtime `Error` with a `&str`
-        /// payload (such as an error raised with anyhow::anyhow!("Something is
-        /// wrong")
-        pub fn run_test_expect_str_error(self, wat: &str, imports: &[Extern], error_message: &str) {
-            let result = self.run_test::<()>(wat, imports);
-
-            let err = result.expect_err("Was expecting wasm execution to yield error");
-
-            assert_eq!(err.downcast_ref::<&'static str>(), Some(&error_message));
-        }
-
-        /// Uses this `Runner` to run the module defined in `wat`, satisfying
-        /// its imports using `imports`. The module must export a function
         /// `entry`, taking no parameters and without return values. Execution
         /// of `entry` is expected to cause a panic (and that this is panic is
         /// not handled by wasmtime previously).
@@ -130,7 +116,7 @@ mod test_utils {
         Func::new(
             &mut runner.store,
             FuncType::new(&runner.engine, vec![], vec![]),
-            |mut caller, args: &[Val], results: &mut [Val]| {
+            |mut caller, _args: &[Val], _results: &mut [Val]| {
                 let export = caller
                     .get_export(export_func)
                     .ok_or(anyhow::anyhow!("could not get export"))?;
@@ -138,7 +124,7 @@ mod test_utils {
                     .into_func()
                     .ok_or(anyhow::anyhow!("export is not a Func"))?;
                 let func_typed = func.typed::<(), ()>(caller.as_context())?;
-                let res = func_typed.call(caller.as_context_mut(), ())?;
+                let _res = func_typed.call(caller.as_context_mut(), ())?;
                 Ok(())
             },
         )
@@ -378,9 +364,6 @@ fn inter_instance_suspend() -> Result<()> {
 mod host {
     use super::test_utils::*;
     use wasmtime::*;
-
-    const RE_ENTER_ON_CONTINUATION_ERROR: &'static str =
-        "Re-entering wasm while already executing on a continuation stack";
 
     #[test]
     /// Tests calling a host function from within a wasm function running inside a continuation.

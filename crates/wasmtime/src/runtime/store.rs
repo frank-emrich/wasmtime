@@ -82,7 +82,7 @@ use crate::linker::Definition;
 use crate::module::RegisteredModuleId;
 use crate::prelude::*;
 use crate::runtime::vm::mpk::{self, ProtectionKey, ProtectionMask};
-use crate::runtime::vm::stack_switching::stack_chain::{StackChain, StackChainCell};
+use crate::runtime::vm::stack_switching::stack_chain::StackChainCell;
 use crate::runtime::vm::{
     Backtrace, ExportGlobal, GcRootsList, GcStore, InstanceAllocationRequest, InstanceAllocator,
     InstanceHandle, Interpreter, InterpreterRef, ModuleRuntimeInfo, OnDemandInstanceAllocator,
@@ -105,10 +105,7 @@ use core::ops::{Deref, DerefMut, Range};
 use core::pin::Pin;
 use core::ptr;
 use core::task::{Context, Poll};
-use wasmtime_environ::{
-    stack_switching::{CommonStackInformation, StackSwitchingConfig},
-    TripleExt,
-};
+use wasmtime_environ::{stack_switching::StackSwitchingConfig, TripleExt};
 
 mod context;
 pub use self::context::*;
