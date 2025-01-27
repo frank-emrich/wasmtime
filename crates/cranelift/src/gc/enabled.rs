@@ -914,7 +914,7 @@ pub fn translate_ref_test(
         let result = if ref_ty.nullable {
             // All null references (within the same type hierarchy) match null
             // references to the bottom type.
-            func_env.translate_ref_is_null(builder, val)?
+            func_env.translate_ref_is_null(builder.cursor(), val)?
         } else {
             // `ref.test` is always false for non-nullable bottom types, as the
             // bottom types are uninhabited.
@@ -931,7 +931,7 @@ pub fn translate_ref_test(
         let result = if ref_ty.nullable {
             builder.ins().iconst(ir::types::I32, 1)
         } else {
-            let is_null = func_env.translate_ref_is_null(builder, val)?;
+            let is_null = func_env.translate_ref_is_null(builder.cursor(), val)?;
             let zero = builder.ins().iconst(ir::types::I32, 0);
             let one = builder.ins().iconst(ir::types::I32, 1);
             builder.ins().select(is_null, zero, one)
@@ -948,7 +948,7 @@ pub fn translate_ref_test(
         );
         let is_i31 = builder.ins().band(val, i31_mask);
         let result = if ref_ty.nullable {
-            let is_null = func_env.translate_ref_is_null(builder, val)?;
+            let is_null = func_env.translate_ref_is_null(builder.cursor(), val)?;
             builder.ins().bor(is_null, is_i31)
         } else {
             is_i31
@@ -966,7 +966,7 @@ pub fn translate_ref_test(
     let continue_block = builder.create_block();
 
     // Current block: check if the reference is null and branch appropriately.
-    let is_null = func_env.translate_ref_is_null(builder, val)?;
+    let is_null = func_env.translate_ref_is_null(builder.cursor(), val)?;
     let is_null_result = if ref_ty.nullable {
         is_null
     } else {

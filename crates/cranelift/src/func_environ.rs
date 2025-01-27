@@ -1801,8 +1801,11 @@ impl FuncEnvironment<'_> {
                         .table_grow_func_ref(&mut builder.func)
                 }
                 WasmHeapTopType::Cont => {
-                    let (revision, contref) =
-                        stack_switching::fatpointer::deconstruct(self, builder, init_value);
+                    let (revision, contref) = stack_switching::fatpointer::deconstruct(
+                        self,
+                        &mut builder.cursor(),
+                        init_value,
+                    );
                     args.extend_from_slice(&[contref, revision]);
                     self.builtin_functions
                         .table_grow_cont_obj(&mut builder.func)
@@ -1940,7 +1943,7 @@ impl FuncEnvironment<'_> {
                 }
                 WasmHeapTopType::Cont => {
                     let (revision, contref) =
-                        stack_switching::fatpointer::deconstruct(self, builder, val);
+                        stack_switching::fatpointer::deconstruct(self, &mut builder.cursor(), val);
                     args.extend_from_slice(&[contref, revision]);
                     self.builtin_functions
                         .table_fill_cont_obj(&mut builder.func)
@@ -2297,41 +2300,40 @@ impl FuncEnvironment<'_> {
 
     pub fn translate_ref_null(
         &mut self,
-        builder: &mut FunctionBuilder,
+        mut pos: cranelift_codegen::cursor::FuncCursor,
         ht: WasmHeapType,
     ) -> WasmResult<ir::Value> {
         Ok(match ht.top() {
-            WasmHeapTopType::Func => builder.ins().iconst(self.pointer_type(), 0),
+            WasmHeapTopType::Func => pos.ins().iconst(self.pointer_type(), 0),
             // NB: null GC references don't need to be in stack maps.
-            WasmHeapTopType::Any | WasmHeapTopType::Extern => builder.ins().iconst(types::I32, 0),
+            WasmHeapTopType::Any | WasmHeapTopType::Extern => pos.ins().iconst(types::I32, 0),
             WasmHeapTopType::Cont => {
-                let zero = builder.ins().iconst(self.pointer_type(), 0);
+                let zero = pos.ins().iconst(self.pointer_type(), 0);
                 // TODO do this nicer
-                stack_switching::fatpointer::construct(self, builder, zero, zero)
+                stack_switching::fatpointer::construct(self, &mut pos, zero, zero)
             }
         })
     }
 
     pub fn translate_ref_is_null(
         &mut self,
-        builder: &mut FunctionBuilder,
+        mut pos: cranelift_codegen::cursor::FuncCursor,
         value: ir::Value,
     ) -> WasmResult<ir::Value> {
-        let byte_is_null = match builder.func.dfg.value_type(value) {
+        let byte_is_null = match pos.func.dfg.value_type(value) {
             // continuation
             ty if ty == stack_switching::fatpointer::POINTER_TYPE => {
                 let (_revision, contref) =
-                    stack_switching::fatpointer::deconstruct(self, builder, value);
-                builder
-                    .ins()
+                    stack_switching::fatpointer::deconstruct(self, &mut pos, value);
+                pos.ins()
                     .icmp_imm(cranelift_codegen::ir::condcodes::IntCC::Equal, contref, 0)
             }
-            _ => builder
+            _ => pos
                 .ins()
                 .icmp_imm(cranelift_codegen::ir::condcodes::IntCC::Equal, value, 0),
         };
 
-        Ok(builder.ins().uextend(ir::types::I32, byte_is_null))
+        Ok(pos.ins().uextend(ir::types::I32, byte_is_null))
     }
 
     pub fn translate_ref_func(

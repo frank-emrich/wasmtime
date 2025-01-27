@@ -1595,7 +1595,7 @@ pub(crate) fn translate_cont_bind<'a>(
     contobj: ir::Value,
     args: &[ir::Value],
 ) -> ir::Value {
-    let (witness, contref) = fatpointer::deconstruct(env, builder, contobj);
+    let (witness, contref) = fatpointer::deconstruct(env, &mut builder.cursor(), contobj);
 
     // The typing rules for cont.bind allow a null reference to be passed to it.
     builder.ins().trapz(contref, crate::TRAP_NULL_REFERENCE);
@@ -1619,7 +1619,7 @@ pub(crate) fn translate_cont_bind<'a>(
 
     let revision = vmcontref.incr_revision(env, builder, revision);
     emit_debug_println!(env, builder, "new revision = {}", revision);
-    let contobj = fatpointer::construct(env, builder, revision, contref);
+    let contobj = fatpointer::construct(env, &mut builder.cursor(), revision, contref);
     emit_debug_println!(env, builder, "[cont_bind] contref = {:p}", contref);
     contobj
 }
@@ -1638,7 +1638,7 @@ pub(crate) fn translate_cont_new<'a>(
     let nreturns = builder.ins().iconst(I32, return_types.len() as i64);
     call_builtin!(builder, env, let contref = cont_new(func, nargs, nreturns));
     let tag = helpers::VMContRef::new(contref).get_revision(env, builder);
-    let contobj = fatpointer::construct(env, builder, tag, contref);
+    let contobj = fatpointer::construct(env, &mut builder.cursor(), tag, contref);
     emit_debug_println!(env, builder, "[cont_new] contref = {:p}", contref);
     Ok(contobj)
 }
@@ -1711,7 +1711,8 @@ pub(crate) fn translate_resume<'a>(
         builder.switch_to_block(resume_block);
         builder.seal_block(resume_block);
 
-        let (witness, resume_contref) = fatpointer::deconstruct(env, builder, resume_contobj);
+        let (witness, resume_contref) =
+            fatpointer::deconstruct(env, &mut builder.cursor(), resume_contobj);
 
         // The typing rules for resume allow a null reference to be passed to it.
         builder
@@ -1947,8 +1948,12 @@ pub(crate) fn translate_resume<'a>(
         let handler_index = ControlEffect::handler_index(resume_result, env, builder);
 
         let revision = suspended_continuation.get_revision(env, builder);
-        let suspended_contobj =
-            fatpointer::construct(env, builder, revision, suspended_continuation.address);
+        let suspended_contobj = fatpointer::construct(
+            env,
+            &mut builder.cursor(),
+            revision,
+            suspended_continuation.address,
+        );
 
         emit_debug_println!(
             env,
@@ -2184,7 +2189,8 @@ pub(crate) fn translate_switch<'a>(
     // `switchee_contref` to `switchee_contref.last_ancestor` (i.e., the end of
     // the parent chain starting at `switchee_contref`).
     let switchee_contref = {
-        let (witness, target_contref) = fatpointer::deconstruct(env, builder, switchee_contobj);
+        let (witness, target_contref) =
+            fatpointer::deconstruct(env, &mut builder.cursor(), switchee_contobj);
 
         // The typing rules for switch allow a null reference to be passed to it.
         builder
@@ -2270,7 +2276,12 @@ pub(crate) fn translate_switch<'a>(
         switcher_contref_csi.load_limits_from_vmcontext(env, builder, vm_runtime_limits_ptr, false);
 
         let revision = switcher_contref.get_revision(env, builder);
-        let new_contobj = fatpointer::construct(env, builder, revision, switcher_contref.address);
+        let new_contobj = fatpointer::construct(
+            env,
+            &mut builder.cursor(),
+            revision,
+            switcher_contref.address,
+        );
 
         emit_debug_println!(
             env,
