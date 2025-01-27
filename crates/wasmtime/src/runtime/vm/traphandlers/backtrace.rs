@@ -183,8 +183,8 @@ impl Backtrace {
     /// Traces through a sequence of stacks, creating a backtracr for each one,
     /// beginning at the given `pc` and `fp`.
     ///
-    /// If `chain` is `None`, we are tracing through the initial stack, and this
-    /// function behaves like `trace_through_wasm`.
+    /// If `chain` is `InitialStack`, we are tracing through the initial stack,
+    /// and this function behaves like `trace_through_wasm`.
     /// Otherwise, we can interpret `chain` as a linked list of stacks, which
     /// ends with the initial stack. We then trace through each of these stacks
     /// individually, up to (and including) the initial stack.
