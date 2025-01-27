@@ -13,9 +13,9 @@ use cranelift_frontend::FunctionBuilder;
 /// `core::mem::transmute::<i128, VMContObj>`.
 pub const POINTER_TYPE: ir::Type = ir::types::I128;
 
-/// Unless linearity checks disabled, turns a (possibly null reference to a)
-/// continuation object into a tuple (revision, contref_ptr).
-/// If `contobj` denotes a wasm null reference, the contref_ptr part may be a null pointer.
+/// Turns a (possibly null) reference to a continuation object into a tuple
+/// (revision, contref_ptr). If `contobj` denotes a wasm null reference, the
+/// contref_ptr part will be a null pointer.
 pub(crate) fn deconstruct<'a>(
     env: &mut crate::func_environ::FuncEnvironment<'a>,
     builder: &mut FunctionBuilder,

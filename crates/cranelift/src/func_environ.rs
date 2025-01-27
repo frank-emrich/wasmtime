@@ -1710,6 +1710,7 @@ impl<'module_environment> TargetEnvironment for FuncEnvironment<'module_environm
         let needs_stack_map = match wasm_ty.top() {
             WasmHeapTopType::Extern | WasmHeapTopType::Any => true,
             WasmHeapTopType::Func => false,
+            // FIXME(frank-emrich) Don't we actually need to include continuations in stack maps??
             WasmHeapTopType::Cont => false,
         };
         (ty, needs_stack_map)
@@ -3266,10 +3267,6 @@ impl FuncEnvironment<'_> {
         )
     }
 
-    // TODO(dhil): Currently, this function invokes
-    // `translate_load_builtin_function_address` multiple times, which
-    // causes repeated allocation of values pointing to the vmctx. We
-    // should refactor or inline this logic at some point.
     pub fn translate_resume(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
