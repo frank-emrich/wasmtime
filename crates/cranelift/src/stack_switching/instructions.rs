@@ -366,16 +366,14 @@ pub(crate) mod stack_switching_helpers {
             VMContRef { address }
         }
 
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         pub fn args(&self) -> Payloads {
             let offset = super::stack_switching_environ::offsets::vm_cont_ref::ARGS;
-            Payloads::new(self.address, offset as i32)
+            Payloads::new(self.address, i32::try_from(offset).unwrap())
         }
 
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         pub fn values(&self) -> Payloads {
             let offset = super::stack_switching_environ::offsets::vm_cont_ref::VALUES;
-            Payloads::new(self.address, offset as i32)
+            Payloads::new(self.address, i32::try_from(offset).unwrap())
         }
 
         pub fn common_stack_information<'a>(
@@ -392,74 +390,84 @@ pub(crate) mod stack_switching_helpers {
         /// Stores the parent of this continuation, which may either be another
         /// continuation or the initial stack. It is therefore represented as a
         /// `StackChain` element.
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         pub fn set_parent_stack_chain<'a>(
             &mut self,
             env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
             new_stack_chain: &StackChain,
         ) {
-            let offset = super::stack_switching_environ::offsets::vm_cont_ref::PARENT_CHAIN as i32;
-            new_stack_chain.store(env, builder, self.address, offset)
+            let offset = super::stack_switching_environ::offsets::vm_cont_ref::PARENT_CHAIN;
+            new_stack_chain.store(env, builder, self.address, i32::try_from(offset).unwrap())
         }
 
         /// Loads the parent of this continuation, which may either be another
         /// continuation or the initial stack. It is therefore represented as a
         /// `StackChain` element.
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         pub fn get_parent_stack_chain<'a>(
             &self,
             env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
         ) -> StackChain {
-            let offset = super::stack_switching_environ::offsets::vm_cont_ref::PARENT_CHAIN as i32;
-            StackChain::load(env, builder, self.address, offset, env.pointer_type())
+            let offset = super::stack_switching_environ::offsets::vm_cont_ref::PARENT_CHAIN;
+            StackChain::load(
+                env,
+                builder,
+                self.address,
+                i32::try_from(offset).unwrap(),
+                env.pointer_type(),
+            )
         }
 
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         pub fn set_last_ancestor<'a>(
             &self,
             _env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
             last_ancestor: ir::Value,
         ) {
-            let offset = super::stack_switching_environ::offsets::vm_cont_ref::LAST_ANCESTOR as i32;
+            let offset = super::stack_switching_environ::offsets::vm_cont_ref::LAST_ANCESTOR;
             let mem_flags = ir::MemFlags::trusted();
-            builder
-                .ins()
-                .store(mem_flags, last_ancestor, self.address, offset);
+            builder.ins().store(
+                mem_flags,
+                last_ancestor,
+                self.address,
+                i32::try_from(offset).unwrap(),
+            );
         }
 
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         pub fn get_last_ancestor<'a>(
             &self,
             env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
         ) -> ir::Value {
-            let offset = super::stack_switching_environ::offsets::vm_cont_ref::LAST_ANCESTOR as i32;
+            let offset = super::stack_switching_environ::offsets::vm_cont_ref::LAST_ANCESTOR;
             let mem_flags = ir::MemFlags::trusted();
-            builder
-                .ins()
-                .load(env.pointer_type(), mem_flags, self.address, offset)
+            builder.ins().load(
+                env.pointer_type(),
+                mem_flags,
+                self.address,
+                i32::try_from(offset).unwrap(),
+            )
         }
 
         /// Gets the revision counter the a given continuation
         /// reference.
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         pub fn get_revision<'a>(
             &mut self,
             _env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
         ) -> ir::Value {
             let mem_flags = ir::MemFlags::trusted();
-            let offset = super::stack_switching_environ::offsets::vm_cont_ref::REVISION as i32;
-            let revision = builder.ins().load(I64, mem_flags, self.address, offset);
+            let offset = super::stack_switching_environ::offsets::vm_cont_ref::REVISION;
+            let revision =
+                builder
+                    .ins()
+                    .load(I64, mem_flags, self.address, i32::try_from(offset).unwrap());
             revision
         }
 
         /// Sets the revision counter on the given continuation
         /// reference to `revision + 1`.
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
+
         pub fn incr_revision<'a>(
             &mut self,
             env: &mut crate::func_environ::FuncEnvironment<'a>,
@@ -471,11 +479,14 @@ pub(crate) mod stack_switching_helpers {
                 emit_debug_assert_eq!(env, builder, revision, actual_revision);
             }
             let mem_flags = ir::MemFlags::trusted();
-            let offset = super::stack_switching_environ::offsets::vm_cont_ref::REVISION as i32;
+            let offset = super::stack_switching_environ::offsets::vm_cont_ref::REVISION;
             let revision_plus1 = builder.ins().iadd_imm(revision, 1);
-            builder
-                .ins()
-                .store(mem_flags, revision_plus1, self.address, offset);
+            builder.ins().store(
+                mem_flags,
+                revision_plus1,
+                self.address,
+                i32::try_from(offset).unwrap(),
+            );
             if cfg!(debug_assertions) {
                 let new_revision = self.get_revision(env, builder);
                 emit_debug_assert_eq!(env, builder, revision_plus1, new_revision);
@@ -485,14 +496,13 @@ pub(crate) mod stack_switching_helpers {
             revision_plus1
         }
 
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         pub fn get_fiber_stack<'a>(
             &self,
             _env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
         ) -> FiberStack {
             // The top of stack field is stored at offset 0 of the `FiberStack`.
-            let offset = super::stack_switching_environ::offsets::vm_cont_ref::STACK as i32;
+            let offset = super::stack_switching_environ::offsets::vm_cont_ref::STACK;
             let fiber_stack_top_of_stack_ptr = builder.ins().iadd_imm(self.address, offset as i64);
             FiberStack::new(fiber_stack_top_of_stack_ptr)
         }
@@ -514,11 +524,10 @@ pub(crate) mod stack_switching_helpers {
                 .load(ty, mem_flags, self.base, self.offset + offset)
         }
 
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         fn set<U>(&self, builder: &mut FunctionBuilder, offset: i32, value: ir::Value) {
             debug_assert_eq!(
                 builder.func.dfg.value_type(value),
-                Type::int_with_byte_size(std::mem::size_of::<U>() as u16).unwrap()
+                Type::int_with_byte_size(u16::try_from(std::mem::size_of::<U>()).unwrap()).unwrap()
             );
             let mem_flags = ir::MemFlags::trusted();
             builder
@@ -526,7 +535,6 @@ pub(crate) mod stack_switching_helpers {
                 .store(mem_flags, value, self.base, self.offset + offset);
         }
 
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         pub fn get_data<'a>(
             &self,
             env: &mut crate::func_environ::FuncEnvironment<'a>,
@@ -535,65 +543,58 @@ pub(crate) mod stack_switching_helpers {
             self.get(
                 builder,
                 env.pointer_type(),
-                super::stack_switching_environ::offsets::array::DATA as i32,
+                i32::try_from(super::stack_switching_environ::offsets::array::DATA).unwrap(),
             )
         }
 
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         fn get_capacity<'a>(
             &self,
             _env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
         ) -> ir::Value {
             // Array capacity is stored as u32.
-            let ty = Type::int_with_byte_size(std::mem::size_of::<u32>() as u16).unwrap();
             self.get(
                 builder,
-                ty,
-                super::stack_switching_environ::offsets::array::CAPACITY as i32,
+                I32,
+                i32::try_from(super::stack_switching_environ::offsets::array::CAPACITY).unwrap(),
             )
         }
 
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         pub fn get_length<'a>(
             &self,
             _env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
         ) -> ir::Value {
             // Array length is stored as u32.
-            let ty = Type::int_with_byte_size(std::mem::size_of::<u32>() as u16).unwrap();
             self.get(
                 builder,
-                ty,
-                super::stack_switching_environ::offsets::array::LENGTH as i32,
+                I32,
+                i32::try_from(super::stack_switching_environ::offsets::array::LENGTH).unwrap(),
             )
         }
 
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         fn set_length(&self, builder: &mut FunctionBuilder, length: ir::Value) {
             // Array length is stored as u32.
             self.set::<u32>(
                 builder,
-                super::stack_switching_environ::offsets::array::LENGTH as i32,
+                i32::try_from(super::stack_switching_environ::offsets::array::LENGTH).unwrap(),
                 length,
             );
         }
 
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         fn set_capacity(&self, builder: &mut FunctionBuilder, capacity: ir::Value) {
             // Array capacity is stored as u32.
             self.set::<u32>(
                 builder,
-                super::stack_switching_environ::offsets::array::CAPACITY as i32,
+                i32::try_from(super::stack_switching_environ::offsets::array::CAPACITY).unwrap(),
                 capacity,
             );
         }
 
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         fn set_data(&self, builder: &mut FunctionBuilder, data: ir::Value) {
             self.set::<*mut T>(
                 builder,
-                super::stack_switching_environ::offsets::array::DATA as i32,
+                i32::try_from(super::stack_switching_environ::offsets::array::DATA).unwrap(),
                 data,
             );
         }
@@ -622,7 +623,6 @@ pub(crate) mod stack_switching_helpers {
             builder.ins().iadd(data, byte_offset)
         }
 
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         pub fn allocate_or_reuse_stack_slot<'a>(
             &self,
             env: &mut crate::func_environ::FuncEnvironment<'a>,
@@ -639,8 +639,8 @@ pub(crate) mod stack_switching_helpers {
                 emit_debug_assert_eq!(env, builder, capacity, zero);
             }
 
-            let align = std::mem::align_of::<T>();
-            let entry_size = std::mem::size_of::<T>() as u32;
+            let align = u8::try_from(std::mem::align_of::<T>()).unwrap();
+            let entry_size = u32::try_from(std::mem::size_of::<T>()).unwrap();
             let required_size = required_capacity * entry_size;
 
             match existing_slot {
@@ -655,9 +655,7 @@ pub(crate) mod stack_switching_helpers {
                         "[Array::allocate_or_reuse_stack_slot] Reusing existing buffer with capacity {}",
                         capacity_value
                     );
-                    debug_assert!(
-                        align <= builder.func.get_stack_slot_data(slot).align_shift as usize
-                    );
+                    debug_assert!(align <= builder.func.get_stack_slot_data(slot).align_shift);
                     debug_assert_eq!(builder.func.get_stack_slot_data(slot).kind, ExplicitSlot);
 
                     let existing_data = builder.ins().stack_addr(env.pointer_type(), slot, 0);
@@ -681,7 +679,7 @@ pub(crate) mod stack_switching_helpers {
                     let slot_size = ir::StackSlotData::new(
                         ir::StackSlotKind::ExplicitSlot,
                         required_size,
-                        align as u8,
+                        align,
                     );
                     let slot = builder.create_sized_stack_slot(slot_size);
                     let new_data = builder.ins().stack_addr(env.pointer_type(), slot, 0);
@@ -697,7 +695,6 @@ pub(crate) mod stack_switching_helpers {
         /// Loads n entries from this Vector object, where n is the length of
         /// `load_types`, which also gives the types of the values to load.
         /// Loading starts at index 0 of the Vector object.
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         pub fn load_data_entries<'a>(
             &self,
             env: &mut crate::func_environ::FuncEnvironment<'a>,
@@ -715,12 +712,13 @@ pub(crate) mod stack_switching_helpers {
             let data_start_pointer = self.get_data(env, builder);
             let mut values = vec![];
             let mut offset = 0;
+            let entry_size = i32::try_from(std::mem::size_of::<T>()).unwrap();
             for valtype in load_types {
                 let val = builder
                     .ins()
                     .load(*valtype, memflags, data_start_pointer, offset);
                 values.push(val);
-                offset += std::mem::size_of::<T>() as i32;
+                offset += entry_size;
             }
             values
         }
@@ -732,7 +730,6 @@ pub(crate) mod stack_switching_helpers {
         /// If `allow_smaller` is true, we allow storing values whose type has a
         /// smaller size than T's. In that case, such values will be stored at
         /// the beginning of a `T`-sized slot.
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         pub fn store_data_entries<'a>(
             &self,
             env: &mut crate::func_environ::FuncEnvironment<'a>,
@@ -763,12 +760,13 @@ pub(crate) mod stack_switching_helpers {
 
             let data_start_pointer = self.get_data(env, builder);
 
+            let entry_size = i32::try_from(std::mem::size_of::<T>()).unwrap();
             let mut offset = 0;
             for value in values {
                 builder
                     .ins()
                     .store(memflags, *value, data_start_pointer, offset);
-                offset += std::mem::size_of::<T>() as i32;
+                offset += entry_size;
             }
 
             self.set_length(builder, store_count);
@@ -878,7 +876,6 @@ pub(crate) mod stack_switching_helpers {
         }
 
         /// Load a `StackChain` object from the given address.
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         pub fn load<'a>(
             _env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
@@ -898,10 +895,9 @@ pub(crate) mod stack_switching_helpers {
         }
 
         /// Store this `StackChain` object at the given address.
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         pub fn store<'a>(
             &self,
-            _env: &mut crate::func_environ::FuncEnvironment<'a>,
+            env: &mut crate::func_environ::FuncEnvironment<'a>,
             builder: &mut FunctionBuilder,
             target_pointer: ir::Value,
             initial_offset: i32,
@@ -911,10 +907,7 @@ pub(crate) mod stack_switching_helpers {
             let data = self.to_raw_parts();
 
             for value in data {
-                debug_assert_eq!(
-                    builder.func.dfg.value_type(value),
-                    Type::int_with_byte_size(self.pointer_type.bytes() as u16).unwrap()
-                );
+                debug_assert_eq!(builder.func.dfg.value_type(value), env.pointer_type());
                 builder.ins().store(memflags, value, target_pointer, offset);
                 offset += self.pointer_type.bytes() as i32;
             }
@@ -1079,14 +1072,12 @@ pub(crate) mod stack_switching_helpers {
                 .icmp_imm(IntCC::NotEqual, actual_state, allocated as i64)
         }
 
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         pub fn get_handler_list(&self) -> HandlerList {
             let offset =
                 super::stack_switching_environ::offsets::common_stack_information::HANDLERS;
-            HandlerList::new(self.address, offset as i32)
+            HandlerList::new(self.address, i32::try_from(offset).unwrap())
         }
 
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         pub fn get_first_switch_handler_index<'a>(
             &self,
             _env: &mut crate::func_environ::FuncEnvironment<'a>,
@@ -1097,10 +1088,9 @@ pub(crate) mod stack_switching_helpers {
             let offset = super::stack_switching_environ::offsets::common_stack_information::FIRST_SWITCH_HANDLER_INDEX;
             builder
                 .ins()
-                .load(I32, memflags, self.address, offset as i32)
+                .load(I32, memflags, self.address, i32::try_from(offset).unwrap())
         }
 
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         pub fn set_first_switch_handler_index<'a>(
             &self,
             _env: &mut crate::func_environ::FuncEnvironment<'a>,
@@ -1110,15 +1100,17 @@ pub(crate) mod stack_switching_helpers {
             // Field first_switch_handler_index has type u32
             let memflags = ir::MemFlags::trusted();
             let offset = super::stack_switching_environ::offsets::common_stack_information::FIRST_SWITCH_HANDLER_INDEX;
-            builder
-                .ins()
-                .store(memflags, value, self.address, offset as i32);
+            builder.ins().store(
+                memflags,
+                value,
+                self.address,
+                i32::try_from(offset).unwrap(),
+            );
         }
 
         /// Sets `last_wasm_entry_sp` and `stack_limit` fields in
         /// `VMRuntimelimits` using the values from the `StackLimits` of this
         /// object.
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         pub fn write_limits_to_vmcontext<'a>(
             &self,
             env: &mut crate::func_environ::FuncEnvironment<'a>,
@@ -1136,7 +1128,7 @@ pub(crate) mod stack_switching_helpers {
                     env.pointer_type(),
                     memflags,
                     stack_limits_ptr,
-                    our_offset as i32,
+                    i32::try_from(our_offset).unwrap(),
                 );
                 builder.ins().store(
                     memflags,
@@ -1146,7 +1138,7 @@ pub(crate) mod stack_switching_helpers {
                 );
             };
 
-            let pointer_size = env.pointer_type().bytes() as u8;
+            let pointer_size = u8::try_from(env.pointer_type().bytes()).unwrap();
             copy_to_vm_runtime_limits(
                 o::stack_limits::STACK_LIMIT,
                 pointer_size.vmruntime_limits_stack_limit(),
@@ -1162,7 +1154,6 @@ pub(crate) mod stack_switching_helpers {
         /// field from the `VMRuntimeLimits`.
         /// If `load_stack_limit` is true, we do the same for the `stack_limit`
         /// field.
-        #[allow(clippy::cast_possible_truncation, reason = "TODO")]
         pub fn load_limits_from_vmcontext<'a>(
             &self,
             env: &mut crate::func_environ::FuncEnvironment<'a>,
@@ -1175,7 +1166,7 @@ pub(crate) mod stack_switching_helpers {
             let stack_limits_ptr = self.get_stack_limits_ptr(env, builder);
 
             let memflags = ir::MemFlags::trusted();
-            let pointer_size = env.pointer_type().bytes() as u8;
+            let pointer_size = u8::try_from(env.pointer_type().bytes()).unwrap();
 
             let mut copy = |runtime_limits_offset, stack_limits_offset| {
                 let from_vm_runtime_limits = builder.ins().load(
@@ -1188,7 +1179,7 @@ pub(crate) mod stack_switching_helpers {
                     memflags,
                     from_vm_runtime_limits,
                     stack_limits_ptr,
-                    stack_limits_offset as i32,
+                    i32::try_from(stack_limits_offset).unwrap(),
                 );
             };
             copy(
@@ -1245,13 +1236,14 @@ use stack_switching_helpers as helpers;
 /// Stores the given arguments in the appropriate `Payloads` object in the continuation.
 /// If the continuation was never invoked, use the `args` object.
 /// Otherwise, use the `values` object.
-#[allow(clippy::cast_possible_truncation, reason = "TODO")]
 pub(crate) fn vmcontref_store_payloads<'a>(
     env: &mut crate::func_environ::FuncEnvironment<'a>,
     builder: &mut FunctionBuilder,
     values: &[ir::Value],
     contref: ir::Value,
 ) {
+    let count =
+        i32::try_from(values.len()).expect("Number of stack switching payloads should fit in i32");
     if values.len() > 0 {
         let use_args_block = builder.create_block();
         let use_payloads_block = builder.create_block();
@@ -1270,7 +1262,7 @@ pub(crate) fn vmcontref_store_payloads<'a>(
             builder.seal_block(use_args_block);
 
             let args = co.args();
-            let ptr = args.occupy_next_slots(env, builder, values.len() as i32);
+            let ptr = args.occupy_next_slots(env, builder, count);
 
             builder.ins().jump(store_data_block, &[ptr]);
         }
@@ -1283,7 +1275,7 @@ pub(crate) fn vmcontref_store_payloads<'a>(
 
             // This also checks that the buffer is large enough to hold
             // `values.len()` more elements.
-            let ptr = payloads.occupy_next_slots(env, builder, values.len() as i32);
+            let ptr = payloads.occupy_next_slots(env, builder, count);
             builder.ins().jump(store_data_block, &[ptr]);
         }
 
@@ -2173,7 +2165,6 @@ pub(crate) fn translate_suspend<'a>(
     return_values
 }
 
-#[allow(clippy::cast_possible_truncation, reason = "TODO")]
 pub(crate) fn translate_switch<'a>(
     env: &mut crate::func_environ::FuncEnvironment<'a>,
     builder: &mut FunctionBuilder,
@@ -2389,15 +2380,15 @@ pub(crate) fn translate_switch<'a>(
 
         let slot_size = ir::StackSlotData::new(
             ir::StackSlotKind::ExplicitSlot,
-            CONTROL_CONTEXT_SIZE as u32,
-            env.pointer_type().bytes() as u8,
+            u32::try_from(CONTROL_CONTEXT_SIZE).unwrap(),
+            u8::try_from(env.pointer_type().bytes()).unwrap(),
         );
         let slot = builder.create_sized_stack_slot(slot_size);
         let tmp_control_context = builder.ins().stack_addr(env.pointer_type(), slot, 0);
 
         let flags = MemFlags::trusted();
         let mut offset: i32 = 0;
-        while offset < CONTROL_CONTEXT_SIZE as i32 {
+        while offset < i32::try_from(CONTROL_CONTEXT_SIZE).unwrap() {
             // switchee_last_ancestor_cc -> tmp control context
             let tmp1 =
                 builder
