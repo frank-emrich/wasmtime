@@ -336,12 +336,6 @@ pub(crate) mod stack_switching_helpers {
     // Actually a vector of *mut VMTagDefinition
     pub type HandlerList = Array<*mut u8>;
 
-    #[derive(Copy, Clone)]
-    pub struct VMContext {
-        pub address: ir::Value,
-        pointer_type: ir::Type,
-    }
-
     /// Size of `stack_switching_environ::StackChain` in machine words.
     /// Used to verify that we have not changed its representation.
     const STACK_CHAIN_POINTER_COUNT: usize =
@@ -796,94 +790,6 @@ pub(crate) mod stack_switching_helpers {
                 let zero_ptr = builder.ins().iconst(env.pointer_type(), 0);
                 self.set_data(builder, zero_ptr);
             }
-        }
-    }
-
-    impl VMContext {
-        pub fn new(address: ir::Value, pointer_type: ir::Type) -> VMContext {
-            VMContext {
-                address,
-                pointer_type,
-            }
-        }
-
-        /// Returns the stack chain saved in this `VMContext`. Note that the
-        /// head of the list is the actively running stack (initial stack or
-        /// continuation).
-        pub fn load_stack_chain<'a>(
-            &self,
-            env: &mut crate::func_environ::FuncEnvironment<'a>,
-            builder: &mut FunctionBuilder,
-        ) -> StackChain {
-            let base_addr = self.address;
-
-            let offset = i32::try_from(env.offsets.vmctx_stack_switching_stack_chain()).unwrap();
-
-            // The `stack_switching_stack_chain` field of the VMContext only
-            // contains a pointer to the `StackChainCell` in the `Store`.
-            // The pointer never changes through the liftime of a `VMContext`,
-            // which is why this load is `readonly`.
-            // TODO(frank-emrich) Consider turning this pointer into a global
-            // variable, similar to `env.vmruntime_limits_ptr`.
-            let memflags = ir::MemFlags::trusted().with_readonly();
-            let stack_chain_ptr =
-                builder
-                    .ins()
-                    .load(self.pointer_type, memflags, base_addr, offset);
-
-            StackChain::load(env, builder, stack_chain_ptr, 0, self.pointer_type)
-        }
-
-        /// Stores the given stack chain saved in this `VMContext`, overwriting
-        /// the exsiting one.
-        pub fn store_stack_chain<'a>(
-            &self,
-            env: &mut crate::func_environ::FuncEnvironment<'a>,
-            builder: &mut FunctionBuilder,
-            stack_chain: &StackChain,
-        ) {
-            let base_addr = self.address;
-
-            let offset = i32::try_from(env.offsets.vmctx_stack_switching_stack_chain()).unwrap();
-
-            // Same situation as in `load_stack_chain` regarding pointer
-            // indirection and it being `readonly`.
-            let memflags = ir::MemFlags::trusted().with_readonly();
-            let stack_chain_ptr =
-                builder
-                    .ins()
-                    .load(self.pointer_type, memflags, base_addr, offset);
-
-            stack_chain.store(env, builder, stack_chain_ptr, 0)
-        }
-
-        /// Similar to `store_stack_chain`, but instead of storing an arbitrary
-        /// `StackChain`, stores StackChain::Continuation(contref)`.
-        pub fn set_active_continuation<'a>(
-            &self,
-            env: &mut crate::func_environ::FuncEnvironment<'a>,
-            builder: &mut FunctionBuilder,
-            contref: ir::Value,
-        ) {
-            let chain = StackChain::from_continuation(builder, contref, self.pointer_type);
-            self.store_stack_chain(env, builder, &chain)
-        }
-
-        pub fn load_vm_runtime_limits_ptr<'a>(
-            &self,
-            env: &mut crate::func_environ::FuncEnvironment<'a>,
-            builder: &mut FunctionBuilder,
-        ) -> ir::Value {
-            let pointer_type = env.pointer_type();
-            let vmctx = env.vmctx(builder.func);
-            let base = builder.ins().global_value(pointer_type, vmctx);
-            let offset = i32::from(env.offsets.ptr.vmctx_runtime_limits());
-
-            // The *pointer* to the VMRuntimeLimits does not change within the
-            // same function, allowing us to set the `read_only` flag.
-            let flags = ir::MemFlags::trusted().with_readonly();
-
-            builder.ins().load(pointer_type, flags, base, offset)
         }
     }
 
@@ -1420,6 +1326,77 @@ pub(crate) fn tag_address<'a>(
     }
 }
 
+/// Returns the stack chain saved in the given `VMContext`. Note that the
+/// head of the list is the actively running stack (initial stack or
+/// continuation).
+pub fn vmctx_load_stack_chain<'a>(
+    env: &mut crate::func_environ::FuncEnvironment<'a>,
+    builder: &mut FunctionBuilder,
+    vmctx: ir::Value,
+) -> StackChain {
+    let offset = i32::try_from(env.offsets.vmctx_stack_switching_stack_chain()).unwrap();
+
+    // The `stack_switching_stack_chain` field of the VMContext only
+    // contains a pointer to the `StackChainCell` in the `Store`.
+    // The pointer never changes through the liftime of a `VMContext`,
+    // which is why this load is `readonly`.
+    // TODO(frank-emrich) Consider turning this pointer into a global
+    // variable, similar to `env.vmruntime_limits_ptr`.
+    let memflags = ir::MemFlags::trusted().with_readonly();
+    let stack_chain_ptr = builder
+        .ins()
+        .load(env.pointer_type(), memflags, vmctx, offset);
+
+    StackChain::load(env, builder, stack_chain_ptr, 0, env.pointer_type())
+}
+
+/// Stores the given stack chain saved in the `VMContext`, overwriting the
+/// exsiting one.
+pub fn vmctx_store_stack_chain<'a>(
+    env: &mut crate::func_environ::FuncEnvironment<'a>,
+    builder: &mut FunctionBuilder,
+    vmctx: ir::Value,
+    stack_chain: &StackChain,
+) {
+    let offset = i32::try_from(env.offsets.vmctx_stack_switching_stack_chain()).unwrap();
+
+    // Same situation as in `load_stack_chain` regarding pointer
+    // indirection and it being `readonly`.
+    let memflags = ir::MemFlags::trusted().with_readonly();
+    let stack_chain_ptr = builder
+        .ins()
+        .load(env.pointer_type(), memflags, vmctx, offset);
+
+    stack_chain.store(env, builder, stack_chain_ptr, 0)
+}
+
+/// Similar to `vmctx_store_stack_chain`, but instead of storing an arbitrary
+/// `StackChain`, stores StackChain::Continuation(contref)`.
+pub fn vmctx_set_active_continuation<'a>(
+    env: &mut crate::func_environ::FuncEnvironment<'a>,
+    builder: &mut FunctionBuilder,
+    vmctx: ir::Value,
+    contref: ir::Value,
+) {
+    let chain = StackChain::from_continuation(builder, contref, env.pointer_type());
+    vmctx_store_stack_chain(env, builder, vmctx, &chain)
+}
+
+pub fn vmctx_load_vm_runtime_limits_ptr<'a>(
+    env: &mut crate::func_environ::FuncEnvironment<'a>,
+    builder: &mut FunctionBuilder,
+    vmctx: ir::Value,
+) -> ir::Value {
+    let pointer_type = env.pointer_type();
+    let offset = i32::from(env.offsets.ptr.vmctx_runtime_limits());
+
+    // The *pointer* to the VMRuntimeLimits does not change within the
+    // same function, allowing us to set the `read_only` flag.
+    let flags = ir::MemFlags::trusted().with_readonly();
+
+    builder.ins().load(pointer_type, flags, vmctx, offset)
+}
+
 /// This function generates code that searches for a handler for `tag_address`,
 /// which must be a `*mut VMTagDefinition`. The search walks up the chain of
 /// continuations beginning at `start`.
@@ -1713,7 +1690,7 @@ pub(crate) fn translate_resume<'a>(
     let suspend_block = builder.create_block();
     let dispatch_block = builder.create_block();
 
-    let vmctx = helpers::VMContext::new(env.vmctx_val(&mut builder.cursor()), env.pointer_type());
+    let vmctx = env.vmctx_val(&mut builder.cursor());
 
     // Split the resumetable into suspend handlers (each represented by the tag
     // index and handler block) and the switch handlers (represented just by the
@@ -1779,8 +1756,7 @@ pub(crate) fn translate_resume<'a>(
         let mut last_ancestor = helpers::VMContRef::new(vmcontref.get_last_ancestor(env, builder));
 
         // Make the currently running continuation (if any) the parent of the one we are about to resume.
-        let original_stack_chain = helpers::VMContext::new(vmctx.address, env.pointer_type())
-            .load_stack_chain(env, builder);
+        let original_stack_chain = vmctx_load_stack_chain(env, builder, vmctx);
         original_stack_chain.assert_not_absent(env, builder);
         if cfg!(debug_assertions) {
             // The continuation we are about to resume should have its chain broken up at last_ancestor.
@@ -1805,7 +1781,7 @@ pub(crate) fn translate_resume<'a>(
         vmcontref.set_last_ancestor(env, builder, zero);
 
         // We mark `resume_contref` as the currently running one
-        vmctx.set_active_continuation(env, builder, resume_contref);
+        vmctx_set_active_continuation(env, builder, vmctx, resume_contref);
 
         // Note that the resume_contref libcall a few lines further below
         // manipulates the stack limits as follows:
@@ -1831,7 +1807,7 @@ pub(crate) fn translate_resume<'a>(
         // as well as the `VMRuntimeLimits`.
         // See the comment on `stack_switching_environ::StackChain` for a description
         // of the invariants that we maintain for the various stack limits.
-        let vm_runtime_limits_ptr = vmctx.load_vm_runtime_limits_ptr(env, builder);
+        let vm_runtime_limits_ptr = vmctx_load_vm_runtime_limits_ptr(env, builder, vmctx);
         parent_csi.load_limits_from_vmcontext(env, builder, vm_runtime_limits_ptr, true);
         resume_csi.write_limits_to_vmcontext(env, builder, vm_runtime_limits_ptr);
 
@@ -1909,10 +1885,10 @@ pub(crate) fn translate_resume<'a>(
         // suspended or returned. In particular, it does not have to be what we
         // called `resume_contref` earlier on. We must reload the information
         // about the now active continuation from the VMContext.
-        let new_stack_chain = vmctx.load_stack_chain(env, builder);
+        let new_stack_chain = vmctx_load_stack_chain(env, builder, vmctx);
 
         // Now the parent contref (or initial stack) is active again
-        vmctx.store_stack_chain(env, builder, &original_stack_chain);
+        vmctx_store_stack_chain(env, builder, vmctx, &original_stack_chain);
         parent_csi.set_state(env, builder, stack_switching_environ::State::Running);
 
         // Just for consistency: Clear the handler list.
@@ -2113,8 +2089,7 @@ pub(crate) fn translate_suspend<'a>(
     emit_debug_println!(env, builder, "[suspend] suspending with tag {:p}", tag_addr);
 
     let vmctx = env.vmctx_val(&mut builder.cursor());
-    let vmctx = helpers::VMContext::new(vmctx, env.pointer_type());
-    let active_stack_chain = vmctx.load_stack_chain(env, builder);
+    let active_stack_chain = vmctx_load_stack_chain(env, builder, vmctx);
 
     let (_, end_of_chain_contref, handler_index) =
         search_handler(env, builder, &active_stack_chain, tag_addr, true);
@@ -2202,7 +2177,7 @@ pub(crate) fn translate_switch<'a>(
     switch_args: &[ir::Value],
     return_types: &[ir::Type],
 ) -> WasmResult<Vec<ir::Value>> {
-    let vmctx = helpers::VMContext::new(env.vmctx_val(&mut builder.cursor()), env.pointer_type());
+    let vmctx = env.vmctx_val(&mut builder.cursor());
 
     // Check and increment revision on switchee continuation object (i.e., the
     // one being switched to). Logically, the switchee continuation extends from
@@ -2250,7 +2225,7 @@ pub(crate) fn translate_switch<'a>(
         vm_runtime_limits_ptr,
     ) = {
         let tag_addr = tag_address(env, builder, tag_index);
-        let active_stack_chain = vmctx.load_stack_chain(env, builder);
+        let active_stack_chain = vmctx_load_stack_chain(env, builder, vmctx);
         let (handler_stack_chain, last_ancestor, _handler_index) =
             search_handler(env, builder, &active_stack_chain, tag_addr, false);
         let mut last_ancestor = helpers::VMContRef::new(last_ancestor);
@@ -2291,7 +2266,7 @@ pub(crate) fn translate_switch<'a>(
 
         // Load current runtime limits from `VMContext` and store in the
         // switcher continuation.
-        let vm_runtime_limits_ptr = vmctx.load_vm_runtime_limits_ptr(env, builder);
+        let vm_runtime_limits_ptr = vmctx_load_vm_runtime_limits_ptr(env, builder, vmctx);
         switcher_contref_csi.load_limits_from_vmcontext(env, builder, vm_runtime_limits_ptr, false);
 
         let revision = switcher_contref.get_revision(env, builder);
@@ -2345,7 +2320,7 @@ pub(crate) fn translate_switch<'a>(
 
     // Update VMContext/Store: Update active continuation and `VMRuntimeLimits`.
     {
-        vmctx.set_active_continuation(env, builder, switchee_contref.address);
+        vmctx_set_active_continuation(env, builder, vmctx, switchee_contref.address);
 
         switchee_contref_csi.write_limits_to_vmcontext(env, builder, vm_runtime_limits_ptr);
     }
@@ -2483,7 +2458,7 @@ pub(crate) fn translate_switch<'a>(
     let return_values = {
         if cfg!(debug_assertions) {
             // The originally active continuation (before the switch) should be active again.
-            let active_stack_chain = vmctx.load_stack_chain(env, builder);
+            let active_stack_chain = vmctx_load_stack_chain(env, builder, vmctx);
             // This has a debug assertion that also checks that the `active_stack_chain` is indeed a continuation.
             let active_contref = active_stack_chain.unchecked_get_continuation(env, builder);
             emit_debug_assert_eq!(env, builder, switcher_contref.address, active_contref);
