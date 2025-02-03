@@ -5,15 +5,17 @@
 use crate::runtime::vm::const_expr::{ConstEvalContext, ConstExprEvaluator};
 use crate::runtime::vm::export::Export;
 use crate::runtime::vm::memory::{Memory, RuntimeMemoryCreator};
+use crate::runtime::vm::stack_switching::StackChainCell;
 use crate::runtime::vm::table::{Table, TableElement, TableElementType};
 use crate::runtime::vm::vmcontext::{
     VMBuiltinFunctionsArray, VMContext, VMFuncRef, VMFunctionImport, VMGlobalDefinition,
     VMGlobalImport, VMMemoryDefinition, VMMemoryImport, VMOpaqueContext, VMRuntimeLimits,
-    VMTableDefinition, VMTableImport,
+    VMTableDefinition, VMTableImport, VMTagDefinition, VMTagImport,
 };
 use crate::runtime::vm::{
-    ExportFunction, ExportGlobal, ExportMemory, ExportTable, GcStore, Imports, ModuleRuntimeInfo,
-    SendSyncPtr, VMFunctionBody, VMGcRef, VMStore, VMStoreRawPtr, VmPtr, VmSafe, WasmFault,
+    ExportFunction, ExportGlobal, ExportMemory, ExportTable, ExportTag, GcStore, Imports,
+    ModuleRuntimeInfo, SendSyncPtr, VMFunctionBody, VMGcRef, VMStore, VMStoreRawPtr, VmPtr, VmSafe,
+    WasmFault,
 };
 use crate::store::{StoreInner, StoreOpaque};
 use crate::{prelude::*, StoreContextMut};
@@ -28,10 +30,10 @@ use core::{mem, ptr};
 use sptr::Strict;
 use wasmtime_environ::{
     packed_option::ReservedValue, DataIndex, DefinedGlobalIndex, DefinedMemoryIndex,
-    DefinedTableIndex, ElemIndex, EntityIndex, EntityRef, EntitySet, FuncIndex, GlobalIndex,
-    HostPtr, MemoryIndex, Module, ModuleInternedTypeIndex, PrimaryMap, PtrSize, TableIndex,
-    TableInitialValue, TableSegmentElements, Trap, VMOffsets, VMSharedTypeIndex, WasmHeapTopType,
-    VMCONTEXT_MAGIC,
+    DefinedTableIndex, DefinedTagIndex, ElemIndex, EntityIndex, EntityRef, EntitySet, FuncIndex,
+    GlobalIndex, HostPtr, MemoryIndex, Module, ModuleInternedTypeIndex, PrimaryMap, PtrSize,
+    TableIndex, TableInitialValue, TableSegmentElements, TagIndex, Trap, VMOffsets,
+    VMSharedTypeIndex, WasmHeapTopType, VMCONTEXT_MAGIC,
 };
 #[cfg(feature = "wmemcheck")]
 use wasmtime_wmemcheck::Wmemcheck;
@@ -439,6 +441,11 @@ impl Instance {
         unsafe { &*self.vmctx_plus_offset(self.offsets().vmctx_vmglobal_import(index)) }
     }
 
+    /// Return the indexed `VMTagImport`.
+    fn imported_tag(&self, index: TagIndex) -> &VMTagImport {
+        unsafe { &*self.vmctx_plus_offset(self.offsets().vmctx_vmtag_import(index)) }
+    }
+
     /// Return the indexed `VMTableDefinition`.
     #[allow(dead_code)]
     fn table(&mut self, index: DefinedTableIndex) -> VMTableDefinition {
@@ -566,10 +573,21 @@ impl Instance {
             })
     }
 
+    /// Return the indexed `VMTagDefinition`.
+    fn tag_ptr(&mut self, index: DefinedTagIndex) -> NonNull<VMTagDefinition> {
+        unsafe { self.vmctx_plus_offset_mut(self.offsets().vmctx_vmtag_definition(index)) }
+    }
+
     /// Return a pointer to the interrupts structure
     #[inline]
     pub fn runtime_limits(&mut self) -> NonNull<Option<VmPtr<VMRuntimeLimits>>> {
         unsafe { self.vmctx_plus_offset_mut(self.offsets().ptr.vmctx_runtime_limits()) }
+    }
+
+    /// Return a pointer to the stack chain
+    #[inline]
+    pub fn stack_chain(&mut self) -> NonNull<Option<VmPtr<StackChainCell>>> {
+        unsafe { self.vmctx_plus_offset_mut(self.offsets().ptr.vmctx_stack_chain()) }
     }
 
     /// Return a pointer to the global epoch counter used by this instance.
@@ -603,11 +621,15 @@ impl Instance {
             self.epoch_ptr()
                 .write(Some(NonNull::from(store.engine().epoch_counter()).into()));
             self.set_gc_heap(store.gc_store_mut().ok());
+            //*self.stack_chain().as_ptr() =  NonNull::new(store.stack_chain()).map(|ptr| ptr.into());
+            self.stack_chain()
+                .write(Some(NonNull::from(store.stack_chain()).into()));
         } else {
             self.runtime_limits().write(None);
             #[cfg(target_has_atomic = "64")]
             self.epoch_ptr().write(None);
             self.set_gc_heap(None);
+            self.stack_chain().write(None);
         }
     }
 
@@ -677,6 +699,18 @@ impl Instance {
             definition,
             vmctx,
             table: self.env_module().tables[index],
+        }
+    }
+
+    fn get_exported_tag(&mut self, index: TagIndex) -> ExportTag {
+        ExportTag {
+            definition: if let Some(def_index) = self.env_module().defined_tag_index(index) {
+                self.tag_ptr(def_index)
+            } else {
+                self.imported_tag(index).from.as_non_null()
+            },
+            vmctx: self.vmctx(),
+            tag: self.env_module().tags[index],
         }
     }
 
@@ -1068,6 +1102,7 @@ impl Instance {
                             )
                         }),
                     )?,
+                    WasmHeapTopType::Cont => todo!(), // TODO(dhil): We should have a bespoke cont table type first.
                 }
             }
         }
@@ -1408,6 +1443,13 @@ impl Instance {
                 .as_ptr(),
             imports.globals.len(),
         );
+        debug_assert_eq!(imports.tags.len(), module.num_imported_tags);
+        ptr::copy_nonoverlapping(
+            imports.tags.as_ptr(),
+            self.vmctx_plus_offset_mut(offsets.vmctx_imported_tags_begin())
+                .as_ptr(),
+            imports.tags.len(),
+        );
 
         // N.B.: there is no need to initialize the funcrefs array because we
         // eagerly construct each element in it whenever asked for a reference
@@ -1446,6 +1488,20 @@ impl Instance {
             ptr = ptr.add(1);
         }
 
+        // Initialize the defined tags
+        for index in 0..module.tags.len() - module.num_imported_tags {
+            let defined_index = DefinedTagIndex::new(index);
+            let tag_index = module.tag_index(defined_index);
+            let tag = module.tags[tag_index];
+            let to = self.tag_ptr(defined_index);
+            ptr::write(
+                to.as_ptr(),
+                VMTagDefinition::new(
+                    self.engine_type_index(tag.signature.unwrap_module_type_index()),
+                ),
+            );
+        }
+
         // Zero-initialize the globals so that nothing is uninitialized memory
         // after this function returns. The globals are actually initialized
         // with their const expression initializers after the instance is fully
@@ -1477,6 +1533,16 @@ impl Instance {
 #[derive(Debug)]
 pub struct InstanceHandle {
     instance: Option<SendSyncPtr<Instance>>,
+}
+
+// These are only valid if the `Instance` type is send/sync, hence the
+// assertion below.
+unsafe impl Send for InstanceHandle {}
+unsafe impl Sync for InstanceHandle {}
+
+fn _assert_send_sync() {
+    fn _assert<T: Send + Sync>() {}
+    _assert::<Instance>();
 }
 
 impl InstanceHandle {
@@ -1517,6 +1583,11 @@ impl InstanceHandle {
         self.instance_mut().get_exported_table(export)
     }
 
+    /// Lookup a tag by index.
+    pub fn get_exported_tag(&mut self, export: TagIndex) -> ExportTag {
+        self.instance_mut().get_exported_tag(export)
+    }
+
     /// Lookup an item with the given index.
     pub fn get_export_by_index(&mut self, export: EntityIndex) -> Export {
         match export {
@@ -1524,6 +1595,7 @@ impl InstanceHandle {
             EntityIndex::Global(i) => Export::Global(self.get_exported_global(i)),
             EntityIndex::Table(i) => Export::Table(self.get_exported_table(i)),
             EntityIndex::Memory(i) => Export::Memory(self.get_exported_memory(i)),
+            EntityIndex::Tag(i) => Export::Tag(self.get_exported_tag(i)),
         }
     }
 
