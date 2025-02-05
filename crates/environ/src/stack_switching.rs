@@ -222,8 +222,14 @@ impl From<State> for i32 {
     }
 }
 
-/// Defines offsets of the fields in the continuation-related types
+/// Defines offsets of the fields in the continuation-related types.
+// FIXME(frank-emrich) This uses the host pointer size. We probably have to port
+// this to `VMOffsets`/`PtrSize`?
 pub mod offsets {
+    const fn align(offset: usize, alignment: usize) -> usize {
+        (offset + (alignment - 1)) / alignment * alignment
+    }
+
     /// Offsets of fields in `Array`.
     /// Note that these are independent from the type parameter `T`.
     pub mod array {
@@ -241,6 +247,7 @@ pub mod offsets {
     /// Offsets of fields in `wasmtime_runtime::continuation::VMContRef`.
     /// We uses tests there to ensure these values are correct.
     pub mod vm_cont_ref {
+        use super::align;
         use crate::stack_switching::*;
 
         /// Offset of `common_stack_information` field
@@ -257,7 +264,13 @@ pub mod offsets {
         /// Offset of `values` field
         pub const VALUES: usize = ARGS + core::mem::size_of::<Payloads>();
         /// Offset of `revision` field
-        pub const REVISION: usize = VALUES + core::mem::size_of::<Payloads>();
+        // FIXME(frank-emrich) Just taking alignment into account here and
+        // nowhere else is terrible. But this whole module is probably going to
+        // be replaced by a `VMOffset`-based approach anyway.
+        pub const REVISION: usize = align(
+            VALUES + core::mem::size_of::<Payloads>(),
+            core::mem::align_of::<u64>(),
+        );
     }
 
     /// Offsets of fields in `StackLimits` struct.
