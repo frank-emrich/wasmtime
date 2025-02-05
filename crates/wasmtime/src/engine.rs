@@ -383,8 +383,10 @@ impl Engine {
                     let expected =
                     match target.operating_system  {
                         OperatingSystem::Windows => "update_windows_tib",
-                        OperatingSystem::Linux | OperatingSystem::MacOSX(_) => "basic",
-                        _ => {return Err(String::from("stack-switching feature not supported on this platform"));}
+                        OperatingSystem::Linux
+                        | OperatingSystem::MacOSX(_)
+                        | OperatingSystem::Darwin(_)  => "basic",
+                        _ => { return Err(String::from("stack-switching feature not supported on this platform")); }
                     };
                     *value == FlagValue::Enum(expected)
                 } else {

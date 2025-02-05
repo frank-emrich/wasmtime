@@ -2070,8 +2070,11 @@ impl Config {
                 use target_lexicon::*;
                 match self.compiler_target() {
                     Triple {
-                        architecture: Architecture::X86_64,
-                        operating_system: OperatingSystem::Linux | OperatingSystem::MacOSX(_),
+                        architecture: Architecture::X86_64 | Architecture::X86_64h,
+                        operating_system:
+                            OperatingSystem::Linux
+                            | OperatingSystem::MacOSX(_)
+                            | OperatingSystem::Darwin(_),
                         ..
                     } => {
                         // Other Cranelift backends are either 100% missing or complete
@@ -2486,7 +2489,9 @@ impl Config {
             use target_lexicon::OperatingSystem;
             let model = match target.operating_system {
                 OperatingSystem::Windows => "update_windows_tib",
-                OperatingSystem::Linux | OperatingSystem::MacOSX(_) => "basic",
+                OperatingSystem::Linux
+                | OperatingSystem::MacOSX(_)
+                | OperatingSystem::Darwin(_) => "basic",
                 _ => bail!("stack-switching feature not supported on this platform "),
             };
 
