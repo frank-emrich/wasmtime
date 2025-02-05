@@ -228,7 +228,7 @@ pub mod offsets {
     /// Note that these are independent from the type parameter `T`.
     pub mod array {
         use crate::stack_switching::*;
-        use memoffset::offset_of;
+        use core::mem::offset_of;
 
         /// Offset of `capacity` field
         pub const CAPACITY: usize = offset_of!(Array<()>, capacity);
@@ -263,7 +263,7 @@ pub mod offsets {
     /// Offsets of fields in `StackLimits` struct.
     pub mod stack_limits {
         use crate::stack_switching::*;
-        use memoffset::offset_of;
+        use core::mem::offset_of;
 
         /// Offset of `stack_limit` field
         pub const STACK_LIMIT: usize = offset_of!(StackLimits, stack_limit);
@@ -274,7 +274,7 @@ pub mod offsets {
     /// Offsets of fields in `CommonStackInformation` struct.
     pub mod common_stack_information {
         use crate::stack_switching::*;
-        use memoffset::offset_of;
+        use core::mem::offset_of;
 
         /// Offset of `limits` field
         pub const LIMITS: usize = offset_of!(CommonStackInformation, limits);
