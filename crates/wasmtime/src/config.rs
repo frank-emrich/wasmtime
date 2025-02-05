@@ -2064,12 +2064,27 @@ impl Config {
                 // `threads` proposal, notably shared memory, because Rust can't
                 // safely implement loads/stores in the face of shared memory.
                 if self.compiler_target().is_pulley() {
-                    return WasmFeatures::THREADS;
+                    return WasmFeatures::THREADS | WasmFeatures::STACK_SWITCHING;
                 }
 
-                // Other Cranelift backends are either 100% missing or complete
-                // at this time, so no need to further filter.
-                WasmFeatures::empty()
+                use target_lexicon::*;
+                match self.compiler_target() {
+                    Triple {
+                        architecture: Architecture::X86_64,
+                        operating_system: OperatingSystem::Linux | OperatingSystem::MacOSX(_),
+                        ..
+                    } => {
+                        // Other Cranelift backends are either 100% missing or complete
+                        // at this time, so no need to further filter.
+                        WasmFeatures::empty()
+                    }
+
+                    _ => {
+                        // On platforms other than x64 Unix-like, we don't
+                        // support stack switching.
+                        WasmFeatures::STACK_SWITCHING
+                    }
+                }
             }
             Some(Strategy::Winch) => {
                 let mut unsupported = WasmFeatures::GC
