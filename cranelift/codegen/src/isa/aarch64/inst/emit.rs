@@ -3000,6 +3000,148 @@ impl MachInstEmit for Inst {
                 // in this case.
                 start_off = sink.cur_offset();
             }
+            &Inst::StackSwitchBasic {
+                store_context_ptr,
+                load_context_ptr,
+                in_payload0,
+                out_payload0,
+            } => {
+                // Note that we do not emit anything for preserving and restoring
+                // ordinary registers here: That's taken care of by regalloc for us,
+                // since we marked this instruction as clobbering all registers.
+                //
+                //
+                // Also note that we do nothing about passing the single payload
+                // value: We've informed regalloc that it is sent and received via
+                // the fixed register given by [stack_switch::payload_register]
+
+                let (tmp1, tmp2) = {
+                    // Ideally we would just ask regalloc for two temporary registers.
+                    // However, adding any early defs to the constraints on StackSwitch
+                    // causes TooManyLiveRegs. Fortunately, we can manually find tmp
+                    // registers without regalloc: Since our instruction clobbers all
+                    // registers, we can simply pick any register that is not assigned
+                    // to the operands.
+
+                    let all = crate::isa::aarch64::abi::ALL_CLOBBERS;
+
+                    let used_regs = [
+                        load_context_ptr,
+                        store_context_ptr,
+                        in_payload0,
+                        out_payload0.to_reg(),
+                    ];
+
+                    let mut tmps = all.into_iter().filter_map(|preg| {
+                        let reg: Reg = preg.into();
+                        if !used_regs.contains(&reg) {
+                            Some(isle::WritableReg::from_reg(reg))
+                        } else {
+                            None
+                        }
+                    });
+                    (tmps.next().unwrap(), tmps.next().unwrap())
+                };
+
+                let layout = stack_switch::control_context_layout();
+                let sp_offset = layout.stack_pointer_offset as i64;
+                let ip_offset = layout.ip_offset as i64;
+                let fp_offset = layout.frame_pointer_offset as i64;
+
+                // Location to which someone switch-ing back to this stack will jump
+                // to: Right behind the `StackSwitch` instruction
+                let resume = sink.get_label();
+
+                //
+                // For RBP and RSP we do the following:
+                // - Load new value for register from `load_context_ptr` +
+                // corresponding offset.
+                // - Store previous (!) value of register at `store_context_ptr` +
+                // corresponding offset.
+                //
+                // Since `load_context_ptr` and `store_context_ptr` are allowed to be
+                // equal, we need to use a temporary register here.
+                //
+
+                let mut exchange = |offset, reg| {
+                    let inst = Inst::ULoad64 {
+                        mem: AMode::RegOffset {
+                            rn: load_context_ptr,
+                            off: offset,
+                        },
+                        rd: tmp1,
+                        flags: MemFlags::trusted(),
+                    };
+                    inst.emit(sink, emit_info, state);
+
+                    let inst = Inst::Store64 {
+                        rd: reg,
+                        mem: AMode::RegOffset {
+                            rn: store_context_ptr,
+                            off: offset,
+                        },
+                        flags: MemFlags::trusted(),
+                    };
+                    inst.emit(sink, emit_info, state);
+
+                    let dst = Writable::from_reg(reg.into());
+                    // Using ADD here instead of MOV because the latter treats x31 as xzr.
+                    let inst = Inst::AluRRImm12 {
+                        alu_op: ALUOp::Add,
+                        size: OperandSize::Size64,
+                        rd: dst,
+                        rn: tmp1.to_reg(),
+                        imm12: Imm12::maybe_from_u64(0).unwrap(),
+                    };
+                    inst.emit(sink, emit_info, state);
+                };
+
+                exchange(sp_offset, regs::stack_reg());
+                exchange(fp_offset, regs::fp_reg());
+
+                //
+                // Load target PC, store resume PC, jump to target PC
+                //
+
+                let inst = Inst::ULoad64 {
+                    mem: AMode::RegOffset {
+                        rn: load_context_ptr,
+                        off: ip_offset,
+                    },
+                    rd: tmp1,
+                    flags: MemFlags::trusted(),
+                };
+                inst.emit(sink, emit_info, state);
+
+                //let amode = Amode::RipRelative { target: resume };
+                let inst = Inst::ULoad64 {
+                    mem: AMode::Label {
+                        label: MemLabel::Mach(resume),
+                    },
+                    rd: tmp2,
+                    flags: MemFlags::trusted(),
+                };
+                inst.emit(sink, emit_info, state);
+
+                let inst = Inst::Store64 {
+                    rd: tmp2.to_reg(),
+                    mem: AMode::RegOffset {
+                        rn: store_context_ptr,
+                        off: ip_offset,
+                    },
+                    flags: MemFlags::trusted(),
+                };
+                inst.emit(sink, emit_info, state);
+
+                // FIXME(frank-emrich) IndirectBr ignores these
+                let inst = Inst::IndirectBr {
+                    rn: tmp1.to_reg(),
+                    targets: vec![],
+                };
+                inst.emit(sink, emit_info, state);
+
+                sink.bind_label(resume, state.ctrl_plane_mut());
+            }
             &Inst::CondBr {
                 taken,
                 not_taken,

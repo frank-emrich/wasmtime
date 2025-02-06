@@ -825,6 +825,13 @@
        (Rets
         (rets VecRetPair))
 
+       ;; Stack switching
+       (StackSwitchBasic (store_context_ptr Reg)
+                         (load_context_ptr Reg)
+                         (in_payload0 Reg)
+                         (out_payload0 WritableReg))
+
+
        ;; ---- branches (exactly one must appear at end of BB) ----
 
        ;; A machine return instruction.
@@ -4404,6 +4411,18 @@
 
 (decl gen_call_indirect (SigRef Value ValueSlice) InstOutput)
 (extern constructor gen_call_indirect gen_call_indirect)
+
+
+;;;; Helpers for emitting stack switches ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(decl aarch64_stack_switch_basic (Reg Reg Reg) Reg)
+(rule (aarch64_stack_switch_basic store_context_ptr load_context_ptr in_payload0)
+      (let ((out_payload0 WritableReg (temp_writable_reg $I64))
+            (_ Unit (emit (MInst.StackSwitchBasic store_context_ptr
+                                                  load_context_ptr
+                                                  in_payload0
+                                                  out_payload0))))
+        out_payload0))
 
 ;; Helpers for pinned register manipulation.
 

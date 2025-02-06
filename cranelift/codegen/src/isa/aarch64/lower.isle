@@ -2505,6 +2505,16 @@
 (rule (lower (return_call_indirect sig_ref callee args))
       (gen_return_call_indirect sig_ref callee args))
 
+;; Rules for `stack_switch` ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; currently, only the Basic model is supported
+(rule (lower (stack_switch store_context_ptr load_context_ptr in_payload0))
+      (if-let (StackSwitchModel.Basic) (stack_switch_model))
+      (let ((store_context_ptr Reg (put_in_reg store_context_ptr))
+            (load_context_ptr Reg (put_in_reg load_context_ptr))
+            (in_payload0 Reg (put_in_reg in_payload0)))
+        (aarch64_stack_switch_basic store_context_ptr load_context_ptr in_payload0)))
+
 ;;;; Rules for loads ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (rule load_i8_aarch64_uload8 (lower

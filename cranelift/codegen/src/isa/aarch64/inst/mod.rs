@@ -24,6 +24,7 @@ pub mod emit;
 pub(crate) use self::emit::*;
 use crate::isa::aarch64::abi::AArch64MachineDeps;
 
+mod stack_switch;
 pub(crate) mod unwind;
 
 #[cfg(test)]
@@ -871,6 +872,28 @@ fn aarch64_get_operands(inst: &mut Inst, collector: &mut impl OperandVisitor) {
             for CallArgPair { vreg, preg } in &mut info.uses {
                 collector.reg_fixed_use(vreg, *preg);
             }
+        }
+        Inst::StackSwitchBasic {
+            store_context_ptr,
+            load_context_ptr,
+            in_payload0,
+            out_payload0,
+        } => {
+            use crate::isa::aarch64::inst::stack_switch;
+            collector.reg_use(load_context_ptr);
+            collector.reg_use(store_context_ptr);
+            collector.reg_fixed_use(in_payload0, stack_switch::payload_register());
+            collector.reg_fixed_def(out_payload0, stack_switch::payload_register());
+
+            let mut clobbers = crate::isa::aarch64::abi::ALL_CLOBBERS;
+            // The return/payload reg must not be included in the clobber set
+            clobbers.remove(
+                stack_switch::payload_register()
+                    .to_real_reg()
+                    .unwrap()
+                    .into(),
+            );
+            collector.reg_clobbers(clobbers);
         }
         Inst::CondBr { kind, .. } => match kind {
             CondBrKind::Zero(rt, _) | CondBrKind::NotZero(rt, _) => collector.reg_use(rt),
@@ -2608,6 +2631,18 @@ impl Inst {
                 s
             }
             &Inst::Ret {} => "ret".to_string(),
+            &Inst::StackSwitchBasic {
+                store_context_ptr,
+                load_context_ptr,
+                in_payload0,
+                out_payload0,
+            } => {
+                let store_context_ptr = pretty_print_reg(store_context_ptr);
+                let load_context_ptr = pretty_print_reg(load_context_ptr);
+                let in_payload0 = pretty_print_reg(in_payload0);
+                let out_payload0 = pretty_print_reg(out_payload0.to_reg());
+                format!("{out_payload0} = stack_switch_basic {store_context_ptr}, {load_context_ptr}, {in_payload0}")
+            }
             &Inst::AuthenticatedRet { key, is_hint } => {
                 let key = match key {
                     APIKey::AZ => "az",
