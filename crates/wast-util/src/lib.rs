@@ -392,7 +392,7 @@ impl WastTest {
             }
         }
 
-        if cfg!(not(all(unix, target_arch = "x86_64"))) {
+        if !(cfg!(unix) && cfg!(any(target_arch = "x86_64", target_arch = "aarch64"))) {
             // Stack switching is not implemented on platforms other than x64
             // unix, the corresponding tests will fail.
             if self.path.parent().unwrap().ends_with("stack-switching") {
