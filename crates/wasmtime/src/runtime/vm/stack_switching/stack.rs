@@ -11,7 +11,7 @@ use wasmtime_environ::stack_switching::Array;
 use crate::runtime::vm::{VMContext, VMFuncRef, ValRaw};
 
 cfg_if::cfg_if! {
-    if #[cfg(all(feature = "stack-switching",unix, target_arch = "x86_64"))] {
+    if #[cfg(all(feature = "stack-switching", unix, any(target_arch = "x86_64", target_arch = "aarch64")))] {
         pub mod unix;
         use unix as imp;
     } else {
