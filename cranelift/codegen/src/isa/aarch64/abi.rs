@@ -1438,6 +1438,7 @@ const fn default_aapcs_clobbers() -> PRegSet {
         .with(vreg_preg(31))
 }
 
+// FIXME(frank-emrich) This doesn't include the link register. That's fine, right?
 const fn all_clobbers() -> PRegSet {
     PRegSet::empty()
         .with(xreg_preg(0))
