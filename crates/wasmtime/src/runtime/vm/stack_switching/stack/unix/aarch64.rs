@@ -4,10 +4,8 @@ asm_func!(
     "wasmtime_continuation_start",
     "
 
-        ldr x3, [sp], #16
-        ldr x2, [sp], #16
-        ldr x1, [sp], #16
-        ldr x0, [sp], #16
+        ldp x3, x2, [sp], #16
+        ldp x1, x0, [sp], #16
 
         // Call fiber_start
         bl {fiber_start}

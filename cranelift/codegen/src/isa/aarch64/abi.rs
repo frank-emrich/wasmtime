@@ -1438,7 +1438,7 @@ const fn default_aapcs_clobbers() -> PRegSet {
         .with(vreg_preg(31))
 }
 
-// FIXME(frank-emrich) This doesn't include the link register. That's fine, right?
+// FIXME(frank-emrich) This doesn't include the  register. That's fine, right?
 const fn all_clobbers() -> PRegSet {
     PRegSet::empty()
         .with(xreg_preg(0))
@@ -1470,7 +1470,7 @@ const fn all_clobbers() -> PRegSet {
         .with(xreg_preg(26))
         .with(xreg_preg(27))
         .with(xreg_preg(28))
-        .with(xreg_preg(29))
+        .with(xreg_preg(30)) // skipping frame pointer, including link register
         .with(vreg_preg(0))
         .with(vreg_preg(1))
         .with(vreg_preg(2))
