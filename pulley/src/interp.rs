@@ -418,7 +418,7 @@ impl Default for XRegVal {
     }
 }
 
-#[allow(missing_docs)]
+#[allow(missing_docs, reason = "self-describing methods")]
 impl XRegVal {
     pub fn new_i32(x: i32) -> Self {
         let mut val = XRegVal::default();
@@ -537,7 +537,7 @@ impl Default for FRegVal {
     }
 }
 
-#[allow(missing_docs)]
+#[allow(missing_docs, reason = "self-describing methods")]
 impl FRegVal {
     pub fn new_f32(f: f32) -> Self {
         let mut val = Self::default();
@@ -620,7 +620,7 @@ impl Default for VRegVal {
     }
 }
 
-#[allow(missing_docs)]
+#[allow(missing_docs, reason = "self-describing methods")]
 impl VRegVal {
     pub fn new_u128(i: u128) -> Self {
         let mut val = Self::default();
@@ -2084,7 +2084,7 @@ impl OpVisitor for Interpreter<'_> {
         // Decode the `PcRelOffset` without tampering with `self.pc` as the
         // jump is relative to `self.pc`.
         let mut tmp = self.pc;
-        let rel = unwrap_uninhabited(PcRelOffset::decode(&mut tmp));
+        let Ok(rel) = PcRelOffset::decode(&mut tmp);
         let offset = isize::try_from(i32::from(rel)).unwrap();
         self.pc = unsafe { self.pc.offset(offset) };
         ControlFlow::Continue(())
