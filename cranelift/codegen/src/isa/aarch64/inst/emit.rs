@@ -3074,8 +3074,23 @@ impl MachInstEmit for Inst {
                     };
                     inst.emit(sink, emit_info, state);
 
+                    let store_value_reg = if reg == regs::stack_reg() {
+                        // move stack pointer into tmp2 reg, we cannot directly
+                        // store its value (gets interpreted as xzr)
+                        let inst = Inst::AluRRImm12 {
+                            alu_op: ALUOp::Add,
+                            size: OperandSize::Size64,
+                            rd: tmp2,
+                            rn: reg,
+                            imm12: Imm12::maybe_from_u64(0).unwrap(),
+                        };
+                        inst.emit(sink, emit_info, state);
+                        tmp2.to_reg()
+                    } else {
+                        reg
+                    };
                     let inst = Inst::Store64 {
-                        rd: reg,
+                        rd: store_value_reg,
                         mem: AMode::RegOffset {
                             rn: store_context_ptr,
                             off: offset,
@@ -3113,13 +3128,12 @@ impl MachInstEmit for Inst {
                 };
                 inst.emit(sink, emit_info, state);
 
-                //let amode = Amode::RipRelative { target: resume };
-                let inst = Inst::ULoad64 {
-                    mem: AMode::Label {
-                        label: MemLabel::Mach(resume),
-                    },
+                /// FIXME(frank-emrich) There's a TODO on Adr to implement
+                /// support for labels. Should add that.
+                const RESUME_OFFSET: i32 = 4 * 3; // three more instructions until position of resume label
+                let inst = Inst::Adr {
                     rd: tmp2,
-                    flags: MemFlags::trusted(),
+                    off: RESUME_OFFSET,
                 };
                 inst.emit(sink, emit_info, state);
 
