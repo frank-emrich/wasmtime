@@ -2070,7 +2070,8 @@ impl Config {
                 use target_lexicon::*;
                 match self.compiler_target() {
                     Triple {
-                        architecture: Architecture::X86_64 | Architecture::X86_64h,
+                        architecture:
+                            Architecture::X86_64 | Architecture::X86_64h | Architecture::Aarch64(_),
                         operating_system:
                             OperatingSystem::Linux
                             | OperatingSystem::MacOSX(_)
