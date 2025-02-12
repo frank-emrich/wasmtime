@@ -92,6 +92,15 @@ pub enum Trap {
     /// Async-lifted export failed to produce a result by calling `task.return`
     /// before returning `STATUS_DONE` and/or after all host tasks completed.
     NoAsyncResult,
+
+    /// We are suspending to a tag for which there is no active handler.
+    UnhandledTag,
+
+    /// Attempt to resume a continuation twice.
+    ContinuationAlreadyConsumed,
+
+    /// For debug assertions in generated code.
+    DebugAssertion,
     // if adding a variant here be sure to update the `check!` macro below
 }
 
@@ -129,6 +138,9 @@ impl Trap {
             CastFailure
             CannotEnterComponent
             NoAsyncResult
+            UnhandledTag
+            ContinuationAlreadyConsumed
+            DebugAssertion
         }
 
         None
@@ -160,6 +172,9 @@ impl fmt::Display for Trap {
             CastFailure => "cast failure",
             CannotEnterComponent => "cannot enter component instance",
             NoAsyncResult => "async-lifted export failed to produce a result",
+            UnhandledTag => "unhandled tag",
+            ContinuationAlreadyConsumed => "continuation already consumed",
+            DebugAssertion => "triggered debug assertion",
         };
         write!(f, "wasm trap: {desc}")
     }
