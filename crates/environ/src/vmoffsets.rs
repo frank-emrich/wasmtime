@@ -8,7 +8,7 @@
 //      // these fields is a compile-time constant when using `HostPtr`.
 //      magic: u32,
 //      _padding: u32, // (On 64-bit systems)
-//      runtime_limits: *const VMRuntimeLimits,
+//      vm_store_context: *const VMStoreContext,
 //      builtin_functions: *mut VMBuiltinFunctionsArray,
 //      callee: *mut VMFunctionBody,
 //      epoch_ptr: *mut AtomicU64,
@@ -16,7 +16,6 @@
 //      gc_heap_bound: *mut u8,
 //      gc_heap_data: *mut T, // Collector-specific pointer
 //      type_ids: *const VMSharedTypeIndex,
-//      stack_chain: *const StackChainCell,
 //
 //      // Variable-width fields come after the fixed-width fields above. Place
 //      // memory-related items first as they're some of the most frequently
@@ -109,7 +108,7 @@ pub trait PtrSize {
     fn size(&self) -> u8;
 
     /// The offset of the `VMContext::runtime_limits` field
-    fn vmcontext_runtime_limits(&self) -> u8 {
+    fn vmcontext_store_context(&self) -> u8 {
         u8::try_from(align(
             u32::try_from(core::mem::size_of::<u32>()).unwrap(),
             u32::from(self.size()),
@@ -119,7 +118,7 @@ pub trait PtrSize {
 
     /// The offset of the `VMContext::builtin_functions` field
     fn vmcontext_builtin_functions(&self) -> u8 {
-        self.vmcontext_runtime_limits() + self.size()
+        self.vmcontext_store_context() + self.size()
     }
 
     /// The offset of the `array_call` field.
@@ -165,39 +164,50 @@ pub trait PtrSize {
         4
     }
 
-    // Offsets within `VMRuntimeLimits`
-
-    /// Return the offset of the `fuel_consumed` field of `VMRuntimeLimits`
+    /// This is the size of the largest value type (i.e. a V128).
     #[inline]
-    fn vmruntime_limits_fuel_consumed(&self) -> u8 {
+    fn maximum_value_size(&self) -> u8 {
+        self.size_of_vmglobal_definition()
+    }
+
+    // Offsets within `VMStoreContext`
+
+    /// Return the offset of the `fuel_consumed` field of `VMStoreContext`
+    #[inline]
+    fn vmstore_context_fuel_consumed(&self) -> u8 {
         0
     }
 
-    /// Return the offset of the `epoch_deadline` field of `VMRuntimeLimits`
+    /// Return the offset of the `epoch_deadline` field of `VMStoreContext`
     #[inline]
-    fn vmruntime_limits_epoch_deadline(&self) -> u8 {
-        self.vmruntime_limits_fuel_consumed() + 8
+    fn vmstore_context_epoch_deadline(&self) -> u8 {
+        self.vmstore_context_fuel_consumed() + 8
     }
 
-    /// Return the offset of the `stack_limit` field of `VMRuntimeLimits`
+    /// Return the offset of the `stack_limit` field of `VMStoreContext`
     #[inline]
-    fn vmruntime_limits_stack_limit(&self) -> u8 {
-        self.vmruntime_limits_epoch_deadline() + 8
+    fn vmstore_context_stack_limit(&self) -> u8 {
+        self.vmstore_context_epoch_deadline() + 8
     }
 
-    /// Return the offset of the `last_wasm_exit_fp` field of `VMRuntimeLimits`.
-    fn vmruntime_limits_last_wasm_exit_fp(&self) -> u8 {
-        self.vmruntime_limits_stack_limit() + self.size()
+    /// Return the offset of the `last_wasm_exit_fp` field of `VMStoreContext`.
+    fn vmstore_context_last_wasm_exit_fp(&self) -> u8 {
+        self.vmstore_context_stack_limit() + self.size()
     }
 
-    /// Return the offset of the `last_wasm_exit_pc` field of `VMRuntimeLimits`.
-    fn vmruntime_limits_last_wasm_exit_pc(&self) -> u8 {
-        self.vmruntime_limits_last_wasm_exit_fp() + self.size()
+    /// Return the offset of the `last_wasm_exit_pc` field of `VMStoreContext`.
+    fn vmstore_context_last_wasm_exit_pc(&self) -> u8 {
+        self.vmstore_context_last_wasm_exit_fp() + self.size()
     }
 
-    /// Return the offset of the `last_wasm_entry_fp` field of `VMRuntimeLimits`.
-    fn vmruntime_limits_last_wasm_entry_fp(&self) -> u8 {
-        self.vmruntime_limits_last_wasm_exit_pc() + self.size()
+    /// Return the offset of the `last_wasm_entry_fp` field of `VMStoreContext`.
+    fn vmstore_context_last_wasm_entry_fp(&self) -> u8 {
+        self.vmstore_context_last_wasm_exit_pc() + self.size()
+    }
+
+    /// Return the offset of the `stack_chain` field of `VMStoreContext`.
+    fn vmstore_context_stack_chain(&self) -> u8 {
+        self.vmstore_context_last_wasm_entry_fp() + self.size()
     }
 
     // Offsets within `VMMemoryDefinition`
@@ -237,6 +247,122 @@ pub trait PtrSize {
         .unwrap()
     }
 
+    /// Return the size of `VMStackChain`.
+    fn size_of_vmstack_chain(&self) -> u8 {
+        2 * self.size()
+    }
+
+    // Offsets within `VMStackLimits`
+
+    /// Return the offset of `VMStackLimits::stack_limit`.
+    fn vmstack_limits_stack_limit(&self) -> u8 {
+        0
+    }
+
+    /// Return the offset of `VMStackLimits::last_wasm_entry_fp`.
+    fn vmstack_limits_last_wasm_entry_fp(&self) -> u8 {
+        self.size()
+    }
+
+    // Offsets within `VMArray`
+
+    /// Return the offset of `VMArray::length`.
+    fn vmarray_length(&self) -> u8 {
+        0
+    }
+
+    /// Return the offset of `VMArray::capacity`.
+    fn vmarray_capacity(&self) -> u8 {
+        4
+    }
+
+    /// Return the offset of `VMArray::data`.
+    fn vmarray_data(&self) -> u8 {
+        8
+    }
+
+    /// Return the size of `VMArray`.
+    fn size_of_vmarray(&self) -> u8 {
+        8 + self.size()
+    }
+
+    // Offsets within `VMCommonStackInformation`
+
+    /// Return the offset of `VMCommonStackInformation::limits`.
+    fn vmcommon_stack_information_limits(&self) -> u8 {
+        0 * self.size()
+    }
+
+    /// Return the offset of `VMCommonStackInformation::state`.
+    fn vmcommon_stack_information_state(&self) -> u8 {
+        2 * self.size()
+    }
+
+    /// Return the offset of `VMCommonStackInformation::handlers`.
+    fn vmcommon_stack_information_handlers(&self) -> u8 {
+        u8::try_from(align(
+            self.vmcommon_stack_information_state() as u32 + 4,
+            u32::from(self.size()),
+        ))
+        .unwrap()
+    }
+
+    /// Return the offset of `VMCommonStackInformation::first_switch_handler_index`.
+    fn vmcommon_stack_information_first_switch_handler_index(&self) -> u8 {
+        self.vmcommon_stack_information_handlers() + self.size_of_vmarray()
+    }
+
+    /// Return the size of `VMCommonStackInformation`.
+    fn size_of_vmcommon_stack_information(&self) -> u8 {
+        u8::try_from(align(
+            self.vmcommon_stack_information_first_switch_handler_index() as u32 + 4,
+            u32::from(self.size()),
+        ))
+        .unwrap()
+    }
+
+    // Offsets within `VMContRef`
+
+    /// Return the offset of `VMContRef::common_stack_information`.
+    fn vmcontref_common_stack_information(&self) -> u8 {
+        0 * self.size()
+    }
+
+    /// Return the offset of `VMContRef::parent_chain`.
+    fn vmcontref_parent_chain(&self) -> u8 {
+        u8::try_from(align(
+            (self.vmcontref_common_stack_information() + self.size_of_vmcommon_stack_information())
+                as u32,
+            u32::from(self.size()),
+        ))
+        .unwrap()
+    }
+
+    /// Return the offset of `VMContRef::last_ancestor`.
+    fn vmcontref_last_ancestor(&self) -> u8 {
+        self.vmcontref_parent_chain() + 2 * self.size()
+    }
+
+    /// Return the offset of `VMContRef::revision`.
+    fn vmcontref_revision(&self) -> u8 {
+        self.vmcontref_last_ancestor() + self.size()
+    }
+
+    /// Return the offset of `VMContRef::stack`.
+    fn vmcontref_stack(&self) -> u8 {
+        self.vmcontref_revision() + 8
+    }
+
+    /// Return the offset of `VMContRef::args`.
+    fn vmcontref_args(&self) -> u8 {
+        self.vmcontref_stack() + 3 * self.size()
+    }
+
+    /// Return the offset of `VMContRef::values`.
+    fn vmcontref_values(&self) -> u8 {
+        self.vmcontref_args() + self.size_of_vmarray()
+    }
+
     /// Return the offset to the `magic` value in this `VMContext`.
     #[inline]
     fn vmctx_magic(&self) -> u8 {
@@ -246,7 +372,7 @@ pub trait PtrSize {
         0
     }
 
-    /// Return the offset to the `VMRuntimeLimits` structure
+    /// Return the offset to the `VMStoreContext` structure
     #[inline]
     fn vmctx_runtime_limits(&self) -> u8 {
         self.vmctx_magic() + self.size()
@@ -298,22 +424,12 @@ pub trait PtrSize {
         self.vmctx_gc_heap_data() + self.size()
     }
 
-    /// The offset of the `stack_chain` field.
-    /// This field stores a pointer into the `StoreOpauqe`, to a value of type
-    /// `crate::stack_switching::StackChain`.
-    // FIXME(#10248) This field is not actually in use, yet. It is only here for
-    // future use in a subsequent stack-switching PR.
-    #[inline]
-    fn vmctx_stack_chain(&self) -> u8 {
-        self.vmctx_type_ids_array() + self.size()
-    }
-
     /// The end of statically known offsets in `VMContext`.
     ///
     /// Data after this is dynamically sized.
     #[inline]
     fn vmctx_dynamic_data_start(&self) -> u8 {
-        self.vmctx_stack_chain() + self.size()
+        self.vmctx_type_ids_array() + self.size()
     }
 }
 

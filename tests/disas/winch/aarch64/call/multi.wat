@@ -13,6 +13,7 @@
 ;; wasm[0]::function[0]::multi:
 ;;       stp     x29, x30, [sp, #-0x10]!
 ;;       mov     x29, sp
+;;       str     x28, [sp, #-0x10]!
 ;;       mov     x28, sp
 ;;       mov     x9, x1
 ;;       sub     x28, x28, #0x18
@@ -29,15 +30,19 @@
 ;;       ldur    x1, [x28, #4]
 ;;       ldur    w16, [x28]
 ;;       add     x28, x28, #4
+;;       mov     sp, x28
 ;;       stur    w16, [x1]
 ;;       add     x28, x28, #0x18
 ;;       mov     sp, x28
+;;       mov     sp, x28
+;;       ldr     x28, [sp], #0x10
 ;;       ldp     x29, x30, [sp], #0x10
 ;;       ret
 ;;
 ;; wasm[0]::function[1]::start:
 ;;       stp     x29, x30, [sp, #-0x10]!
 ;;       mov     x29, sp
+;;       str     x28, [sp, #-0x10]!
 ;;       mov     x28, sp
 ;;       mov     x9, x0
 ;;       sub     x28, x28, #0x10
@@ -50,12 +55,16 @@
 ;;       mov     sp, x28
 ;;       mov     x1, x9
 ;;       mov     x2, x9
-;;       ldur    x0, [x28, #0xc]
+;;       add     x0, x28, #0xc
 ;;       bl      #0
-;;   a0: add     x28, x28, #0xc
+;;   c4: add     x28, x28, #0xc
+;;       mov     sp, x28
 ;;       ldur    x9, [x28, #0xc]
 ;;       add     x28, x28, #4
+;;       mov     sp, x28
 ;;       add     x28, x28, #0x10
 ;;       mov     sp, x28
+;;       mov     sp, x28
+;;       ldr     x28, [sp], #0x10
 ;;       ldp     x29, x30, [sp], #0x10
 ;;       ret

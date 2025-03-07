@@ -27,6 +27,7 @@
 ;; wasm[0]::function[0]::fibonacci8:
 ;;       stp     x29, x30, [sp, #-0x10]!
 ;;       mov     x29, sp
+;;       str     x28, [sp, #-0x10]!
 ;;       mov     x28, sp
 ;;       mov     x9, x0
 ;;       sub     x28, x28, #0x18
@@ -38,11 +39,11 @@
 ;;       cmp     w0, #1
 ;;       cset    x0, le
 ;;       tst     w0, w0
-;;       b.eq    #0x44
-;;       b       #0x3c
-;;   3c: ldur    w0, [x28, #4]
-;;       b       #0xc4
-;;   44: ldur    w0, [x28, #4]
+;;       b.eq    #0x48
+;;       b       #0x40
+;;   40: ldur    w0, [x28, #4]
+;;       b       #0xd8
+;;   48: ldur    w0, [x28, #4]
 ;;       sub     w0, w0, #1
 ;;       sub     x28, x28, #4
 ;;       mov     sp, x28
@@ -53,8 +54,10 @@
 ;;       mov     x1, x9
 ;;       ldur    w2, [x28, #4]
 ;;       bl      #0
-;;   70: add     x28, x28, #4
+;;   74: add     x28, x28, #4
+;;       mov     sp, x28
 ;;       add     x28, x28, #4
+;;       mov     sp, x28
 ;;       ldur    x9, [x28, #0x10]
 ;;       ldur    w1, [x28, #4]
 ;;       sub     w1, w1, #2
@@ -68,13 +71,17 @@
 ;;       mov     x1, x9
 ;;       ldur    w2, [x28]
 ;;       bl      #0
-;;   ac: add     x28, x28, #4
+;;   b8: add     x28, x28, #4
+;;       mov     sp, x28
 ;;       ldur    x9, [x28, #0x14]
 ;;       ldur    w1, [x28]
 ;;       add     x28, x28, #4
+;;       mov     sp, x28
 ;;       add     w1, w1, w0, uxtx
 ;;       mov     w0, w1
 ;;       add     x28, x28, #0x18
 ;;       mov     sp, x28
+;;       mov     sp, x28
+;;       ldr     x28, [sp], #0x10
 ;;       ldp     x29, x30, [sp], #0x10
 ;;       ret

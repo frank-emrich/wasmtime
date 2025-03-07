@@ -42,6 +42,7 @@ mod vmcontext;
 
 #[cfg(feature = "threads")]
 mod parking_spot;
+pub mod stack_switching;
 
 // Note that `debug_builtins` here is disabled with a feature or a lack of a
 // native compilation backend because it's only here to assist in debugging
@@ -93,8 +94,9 @@ pub use crate::runtime::vm::unwind::*;
 pub use crate::runtime::vm::vmcontext::{
     VMArrayCallFunction, VMArrayCallHostFuncContext, VMContext, VMFuncRef, VMFunctionBody,
     VMFunctionImport, VMGlobalDefinition, VMGlobalImport, VMMemoryDefinition, VMMemoryImport,
-    VMOpaqueContext, VMRuntimeLimits, VMTableImport, VMTagImport, VMWasmCallFunction, ValRaw,
+    VMOpaqueContext, VMStoreContext, VMTableImport, VMTagImport, VMWasmCallFunction, ValRaw,
 };
+
 pub use send_sync_ptr::SendSyncPtr;
 
 mod module_id;
@@ -203,6 +205,11 @@ pub unsafe trait VMStore {
     /// Metadata required for resources for the component model.
     #[cfg(feature = "component-model")]
     fn component_calls(&mut self) -> &mut component::CallContexts;
+
+    #[cfg(feature = "component-model-async")]
+    fn component_async_store(
+        &mut self,
+    ) -> &mut dyn crate::runtime::component::VMComponentAsyncStore;
 }
 
 impl Deref for dyn VMStore + '_ {
@@ -235,7 +242,7 @@ impl DerefMut for dyn VMStore + '_ {
 /// usage of `Instance` and `ComponentInstance` for example.
 #[derive(Copy, Clone)]
 #[repr(transparent)]
-struct VMStoreRawPtr(NonNull<dyn VMStore>);
+struct VMStoreRawPtr(pub NonNull<dyn VMStore>);
 
 // SAFETY: this is the purpose of `VMStoreRawPtr`, see docs above about safe
 // usage.

@@ -86,6 +86,8 @@ pub struct ComponentInstance {
 ///   which this function pointer was registered.
 /// * `ty` - the type index, relative to the tables in `vmctx`, that is the
 ///   type of the function being called.
+/// * `caller_instance` - the `RuntimeComponentInstanceIndex` representing the
+///   caller component instance, used to track the owner of an async host task.
 /// * `flags` - the component flags for may_enter/leave corresponding to the
 ///   component instance that the lowering happened within.
 /// * `opt_memory` - this nullable pointer represents the memory configuration
@@ -106,7 +108,7 @@ pub struct ComponentInstance {
 /// or not. On failure this function records trap information in TLS which
 /// should be suitable for reading later.
 //
-// FIXME: 9 arguments is probably too many. The `data` through `string-encoding`
+// FIXME: 11 arguments is probably too many. The `data` through `string-encoding`
 // parameters should probably get packaged up into the `VMComponentContext`.
 // Needs benchmarking one way or another though to figure out what the best
 // balance is here.
@@ -114,6 +116,7 @@ pub type VMLoweringCallee = extern "C" fn(
     vmctx: NonNull<VMOpaqueContext>,
     data: NonNull<u8>,
     ty: u32,
+    caller_instance: u32,
     flags: NonNull<VMGlobalDefinition>,
     opt_memory: *mut VMMemoryDefinition,
     opt_realloc: *mut VMFuncRef,
@@ -468,8 +471,8 @@ impl ComponentInstance {
         *self.vmctx_plus_offset_mut(self.offsets.magic()) = VMCOMPONENT_MAGIC;
         *self.vmctx_plus_offset_mut(self.offsets.builtins()) =
             VmPtr::from(NonNull::from(&libcalls::VMComponentBuiltins::INIT));
-        *self.vmctx_plus_offset_mut(self.offsets.limits()) =
-            VmPtr::from(self.store.0.as_ref().vmruntime_limits());
+        *self.vmctx_plus_offset_mut(self.offsets.vm_store_context()) =
+            VmPtr::from(self.store.0.as_ref().vm_store_context_ptr());
 
         for i in 0..self.offsets.num_runtime_component_instances {
             let i = RuntimeComponentInstanceIndex::from_u32(i);
@@ -663,6 +666,39 @@ impl ComponentInstance {
 
     pub(crate) fn resource_exit_call(&mut self) -> Result<()> {
         self.resource_tables().exit_call()
+    }
+
+    #[cfg(feature = "component-model-async")]
+    pub(crate) fn future_transfer(
+        &mut self,
+        src_idx: u32,
+        src: TypeFutureTableIndex,
+        dst: TypeFutureTableIndex,
+    ) -> Result<u32> {
+        _ = (src_idx, src, dst);
+        todo!()
+    }
+
+    #[cfg(feature = "component-model-async")]
+    pub(crate) fn stream_transfer(
+        &mut self,
+        src_idx: u32,
+        src: TypeStreamTableIndex,
+        dst: TypeStreamTableIndex,
+    ) -> Result<u32> {
+        _ = (src_idx, src, dst);
+        todo!()
+    }
+
+    #[cfg(feature = "component-model-async")]
+    pub(crate) fn error_context_transfer(
+        &mut self,
+        src_idx: u32,
+        src: TypeComponentLocalErrorContextTableIndex,
+        dst: TypeComponentLocalErrorContextTableIndex,
+    ) -> Result<u32> {
+        _ = (src_idx, src, dst);
+        todo!()
     }
 }
 

@@ -187,6 +187,7 @@ macro_rules! foreach_config_option {
             component_model_async
             simd
             gc_types
+            stack_switching
         }
     };
 }
@@ -291,6 +292,7 @@ impl Compiler {
                     || config.gc()
                     || config.relaxed_simd()
                     || config.gc_types()
+                    || config.stack_switching()
                 {
                     return true;
                 }
@@ -301,6 +303,13 @@ impl Compiler {
                 // due to being unable to implement non-atomic loads/stores
                 // safely.
                 if config.threads() {
+                    return true;
+                }
+                // Unsupported proposals. Note that other proposals have partial
+                // support at this time (pulley is a work-in-progress) and so
+                // individual tests are listed below as "should fail" even if
+                // they're not covered in this list.
+                if config.stack_switching() {
                     return true;
                 }
             }
@@ -380,6 +389,14 @@ impl WastTest {
             }
         }
 
+        if cfg!(not(all(unix, target_arch = "x86_64"))) {
+            // Stack switching is not implemented on platforms other than x64
+            // unix, the corresponding tests will fail.
+            if self.path.parent().unwrap().ends_with("stack-switching") {
+                return true;
+            }
+        }
+
         if config.compiler.should_fail(&self.config) {
             return true;
         }
@@ -417,15 +434,7 @@ impl WastTest {
                 "spec_testsuite/table_set.wast",
                 "spec_testsuite/table_size.wast",
                 // simd-related failures
-                "memory64/simd.wast",
                 "misc_testsuite/simd/canonicalize-nan.wast",
-                "spec_testsuite/simd_f32x4.wast",
-                "spec_testsuite/simd_f32x4_pmin_pmax.wast",
-                "spec_testsuite/simd_f64x2.wast",
-                "spec_testsuite/simd_f64x2_pmin_pmax.wast",
-                "spec_testsuite/simd_load.wast",
-                "spec_testsuite/simd_load_zero.wast",
-                "spec_testsuite/simd_splat.wast",
             ];
 
             if unsupported.iter().any(|part| self.path.ends_with(part)) {
@@ -437,6 +446,7 @@ impl WastTest {
             if !(std::is_x86_feature_detected!("avx") && std::is_x86_feature_detected!("avx2")) {
                 let unsupported = [
                     "annotations/simd_lane.wast",
+                    "memory64/simd.wast",
                     "misc_testsuite/int-to-float-splat.wast",
                     "misc_testsuite/issue6562.wast",
                     "misc_testsuite/simd/almost-extmul.wast",
@@ -445,16 +455,19 @@ impl WastTest {
                     "misc_testsuite/simd/issue6725-no-egraph-panic.wast",
                     "misc_testsuite/simd/replace-lane-preserve.wast",
                     "misc_testsuite/simd/spillslot-size-fuzzbug.wast",
-                    "misc_testsuite/winch/_simd_load.wast",
-                    "misc_testsuite/winch/_simd_splat.wast",
+                    "misc_testsuite/winch/issue-10331.wast",
                     "spec_testsuite/simd_align.wast",
                     "spec_testsuite/simd_boolean.wast",
                     "spec_testsuite/simd_conversions.wast",
+                    "spec_testsuite/simd_f32x4.wast",
                     "spec_testsuite/simd_f32x4_arith.wast",
                     "spec_testsuite/simd_f32x4_cmp.wast",
+                    "spec_testsuite/simd_f32x4_pmin_pmax.wast",
                     "spec_testsuite/simd_f32x4_rounding.wast",
+                    "spec_testsuite/simd_f64x2.wast",
                     "spec_testsuite/simd_f64x2_arith.wast",
                     "spec_testsuite/simd_f64x2_cmp.wast",
+                    "spec_testsuite/simd_f64x2_pmin_pmax.wast",
                     "spec_testsuite/simd_f64x2_rounding.wast",
                     "spec_testsuite/simd_i16x8_cmp.wast",
                     "spec_testsuite/simd_i32x4_cmp.wast",
@@ -463,8 +476,11 @@ impl WastTest {
                     "spec_testsuite/simd_i8x16_arith2.wast",
                     "spec_testsuite/simd_i8x16_cmp.wast",
                     "spec_testsuite/simd_int_to_int_extend.wast",
+                    "spec_testsuite/simd_load.wast",
                     "spec_testsuite/simd_load_extend.wast",
                     "spec_testsuite/simd_load_splat.wast",
+                    "spec_testsuite/simd_load_zero.wast",
+                    "spec_testsuite/simd_splat.wast",
                     "spec_testsuite/simd_store16_lane.wast",
                     "spec_testsuite/simd_store32_lane.wast",
                     "spec_testsuite/simd_store64_lane.wast",

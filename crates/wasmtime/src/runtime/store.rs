@@ -86,7 +86,7 @@ use crate::runtime::vm::GcRootsList;
 use crate::runtime::vm::{
     ExportGlobal, GcStore, InstanceAllocationRequest, InstanceAllocator, InstanceHandle,
     Interpreter, InterpreterRef, ModuleRuntimeInfo, OnDemandInstanceAllocator, SignalHandler,
-    StoreBox, StorePtr, Unwind, VMContext, VMFuncRef, VMGcRef, VMRuntimeLimits,
+    StoreBox, StorePtr, Unwind, VMContext, VMFuncRef, VMGcRef, VMStoreContext,
 };
 use crate::trampoline::VMHostGlobalContext;
 use crate::RootSet;
@@ -113,6 +113,9 @@ mod async_;
 pub use self::async_::CallHookHandler;
 #[cfg(feature = "async")]
 use self::async_::*;
+
+use super::vm::stack_switching::stack::VMContinuationStack;
+use super::vm::stack_switching::VMContRef;
 
 /// A [`Store`] is a collection of WebAssembly instances and host-defined state.
 ///
@@ -305,7 +308,12 @@ pub struct StoreOpaque {
     _marker: marker::PhantomPinned,
 
     engine: Engine,
-    runtime_limits: VMRuntimeLimits,
+    vm_store_context: VMStoreContext,
+
+    // Contains all continuations ever allocated throughout the lifetime of this
+    // store.
+    continuations: Vec<Box<VMContRef>>,
+
     instances: Vec<StoreInstance>,
     #[cfg(feature = "component-model")]
     num_component_instances: usize,
@@ -523,7 +531,8 @@ impl<T> Store<T> {
             inner: StoreOpaque {
                 _marker: marker::PhantomPinned,
                 engine: engine.clone(),
-                runtime_limits: Default::default(),
+                vm_store_context: Default::default(),
+                continuations: Vec::new(),
                 instances: Vec::new(),
                 #[cfg(feature = "component-model")]
                 num_component_instances: 0,
@@ -1404,8 +1413,8 @@ impl StoreOpaque {
     }
 
     #[inline]
-    pub fn runtime_limits(&self) -> &VMRuntimeLimits {
-        &self.runtime_limits
+    pub fn vm_store_context(&self) -> &VMStoreContext {
+        &self.vm_store_context
     }
 
     #[inline(never)]
@@ -1533,6 +1542,7 @@ impl StoreOpaque {
         assert!(gc_roots_list.is_empty());
 
         self.trace_wasm_stack_roots(gc_roots_list);
+        self.trace_wasm_continuation_roots(gc_roots_list);
         self.trace_vmctx_roots(gc_roots_list);
         self.trace_user_roots(gc_roots_list);
 
@@ -1540,58 +1550,104 @@ impl StoreOpaque {
     }
 
     #[cfg(feature = "gc")]
-    fn trace_wasm_stack_roots(&mut self, gc_roots_list: &mut GcRootsList) {
-        use crate::runtime::vm::{Backtrace, SendSyncPtr};
+    fn trace_wasm_stack_frame(
+        &self,
+        gc_roots_list: &mut GcRootsList,
+        frame: crate::runtime::vm::Frame,
+    ) {
+        use crate::runtime::vm::SendSyncPtr;
         use core::ptr::NonNull;
 
+        let pc = frame.pc();
+        debug_assert!(pc != 0, "we should always get a valid PC for Wasm frames");
+
+        let fp = frame.fp() as *mut usize;
+        debug_assert!(
+            !fp.is_null(),
+            "we should always get a valid frame pointer for Wasm frames"
+        );
+
+        let module_info = self
+            .modules()
+            .lookup_module_by_pc(pc)
+            .expect("should have module info for Wasm frame");
+
+        let stack_map = match module_info.lookup_stack_map(pc) {
+            Some(sm) => sm,
+            None => {
+                log::trace!("No stack map for this Wasm frame");
+                return;
+            }
+        };
+        log::trace!(
+            "We have a stack map that maps {} bytes in this Wasm frame",
+            stack_map.frame_size()
+        );
+
+        let sp = unsafe { stack_map.sp(fp) };
+        for stack_slot in unsafe { stack_map.live_gc_refs(sp) } {
+            let raw: u32 = unsafe { core::ptr::read(stack_slot) };
+            log::trace!("Stack slot @ {stack_slot:p} = {raw:#x}");
+
+            let gc_ref = VMGcRef::from_raw_u32(raw);
+            if gc_ref.is_some() {
+                unsafe {
+                    gc_roots_list
+                        .add_wasm_stack_root(SendSyncPtr::new(NonNull::new(stack_slot).unwrap()));
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "gc")]
+    fn trace_wasm_stack_roots(&mut self, gc_roots_list: &mut GcRootsList) {
+        use crate::runtime::vm::Backtrace;
         log::trace!("Begin trace GC roots :: Wasm stack");
 
         Backtrace::trace(self, |frame| {
-            let pc = frame.pc();
-            debug_assert!(pc != 0, "we should always get a valid PC for Wasm frames");
-
-            let fp = frame.fp() as *mut usize;
-            debug_assert!(
-                !fp.is_null(),
-                "we should always get a valid frame pointer for Wasm frames"
-            );
-
-            let module_info = self
-                .modules()
-                .lookup_module_by_pc(pc)
-                .expect("should have module info for Wasm frame");
-
-            let stack_map = match module_info.lookup_stack_map(pc) {
-                Some(sm) => sm,
-                None => {
-                    log::trace!("No stack map for this Wasm frame");
-                    return core::ops::ControlFlow::Continue(());
-                }
-            };
-            log::trace!(
-                "We have a stack map that maps {} bytes in this Wasm frame",
-                stack_map.frame_size()
-            );
-
-            let sp = unsafe { stack_map.sp(fp) };
-            for stack_slot in unsafe { stack_map.live_gc_refs(sp) } {
-                let raw: u32 = unsafe { core::ptr::read(stack_slot) };
-                log::trace!("Stack slot @ {stack_slot:p} = {raw:#x}");
-
-                let gc_ref = VMGcRef::from_raw_u32(raw);
-                if gc_ref.is_some() {
-                    unsafe {
-                        gc_roots_list.add_wasm_stack_root(SendSyncPtr::new(
-                            NonNull::new(stack_slot).unwrap(),
-                        ));
-                    }
-                }
-            }
-
+            self.trace_wasm_stack_frame(gc_roots_list, frame);
             core::ops::ControlFlow::Continue(())
         });
 
         log::trace!("End trace GC roots :: Wasm stack");
+    }
+
+    #[cfg(feature = "gc")]
+    fn trace_wasm_continuation_roots(&mut self, gc_roots_list: &mut GcRootsList) {
+        use crate::runtime::vm::Backtrace;
+        log::trace!("Begin trace GC roots :: continuations");
+
+        for continuation in &self.continuations {
+            let state = continuation.common_stack_information.state;
+
+            // FIXME(frank-emrich) In general, it is not enough to just trace
+            // through the stacks of continuations; we also need to look through
+            // their `cont.bind` arguments. However, we don't currently have
+            // enough RTTI information to check if any of the values in the
+            // buffers used by `cont.bind` are GC values. As a workaround, note
+            // that we currently disallow cont.bind-ing GC values altogether.
+            // This way, it is okay not to check them here.
+
+            // Note that we only care about continuations that have state
+            // `Suspended`.
+            // - `Running` continuations will be handled by
+            //   `trace_wasm_stack_roots`.
+            // - For `Parent` continuations, we don't know if they are the
+            //   parent of a running continuation or a suspended one. But it
+            //   does not matter: They will be handled when traversing the stack
+            //   chain starting at either the running one, or the suspended
+            //   continuations below.
+            // - For `Fresh` continuations, we know that there are no GC values
+            //   on their stack, yet.
+            if state == crate::vm::stack_switching::VMStackState::Suspended {
+                Backtrace::trace_suspended_continuation(self, continuation.deref(), |frame| {
+                    self.trace_wasm_stack_frame(gc_roots_list, frame);
+                    core::ops::ControlFlow::Continue(())
+                });
+            }
+        }
+
+        log::trace!("End trace GC roots :: continuations");
     }
 
     #[cfg(feature = "gc")]
@@ -1625,12 +1681,12 @@ impl StoreOpaque {
             self.engine().tunables().consume_fuel,
             "fuel is not configured in this store"
         );
-        let injected_fuel = unsafe { *self.runtime_limits.fuel_consumed.get() };
+        let injected_fuel = unsafe { *self.vm_store_context.fuel_consumed.get() };
         Ok(get_fuel(injected_fuel, self.fuel_reserve))
     }
 
     fn refuel(&mut self) -> bool {
-        let injected_fuel = unsafe { &mut *self.runtime_limits.fuel_consumed.get() };
+        let injected_fuel = unsafe { &mut *self.vm_store_context.fuel_consumed.get() };
         refuel(
             injected_fuel,
             &mut self.fuel_reserve,
@@ -1643,7 +1699,7 @@ impl StoreOpaque {
             self.engine().tunables().consume_fuel,
             "fuel is not configured in this store"
         );
-        let injected_fuel = unsafe { &mut *self.runtime_limits.fuel_consumed.get() };
+        let injected_fuel = unsafe { &mut *self.vm_store_context.fuel_consumed.get() };
         set_fuel(
             injected_fuel,
             &mut self.fuel_reserve,
@@ -1678,8 +1734,8 @@ impl StoreOpaque {
     }
 
     #[inline]
-    pub fn vmruntime_limits(&self) -> NonNull<VMRuntimeLimits> {
-        NonNull::from(&self.runtime_limits)
+    pub fn vm_store_context_ptr(&self) -> NonNull<VMStoreContext> {
+        NonNull::from(&self.vm_store_context)
     }
 
     #[inline]
@@ -1885,9 +1941,30 @@ at https://bytecodealliance.org/security.
             Executor::Native => &crate::runtime::vm::UnwindHost,
         }
     }
+
+    /// Allocates a new continuation. Note that we currently don't support
+    /// deallocating them. Instead, all continuations remain allocated
+    /// throughout the store's lifetime.
+    pub fn allocate_continuation(&mut self) -> Result<*mut VMContRef> {
+        // FIXME(frank-emrich) Do we need to pin this?
+        let mut continuation = Box::new(VMContRef::empty());
+        let stack_size = self.engine.config().stack_switching_config.stack_size;
+        let stack = VMContinuationStack::new(stack_size)?;
+        continuation.stack = stack;
+        let ptr = continuation.deref_mut() as *mut VMContRef;
+        self.continuations.push(continuation);
+        Ok(ptr)
+    }
 }
 
 unsafe impl<T> crate::runtime::vm::VMStore for StoreInner<T> {
+    #[cfg(feature = "component-model-async")]
+    fn component_async_store(
+        &mut self,
+    ) -> &mut dyn crate::runtime::component::VMComponentAsyncStore {
+        self
+    }
+
     fn store_opaque(&self) -> &StoreOpaque {
         &self.inner
     }
@@ -2083,13 +2160,18 @@ impl<T> StoreInner<T> {
         // Set a new deadline based on the "epoch deadline delta".
         //
         // Safety: this is safe because the epoch deadline in the
-        // `VMRuntimeLimits` is accessed only here and by Wasm guest code
+        // `VMStoreContext` is accessed only here and by Wasm guest code
         // running in this store, and we have a `&mut self` here.
         //
         // Also, note that when this update is performed while Wasm is
         // on the stack, the Wasm will reload the new value once we
         // return into it.
-        let epoch_deadline = unsafe { self.vmruntime_limits().as_mut().epoch_deadline.get_mut() };
+        let epoch_deadline = unsafe {
+            self.vm_store_context_ptr()
+                .as_mut()
+                .epoch_deadline
+                .get_mut()
+        };
         *epoch_deadline = self.engine().current_epoch() + delta;
     }
 
@@ -2110,7 +2192,12 @@ impl<T> StoreInner<T> {
         // Safety: this is safe because, as above, it is only invoked
         // from within `new_epoch` which is called from guest Wasm
         // code, which will have an exclusive borrow on the Store.
-        let epoch_deadline = unsafe { self.vmruntime_limits().as_mut().epoch_deadline.get_mut() };
+        let epoch_deadline = unsafe {
+            self.vm_store_context_ptr()
+                .as_mut()
+                .epoch_deadline
+                .get_mut()
+        };
         *epoch_deadline
     }
 }
