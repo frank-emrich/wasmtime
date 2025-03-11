@@ -35,7 +35,6 @@ mod compiler;
 mod debug;
 mod func_environ;
 mod gc;
-mod stack_switching;
 mod translate;
 
 use self::compiler::Compiler;
@@ -209,7 +208,11 @@ fn reference_type(wasm_ht: WasmHeapType, pointer_type: ir::Type) -> ir::Type {
     match wasm_ht.top() {
         WasmHeapTopType::Func => pointer_type,
         WasmHeapTopType::Any | WasmHeapTopType::Extern => ir::types::I32,
-        WasmHeapTopType::Cont => stack_switching::fatpointer::POINTER_TYPE,
+        WasmHeapTopType::Cont =>
+        // TODO(10248) This is added in a follow-up PR
+        {
+            unimplemented!("codegen for stack switching types not implemented, yet")
+        }
     }
 }
 
